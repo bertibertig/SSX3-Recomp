@@ -18,7 +18,7 @@ src/recomp_manual.c  Hand-written overrides / stubs for functions that are not l
 src/recomp/gen/    GENERATED code (gitignored, from your own XBE) – never commit, never edit by hand
 config/            Our own config, e.g. seed_functions.json (entry points the static analysis does not see)
 game_files/        Extracted copy of your own disc (gitignored): default.xbe + data
-reference/         Local read-only copies (gitignored): SSX-Tricky-PC, OpenTricky, ssx3-ps2-decomp
+reference/         Local read-only copies (gitignored): SSX-Tricky-PC, OpenTricky, ssx3-ps2-decomp, SSX3-recomp-koen
 scripts/           setup.sh, extract_iso.sh, run_pipeline.sh, doctor.sh, build.sh, fetch_references.sh, ghidra.sh (Ghidra names/triage, Linux)
 docs/notes.md      Running work log (addresses, findings, decisions) – keep adding to it
 ```
@@ -36,12 +36,16 @@ The guides for this: `xboxrecomp/docs/GETTING_STARTED.md`, debugging: `xboxrecom
 `xboxrecomp/docs/technical/indirect-calls.md`, `lessons-learned.md`.
 
 ## Platform note (important)
-- The template (`src/main.c`, `CMakeLists.txt`) is **Windows-first** (WinMain, VEH, D3D11, dbghelp).
+- **Linux first** (main target: the Steam Deck), Windows second, macOS later – all three are planned.
+- Linux: our own POSIX host in `src/main.c` (sigaction MMIO faults, SDL2 window) and our Vulkan back end in `src/render/`
+  (`SSX3_RENDERER=vulkan`, default). The toolkit's OpenGL path (`d3d8_gl.c`) is not used.
+- Windows: xboxrecomp itself is Windows-first (WinMain, VEH, D3D11, dbghelp, XAudio2), so the Windows build is the next
+  platform. Today: MinGW cross build (`scripts/build_win.sh`), tested under Proton (`scripts/run_win.sh`); the Vulkan
+  back end still needs a Win32 surface (see `docs/TODO.md`), native MSVC is untested.
+  `reference/SSX3-recomp-koen` is a Windows/MSVC-first port of the same game – use it for the Windows side.
+- macOS: not started (Vulkan via MoltenVK; Apple Silicon would need the aarch64 MMIO decoder, see
+  `reference/SSX3-recomp-koen/docs/LINUX.md`).
 - The pipeline (steps 2–5) runs anywhere (Python + capstone).
-- Linux/macOS: the runtime builds with SDL2 + OpenGL 3.3 (`d3d8_gl.c`), which according to the docs is **less complete** than D3D11.
-  For Linux, `main.c`/CMake have to be adapted – check `xboxrecomp/README.md`, `src/` (win32_compat), and how
-  `reference/SSX-Tricky-PC/port/` or NFSU2-Linux solve it, before inventing anything.
-- If the Linux OpenGL route gets stuck: build on Windows (MSYS2 UCRT64 or VS2022), as in `reference/*/docs/building.md`.
 
 ## References (read first, before reinventing anything)
 - `reference/SSX-Tricky-PC/` (MatiasRiveraC) and `reference/OpenTricky/` (GiZcesi): xboxrecomp ports of **SSX Tricky (Xbox)**.
@@ -53,6 +57,17 @@ The guides for this: `xboxrecomp/docs/GETTING_STARTED.md`, debugging: `xboxrecom
   (`xboxrecomp/`, v0.14.0, as of 2026-10-16): a lot of it may be upstream by now.
 - `reference/ssx3-ps2-decomp/`: matching decomp of **SSX3 PS2 (NTSC-U, SLUS_207.72)** – useful for function/struct names
   and game logic via cross-reference (strings, constants), not as directly transferable code.
+- `reference/SSX3-recomp-koen/` (koenhendriks/SSX3-recomp): an independent xboxrecomp port of **the same game** –
+  SSX 3 Xbox PAL, title ID 0x4541003C, entry 0x00181AD2, i.e. the same XBE build, so **addresses match ours** (still
+  verify). Windows/MSVC-first, playable (all peaks, split screen, saves, 60 fps, GPU vertex programs, widescreen).
+  Its `CLAUDE.md` is a detailed bring-up log (root causes with guest addresses: streamer/STRM ring races, guest-CPU
+  fairness, vblank/flip traps, 30 Hz flag, widescreen camera, stencil, point sprites …); `docs/ROADMAP.md`,
+  `docs/LINUX.md` (aarch64), `patches/xboxrecomp-local.patch` (toolkit fixes, base v0.13.1), `src/vk/` (Vulkan renderer).
+  Check it **before** debugging anything – many of our open items are solved there.
+  **License: GPL-2.0-or-later** (the patch file: MIT/LGPL-2.1 like the toolkit). Findings, addresses and mechanisms may be
+  used freely (cite it in `docs/notes.md`); do **not** copy its code or text into this repo unless the user has decided on
+  a GPL-compatible license for ours – ask first. Its `.claude/skills/xemu` drives xemu through a Windows-only
+  `tools\xemu.ps1`; a Linux equivalent would be our own tool.
 
 ## Rules
 - **The repo language is English**: docs, code comments, script output, commit messages, `docs/notes.md` entries –

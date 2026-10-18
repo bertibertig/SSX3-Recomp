@@ -52,7 +52,9 @@ Order follows `CLAUDE.md` / `xboxrecomp/docs/GETTING_STARTED.md`. Details and fi
 - [ ] Pre-race screen / busy race scenes below 60: NV2A thread is CPU-bound in the vertex program interpreter →
       parallelise transforms over the raster pool, or (long term, needed for >60 fps) vertex programs on the GPU
 - [x] Random 1–70 s boot (lost vblanks) and empty title screen after the intro fixed (runtime patch)
-- [ ] Crash right after the intro/attract video opens (`sub_00177F80`, VA 0xE0220705), intermittent
+- [ ] Crash right after the intro/attract video opens (`sub_00177F80`, VA 0xE0220705), intermittent.
+      `reference/SSX3-recomp-koen/CLAUDE.md`: `sub_00177F80` = EA STRM "next chunk"; their ring corruption came from
+      critical sections being preemption points (fix: `RECOMP_CS_KEEP_CPU`) and unfair guest-CPU handover (`RECOMP_FAIR_YIELD`)
 - [ ] VBlank rate: the runtime ticks ~50 Hz by accident; derive it from the display mode (PAL 50 / PAL-60 / NTSC),
       check which mode SSX 3 (PAL) sets; prerequisite for the unlocked/high-fps work
 - [ ] Vulkan M3 leftovers: cube maps (face 0 only), bump-env/dot-product stage modes, palettised textures
@@ -62,6 +64,11 @@ Order follows `CLAUDE.md` / `xboxrecomp/docs/GETTING_STARTED.md`. Details and fi
 - [ ] Offer xboxrecomp patch 0001 as an upstream PR (sp00nznet/xboxrecomp)
 - [ ] Milestones: EA logo → title screen → menu → race
 - [ ] Compare OpenTricky/SSX-Tricky-PC changes to xboxrecomp (their NV2A→D3D11 renderer as a reference for M3)
+- [ ] Go through `reference/SSX3-recomp-koen` (same game, same XBE) for fixes we still lack: unresolved stubs into
+      function middles (Options-menu crash, Equip Gear), media check `sub_00183EBB`, x87 `exp`/`fmod` ebx bug,
+      30 Hz flag app+0x38, vertex-colour clamping, stencil, point-size clamp, GPU vertex programs, widescreen camera
+- [ ] xemu reference tooling for Linux (xemu 0.8.136 flatpak is installed): boot/snapshot/press/capture over QMP,
+      plus a Claude skill – modelled on their Windows-only `tools\xemu.ps1` skill, our own code
 
 ## Features
 - [ ] **Language switcher.** Our base is the PAL/EU build, which ships English, French, German and Spanish

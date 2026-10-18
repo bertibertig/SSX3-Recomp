@@ -259,3 +259,9 @@ _(date – what was done, what was found, next step)_
     enumerates the USB pad as before. MinGW compile of the XInput branch clean. Not yet verified: playing with the
     pad in the menus/race (needs someone pressing buttons – use `SSX3_PAD_TRACE=1`).
   - Multiple pads on the emulated bus: `RECOMP_USB_PADS=1..4` (runtime, default 1).
+- 2026-10-18 – **New reference: koenhendriks/SSX3-recomp** (`reference/SSX3-recomp-koen`, via `fetch_references.sh`).
+  An independent xboxrecomp port of the same game: its CLAUDE.md lists PAL, title ID 0x4541003C, XDK 5558, built
+  2003-09-19, entry 0x00181AD2 and the D3D fence mirror at 0x0024B0D8 – identical to our XBE, so its guest addresses
+  apply directly (still verify). Windows/MSVC-first, playable to all peaks. License GPL-2.0-or-later: we use findings,
+  not code (see CLAUDE.md → References). Its xemu skill wraps a Windows-only PowerShell tool, so not adopted; a Linux
+  xemu tool is a TODO. README reworked: current progress, Linux-first (Steam Deck), Windows next, macOS later.

@@ -34,6 +34,10 @@ All of them are candidates for an upstream PR to sp00nznet/xboxrecomp.
   Plus the executor's fps display uses wall-clock time (`GetTickCount64`) instead of `clock()` (= process CPU time on POSIX,
   which showed several times too few fps with multiple busy threads).
 
+- `src/kernel/nv2a_pb_exec.c` (`backend_flush`): with register combiners in use, a back end only receives the stage-0
+  texture when that stage's `SHADER_STAGE_PROGRAM` is not NONE (as the CPU path does in `rc_stage_fetch`) – otherwise
+  the Vulkan back end multiplied SSX 3's title-screen sky by the left-over snowflake atlas and drew it black.
+
 Verified: Linux build + Windows cross build (MinGW) compile; own decoder test (8 cases, ucontext) green;
 `tools.recomp.test_reserved_idents` green; SSX 3 on Linux reaches the same state as under Proton
 (APU/AC'97/DSP doorbell/APU interrupts, intro videos are opened).

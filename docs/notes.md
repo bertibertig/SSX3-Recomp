@@ -205,15 +205,15 @@ _(date – what was done, what was found, next step)_
   Title screen, real: 1 thread 4.4 fps → 12 threads **15.4 fps**; `-march=x86-64-v3` only +8 % (16.7). All 12 raster threads
   evenly loaded → 60 fps needs a GPU render back end (recommendation: OpenGL first, Vulkan later).
 - 2026-10-18 – Docs translated from German to English. TODO added: in-game language switcher (EN/FR/DE/ES, see `docs/TODO.md` → Features).
-- 2026-10-18 – **Vulkan-Back-End** (`src/render/`, Entwurf `docs/vulkan-backend.md`), Standard in `scripts/run.sh`
-  (`SSX3_RENDERER=vulkan`; `=cpu` = Software-Renderer als Referenz für Vergleichs-Dumps).
-  - M1 (Device/Swapchain/Clear/Flip) + M2 (Dreiecke, Textur Stufe 0, Blend/Depth/Stencil/Alpha-Test als Dynamic State,
-    eine Pipeline, Push-Descriptors). Titelbild-Himmel war schwarz: veraltete Textur auf Stufe 0 mit Programm NONE
-    (CPU-Frame-Trace `RECOMP_FRAME_TRACE`) → Runtime-Patch in `backend_flush`.
-  - Leistung: erst ~24 fps im Menü – NV2A-Thread dekodierte jede Textur jedes Frame (34 % `sample_tex`) nur für den
-    Änderungs-Hash → Hash über rohe Gastbytes, Dekodieren nur bei Änderung. Danach **60 fps** Titel/Menü,
-    **55–57 fps** Charakterauswahl (380 Draws). CPU-Renderer zum Vergleich ~12 fps.
-  - „Reagiert nicht“ beim Start: Events wurden nur in `flip` gepumpt → Fenster + Event-Loop auf dem Haupt-Thread
-    (`ssx3_vk_host_main`, Gast auf eigenem Thread mit 64-MB-Stack wie `xbox_HostWindowMain`), `vkAcquireNextImageKHR`
-    mit 100-ms-Timeout. Fenstertitel „FPS | draws“, dieselbe Zeile alle 5 s als `[VK] FPS:` im Log.
-  - Offen: 3D-Fahrermodell halbtransparent (Combiner/Depth → M3), Charakterauswahl knapp unter 60.
+- 2026-10-18 – **Vulkan back end** (`src/render/`, design `docs/vulkan-backend.md`), default in `scripts/run.sh`
+  (`SSX3_RENDERER=vulkan`; `=cpu` keeps the software renderer as the reference for comparison dumps).
+  - M1 (device/swapchain/clear/flip) + M2 (triangles, texture stage 0, blend/depth/stencil/alpha test as dynamic state,
+    one pipeline, push descriptors). The title-screen sky was black: a stale texture on stage 0 whose program is NONE
+    (CPU frame trace `RECOMP_FRAME_TRACE`) → runtime patch in `backend_flush`.
+  - Performance: first ~24 fps in the menu – the NV2A thread decoded every texture every frame (34 % `sample_tex`) just
+    for the change hash → hash the raw guest bytes, decode only on change. After that **60 fps** title/menu,
+    **55–57 fps** character select (380 draws). CPU renderer for comparison ~12 fps.
+  - "Not responding" at start: events were only pumped in `flip` → window + event loop on the main thread
+    (`ssx3_vk_host_main`, guest on its own thread with a 64 MB stack like `xbox_HostWindowMain`), `vkAcquireNextImageKHR`
+    with a 100 ms timeout. Window title "FPS | draws", the same line every 5 s as `[VK] FPS:` in the log.
+  - Open: 3D rider model semi-transparent (combiners/depth → M3), character select just under 60.

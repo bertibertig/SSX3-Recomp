@@ -1,39 +1,40 @@
-# Vulkan-Render-Back-End – Entwurf
+# Vulkan render back end – design
 
-Ziel: Den CPU-Rasterizer des Pushbuffer-Executors durch die GPU ersetzen (Ziel 60 fps; später höhere Auflösung,
-AA, HD-Texturen, hohe fps – siehe Memory „performance-and-graphics-goals“). Entscheidung Vulkan statt OpenGL:
-Nutzerwunsch (2026-10-18).
+Goal: replace the pushbuffer executor's CPU rasteriser with the GPU (target 60 fps; later higher resolution, AA,
+HD textures, high frame rates). Vulkan rather than OpenGL: the user's choice (2026-10-18). The CPU rasteriser stays
+available as the reference (`SSX3_RENDERER=cpu`) for comparison dumps; the Vulkan path is the one being maintained.
 
-## Einbindung
-- Die Runtime ruft ein registriertes Back-End über `xboxrecomp/src/kernel/nv2a_backend.h` auf: `clear`, `draw`, `flip`,
-  alle auf dem NV2A-Poll-Thread, nacheinander. Der Executor dekodiert weiter den Pushbuffer, führt Vertex-Programme auf
-  der CPU aus (`nv2a_vsh_interp.c`), clippt an der Near-Plane und liefert Dreiecke in Surface-Pixeln.
-- Unser Back-End lebt in **`src/render/`** (eigener Code, kein Submodul-Eingriff) und wird in `src/main.c` registriert,
-  wenn `SSX3_RENDERER=vulkan`. Dann kein `RECOMP_FB_WINDOW` (eigenes Fenster).
-- Abhängigkeiten als gepinnte Submodule: `third_party/Vulkan-Headers` (v1.4.363), `third_party/volk`
-  (vulkan-sdk-1.4.363.0, lädt `libvulkan.so`/`vulkan-1.dll` zur Laufzeit → kein Import-Lib/SDK nötig, auch MinGW).
-- Shader: GLSL in `src/render/shaders/`, zur Build-Zeit mit `glslc -mfmt=c` nach SPIR-V als C-Array.
+## Integration
+- The runtime calls a registered back end through `xboxrecomp/src/kernel/nv2a_backend.h`: `clear`, `draw`, `flip`, all on
+  the NV2A poll thread, one at a time. The executor still decodes the pushbuffer, runs vertex programs on the CPU
+  (`nv2a_vsh_interp.c`), clips at the near plane and hands over triangles in surface pixels.
+- Our back end lives in **`src/render/`** (own code, no submodule change) and is registered in `src/main.c` when
+  `SSX3_RENDERER=vulkan` (the default in `scripts/run.sh`). The window and its event loop run on the main thread from
+  process start (`ssx3_vk_host_main`); the guest runs on its own thread; rendering happens on the NV2A thread.
+- Dependencies as pinned submodules: `third_party/Vulkan-Headers` (v1.4.363), `third_party/volk`
+  (vulkan-sdk-1.4.363.0; loads `libvulkan.so`/`vulkan-1.dll` at run time → no import library or SDK, MinGW included).
+- Shaders: GLSL in `src/render/shaders/`, compiled to SPIR-V C arrays at build time with `glslc -mfmt=c`.
 
-## Darstellung
-- Pro Gast-Surface (`color_va`) ein Offscreen-Farbbild in voller Surface-Größe (inkl. AA-Faktor), pro `zeta_va` ein
-  Depth/Stencil-Bild. Rendern mit Dynamic Rendering (Vulkan 1.3).
-- `flip`: das zuletzt bezogene Surface per Blit (lineare Filterung = AA-Downsample) in die Swapchain, präsentieren,
-  SDL-Events pumpen (Tastatur → `xbox_InputSdlEvent`).
-- Zustände (Blend/Depth/Stencil/Cull/Colormask) als **Dynamic State** (1.3 core + `VK_EXT_extended_dynamic_state3`),
-  damit nicht für jede NV2A-Zustandskombination eine Pipeline entsteht. Alpha-Test im Shader.
-- Positionen: Surface-Pixel → NDC im Vertex-Shader (Push-Constants: Surface-Größe); `w = 1/rhw` für
-  perspektivisch korrekte Interpolation; z aus dem Z24-Bereich normiert.
-- Texturen: `nv2a_backend_decode_texture` → BGRA8, Cache nach (Adresse, Format, Größe, Inhalts-Hash pro Frame).
-  Render-to-Texture: zeigt eine Textur auf ein Surface, das die GPU gerade gerendert hat, wird das GPU-Bild benutzt.
+## Rendering
+- One offscreen colour image per guest surface (`color_va`) at full surface size (AA factor included), one
+  depth/stencil image per `zeta_va` (a scratch one when the title has none). Dynamic rendering (Vulkan 1.3).
+- `flip`: blit the surface the title last rendered into to the swapchain (linear filtering = AA downsample), present.
+- State (blend/depth/stencil/cull/colour mask) as **dynamic state** (1.3 core + `VK_EXT_extended_dynamic_state3`), so no
+  pipeline per NV2A state combination. Alpha test in the shader.
+- Positions: surface pixels → NDC in the vertex shader (push constants: surface size); `w = 1/rhw` for perspective-
+  correct interpolation; z normalised from the Z24 range.
+- Textures: `nv2a_backend_decode_texture` → BGRA8, cached by (address, format, size); a hash of the raw guest bytes is
+  checked once per frame and the texture re-decoded only when it changed (FMV frames are rewritten in place).
+  Render-to-texture: a texture that points at a surface the GPU rendered samples that GPU image.
 
-## Was die Schnittstelle (noch) nicht liefert → Runtime-Patch, Meilenstein 3
-Nur Texturstufe 0, eine UV, nur Diffuse-Farbe, keine Register-Combiner, kein Specular/Fog. SSX 3 nutzt Combiner stark
-(`nv2a_rc_eval` ist die heißeste Funktion im CPU-Profil). Plan: `Nv2aBatch` um einen optionalen Erweiterungszeiger
-ergänzen (4 Texturstufen, 4 UV-Sätze, Specular, Fog, kompletter Combiner-Zustand); Combiner als **Uber-Shader**
-(Zustand per Push-Constants/UBO, ein vorkompiliertes SPIR-V – kein Laufzeit-Shader-Compiler, keine Pipeline-Flut).
+## What the interface does not (yet) provide → runtime patch, milestone 3
+Only texture stage 0, one UV set, only the diffuse colour, no register combiners, no specular/fog. SSX 3 uses
+combiners heavily (`nv2a_rc_eval` was the hottest function in the CPU profile). Plan: extend `Nv2aBatch` with an
+optional extension pointer (4 texture stages, 4 UV sets, specular, fog, full combiner state); combiners as an
+**uber-shader** (state in push constants/UBO, one precompiled SPIR-V – no run-time shader compiler, no pipeline flood).
 
-## Meilensteine
-1. Vulkan-Init, Fenster, Swapchain; `clear` + `flip` (Fenster zeigt die Clear-Farben). Debug-Dump als BMP.
-2. Dreiecke mit Vertex-Farbe + Textur Stufe 0, Blend/Depth/Stencil/Cull/Alpha-Test.
-3. Schnittstellen-Erweiterung + Combiner-Uber-Shader + Mehrfachtexturen.
-4. Render-to-Texture, AA, Performance (Frames in flight, Texture-Cache), Windows (Win32-Surface statt SDL).
+## Milestones
+1. ✅ Vulkan init, window, swapchain; `clear` + `flip`. Debug dump as BMP (`SSX3_VK_DUMP`).
+2. ✅ Triangles with vertex colour + texture stage 0, blend/depth/stencil/alpha test. 60 fps title/menu.
+3. Interface extension + combiner uber-shader + multitexturing.
+4. Render-to-texture checks, AA/resolution, per-triangle culling, frames in flight, Windows (Win32 surface instead of SDL).

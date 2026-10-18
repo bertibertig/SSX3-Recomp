@@ -98,6 +98,54 @@ else()
     set_target_properties(${PROJECT_NAME} PROPERTIES ENABLE_EXPORTS ON)
 endif()
 
+# ── Vulkan render back end (src/render, docs/vulkan-backend.md) ──
+#
+# Vulkan-Headers and volk are pinned submodules under third_party/, so no
+# Vulkan SDK is needed: volk loads libvulkan / vulkan-1.dll at run time.
+# POSIX only for now -- the window comes from SDL2, which the Windows
+# runtime does not use (a Win32 surface is milestone 4). Selected at run
+# time with SSX3_RENDERER=vulkan.
+option(SSX3_VULKAN "Build the Vulkan render back end" ON)
+if(SSX3_VULKAN AND NOT WIN32)
+    set(SSX3_VK_HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/Vulkan-Headers/include)
+    set(SSX3_VOLK_DIR   ${CMAKE_CURRENT_SOURCE_DIR}/third_party/volk)
+    if(NOT EXISTS ${SSX3_VK_HEADERS}/vulkan/vulkan_core.h OR NOT EXISTS ${SSX3_VOLK_DIR}/volk.c)
+        message(FATAL_ERROR "Vulkan submodules missing: git submodule update --init third_party/Vulkan-Headers third_party/volk "
+                            "(or configure with -DSSX3_VULKAN=OFF)")
+    endif()
+    add_library(ssx3_volk STATIC ${SSX3_VOLK_DIR}/volk.c)
+    target_include_directories(ssx3_volk PUBLIC ${SSX3_VOLK_DIR} ${SSX3_VK_HEADERS})
+    target_compile_definitions(ssx3_volk PUBLIC VK_NO_PROTOTYPES)
+    target_link_libraries(ssx3_volk PRIVATE ${CMAKE_DL_LIBS})
+
+    # Shaders: GLSL -> SPIR-V as C initialiser lists, included by vk_backend.c.
+    find_program(SSX3_GLSLC glslc REQUIRED)
+    set(SSX3_SHADER_OUT ${CMAKE_CURRENT_BINARY_DIR}/shaders)
+    set(SSX3_SHADER_INCS)
+    foreach(sh nv2a.vert nv2a.frag)
+        add_custom_command(
+            OUTPUT  ${SSX3_SHADER_OUT}/${sh}.inc
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${SSX3_SHADER_OUT}
+            COMMAND ${SSX3_GLSLC} --target-env=vulkan1.3 -O -mfmt=c
+                    ${CMAKE_CURRENT_SOURCE_DIR}/src/render/shaders/${sh}
+                    -o ${SSX3_SHADER_OUT}/${sh}.inc
+            DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/render/shaders/${sh}
+            COMMENT "glslc ${sh}")
+        list(APPEND SSX3_SHADER_INCS ${SSX3_SHADER_OUT}/${sh}.inc)
+    endforeach()
+    add_custom_target(ssx3_shaders DEPENDS ${SSX3_SHADER_INCS})
+    add_dependencies(${PROJECT_NAME} ssx3_shaders)
+
+    find_package(SDL2 REQUIRED)
+    target_sources(${PROJECT_NAME} PRIVATE src/render/vk_backend.c)
+    target_include_directories(${PROJECT_NAME} PRIVATE ${SSX3_SHADER_OUT})
+    target_include_directories(${PROJECT_NAME} PRIVATE
+        ${XBOXRECOMP_DIR}/src/kernel     # nv2a_backend.h
+        ${XBOXRECOMP_DIR}/src/input)     # keyboard_sdl.h
+    target_link_libraries(${PROJECT_NAME} PRIVATE ssx3_volk SDL2::SDL2)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE SSX3_HAVE_VULKAN=1)
+endif()
+
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     # Guest memory is read and written through differently typed pointers
     # (MEM8/16/32, floats, structs) at the same addresses. MSVC never assumes

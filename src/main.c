@@ -62,6 +62,10 @@
 /* xboxrecomp runtime headers */
 #include <xbox/xboxrecomp.h>
 
+#if defined(SSX3_HAVE_VULKAN)
+#include "render/vk_backend.h"
+#endif
+
 /*
  * If xboxrecomp.h is not an umbrella header in your setup, include
  * the individual headers directly:
@@ -558,6 +562,19 @@ static int boot_and_run(void)
         if (*movies != before)
             printf("Boot movies: mask 0x%X -> 0x%X\n", before, *movies);
     }
+
+    /* Step 5b'': Render back end.
+     *
+     * SSX3_RENDERER=vulkan hands the executor's decoded draws to the GPU
+     * (src/render/vk_backend.c) instead of its CPU rasteriser; the back end
+     * opens its own window. Default (unset / "cpu"): the CPU rasteriser. */
+#if defined(SSX3_HAVE_VULKAN)
+    {
+        const char *renderer = getenv("SSX3_RENDERER");
+        if (renderer && strcmp(renderer, "vulkan") == 0)
+            ssx3_vk_register();
+    }
+#endif
 
     /* Step 5c: USB controllers (pads).
      *

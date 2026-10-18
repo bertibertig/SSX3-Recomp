@@ -1,10 +1,18 @@
 # Local patches for the xboxrecomp submodule
 
-The submodule (`xboxrecomp/`, v0.14.0) is not committed in modified form. Our own changes live here as a patch and
-are applied after a fresh checkout / submodule update:
+The submodule (`xboxrecomp/`, v0.14.0) is not committed in modified form. Our own changes live here as a patch.
+`scripts/build.sh`, `build_win.sh` and `run_pipeline.sh` apply it automatically (`apply_runtime_patches` in
+`scripts/_common.sh`): skipped when already applied, applied on a fresh clone / after a submodule update, a warning
+when the submodule has other local edits (runtime work in progress). By hand:
 
 ```bash
 git -C xboxrecomp apply ../patches/xboxrecomp/0001-linux-x86_64-mmio-traps-casefold-mingw-oldnames.patch
+```
+
+After changing the runtime, re-export the patch so the change is kept:
+
+```bash
+git -C xboxrecomp diff -- . ':!tools/linux' > patches/xboxrecomp/0001-linux-x86_64-mmio-traps-casefold-mingw-oldnames.patch
 ```
 
 All of them are candidates for an upstream PR to sp00nznet/xboxrecomp.

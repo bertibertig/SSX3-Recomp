@@ -6,7 +6,7 @@
 #   (names = apply Ghidra names from scripts/ghidra.sh; runs automatically with "all" once the export exists)
 # Intermediate results go to xboxrecomp/tools/*/output/ (git ignores the dirty submodule).
 source "$(dirname "$0")/_common.sh"
-use_venv; need_xbe
+use_venv; need_xbe; apply_runtime_patches
 STEP="${1:-all}"
 cd "$TOOLKIT"
 run() { echo; echo "=== $* ==="; "$@"; }

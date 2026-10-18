@@ -11,6 +11,8 @@
 #   RECOMP_FB_WINDOW=1      framebuffer window (SDL2) – set automatically for SSX3_RENDERER=cpu
 #   SSX3_VK_DUMP=<prefix> / RECOMP_FB_DUMP=<prefix>   BMP frame dumps (Vulkan / CPU) for comparisons
 #   RECOMP_PB_SCAN=1 / RECOMP_PB_EXEC=1   analyse / execute the NV2A pushbuffer
+#   SSX3_PAD_TRACE=1        log every controller button change (pads: README "Controllers")
+#   RECOMP_USB_PADS=2       more emulated pads on the USB bus (split screen), default 1
 source "$(dirname "$0")/_common.sh"
 [ -x "$ROOT/build/ssx3_recomp" ] || { echo "No build. First run: scripts/build.sh" >&2; exit 1; }
 cd "$ROOT"

@@ -589,6 +589,12 @@ static int boot_and_run(void)
         xbox_OhciInit();
     }
 
+    /* Step 5d: Host game controllers (src/input/ssx3_pad.c): XInput pads and
+     * anything SDL maps as a game controller, hotplugged, one per Xbox port.
+     * Logs what it found; the first pad report would also do this lazily. */
+    if (getenv("RECOMP_USB"))
+        xbox_InputInit();
+
     /* Step 6: Initialize stack */
     g_esp = XBOX_STACK_TOP;
 

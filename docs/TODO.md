@@ -69,5 +69,20 @@ Order follows `CLAUDE.md` / `xboxrecomp/docs/GETTING_STARTED.md`. Details and fi
       picks the language (probably the Xbox dashboard language via `XGetLanguage` / `ExQueryNonVolatileSetting` – verify in the
       disassembly), then expose it as a host option (e.g. `SSX3_LANGUAGE=en|fr|de|es`, later in a launcher/settings menu).
 
+- [x] **Controllers (XInput / Xbox-style).** `src/input/ssx3_pad.c`: SDL2 GameController on POSIX, XInput on Windows,
+      hotplug, one pad per Xbox port, LB/RB = White/Black, `SSX3_PAD_TRACE=1`, `scripts/test_pad.sh` (virtual pad).
+- [ ] **PlayStation controllers** (DualShock 4, DualSense): already work positionally through SDL (Cross = A, Circle = B,
+      Square = X, Triangle = Y) – verify on hardware; extra binds for touchpad click/Share; light bar; rumble hints for
+      the HIDAPI PS4/PS5 drivers; PlayStation button glyphs in the HUD (game draws Xbox prompts).
+- [ ] **Switch controllers** (Pro Controller, Joy-Con pair, 8BitDo in Switch/D-input mode): SDL2 maps Nintendo pads
+      *by label* by default (`SDL_HINT_GAMECONTROLLER_USE_BUTTON_LABELS`), so A/B and X/Y sit swapped compared to an
+      Xbox pad – decide positional vs. label (an option), single Joy-Con, test each 8BitDo mode.
+- [ ] **Rebinding.** The binding table `s_bind` in `ssx3_pad.c` is data already: load it from a config file
+      (e.g. `config/input.ini`, `white = lb`), per port, then a menu in a launcher/settings screen; deadzone and trigger
+      threshold options. First check whether the game's own `config\input*.map` allows rebinding in-game.
+- [ ] **Rumble.** `xbox_InputSetState()` is implemented, but the emulated USB pad (`xboxrecomp/src/usb/ohci.c`) only
+      counts the game's OUT reports on endpoint 2 instead of forwarding them – needs a runtime patch.
+- [ ] **Split screen**: test `RECOMP_USB_PADS=2` with two pads; maybe make it the default.
+
 ## Open
 - Which XBE is the base? `default.xbe` = original + region/media patch + 1-byte code patch (see notes.md).

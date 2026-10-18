@@ -247,3 +247,15 @@ _(date – what was done, what was found, next step)_
     `sub_00177F80`, eax=0xE0220701, Xbox VA 0xE0220705 – garbage pointer, not investigated yet.
   - New: `[VK] first flip / first frame with draws at X s (flip N)` log line, Vulkan dumps named by flip number,
     `SSX3_VK_NO_RC=1` (ignore the combiner extension, for comparisons).
+- 2026-10-18 – **Game controllers.** The runtime's SDL controller backend (`xboxrecomp/src/input/xinput_device.c`) never
+  opened a pad: nothing calls `xbox_InputInit()`, and it only scanned once, at init (no hotplug). Black/White also sat
+  on LB/RB, the opposite of its own README and xemu. Replaced in our build by `src/input/ssx3_pad.c` (CMake swaps the
+  source of the `xbox_input` target, submodule untouched): host pad → modern layout (`HostPad`) → binding table
+  `s_bind` → Xbox pad. SDL: rescan every 250 ms under `SDL_LockJoysticks` (the window thread pumps events, the
+  USB thread reads), lowest free port per new pad, pads keep their port until unplugged. Windows: XInput through the
+  same table. `main.c` calls `xbox_InputInit()` after `xbox_OhciInit()` (logs the pads found).
+  - Verified: `scripts/test_pad.sh` (SDL virtual Xbox 360 pad: hotplug, map, packet numbers) passes; a real
+    8BitDo Ultimate 2C (2dc8:310a, SDL type Xbox One/Series) is found at boot (`PAD: port 1 <- …`) and the game
+    enumerates the USB pad as before. MinGW compile of the XInput branch clean. Not yet verified: playing with the
+    pad in the menus/race (needs someone pressing buttons – use `SSX3_PAD_TRACE=1`).
+  - Multiple pads on the emulated bus: `RECOMP_USB_PADS=1..4` (runtime, default 1).

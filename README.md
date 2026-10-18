@@ -27,6 +27,30 @@ scripts/build.sh                                  # CMake build
 The first start is expected to crash – that is where the iterative work begins
 (see `xboxrecomp/docs/GETTING_STARTED.md`, steps 7–10).
 
+## Controllers
+
+Any XInput-style pad works on Linux and Windows: Xbox 360 / One / Series controllers, 8BitDo pads in
+X-input mode, and anything else SDL2 knows as a game controller (on Windows: XInput). Pads can be
+plugged in or switched on at any time; each takes the lowest free Xbox port (`PAD: port 1 <- "…"` in
+the log). The keyboard keeps working on port 1 alongside a pad (`RECOMP_KEYBOARD=1`, on in `run.sh`).
+
+| Your pad | Xbox (Controller S) |
+|---|---|
+| A / B / X / Y | A / B / X / Y |
+| LB / RB | White / Black |
+| LT / RT | Left / right trigger (analog) |
+| Start (Menu) / Back (View) | Start / Back |
+| Sticks, stick clicks, D-pad | Same |
+
+- `SSX3_PAD_TRACE=1` prints every button change per port – handy to check a new controller.
+- `RECOMP_USB_PADS=2` (up to 4) puts more emulated pads on the bus, for split screen; default 1.
+- `config/gamecontrollerdb.txt` (or `SSX3_PAD_DB=<file>`) adds SDL mappings for unknown pads
+  ([SDL_GameControllerDB](https://github.com/mdqinc/SDL_GameControllerDB) format).
+- `scripts/test_pad.sh` checks hotplug and the map with a virtual pad, no hardware needed.
+
+Code: `src/input/ssx3_pad.c` (replaces the runtime's `xinput_device.c`). Open: PlayStation/Switch
+specifics, rebinding, rumble – see `docs/TODO.md`.
+
 ## Working with Claude Code
 
 Start `claude` in the repo root: `CLAUDE.md` explains the goal, layout, workflow and rules.

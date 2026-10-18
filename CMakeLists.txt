@@ -35,6 +35,15 @@ set(XBOXRECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/xboxrecomp" CACHE PATH
 # and provides the 'xboxrecomp' umbrella target to link against.
 add_subdirectory(${XBOXRECOMP_DIR} ${CMAKE_BINARY_DIR}/xboxrecomp)
 
+# Host game controllers: our src/input/ssx3_pad.c replaces the runtime's
+# xinput_device.c in its xbox_input library (same API, xinput_xbox.h), so the
+# submodule stays unmodified. Adds hotplug, the binding table and the
+# Black/White fix -- see the file's header.
+get_target_property(SSX3_INPUT_SOURCES xbox_input SOURCES)
+list(REMOVE_ITEM SSX3_INPUT_SOURCES xinput_device.c)
+set_property(TARGET xbox_input PROPERTY SOURCES
+    ${SSX3_INPUT_SOURCES} ${CMAKE_CURRENT_SOURCE_DIR}/src/input/ssx3_pad.c)
+
 # ── Recompiled game executable ──────────────────────────────────
 
 # Collect generated recompiled code.

@@ -1,12 +1,12 @@
 # reference/
 
-Lokale, flache Lese-Kopien fremder Projekte (per `.gitignore` nicht Teil dieses Repos).
-Anlegen/aktualisieren mit `scripts/fetch_references.sh`.
+Local, shallow read-only copies of third-party projects (not part of this repo, via `.gitignore`).
+Create/update with `scripts/fetch_references.sh`.
 
-| Ordner | Projekt | Nutzen |
+| Folder | Project | Use |
 |---|---|---|
-| SSX-Tricky-PC | MatiasRiveraC/SSX-Tricky-PC | xboxrecomp-Port von SSX Tricky (Xbox) inkl. RE-Notizen in docs/notes/ |
-| OpenTricky | GiZcesi/OpenTricky | Fortsetzung mit verbessertem D3D11-Renderer, Launcher, Ultrawide |
-| ssx3-ps2-decomp | ssxdecomp/ssx3 | Matching-Decomp SSX3 (PS2, NTSC-U) als Namens-/Struktur-Referenz |
+| SSX-Tricky-PC | MatiasRiveraC/SSX-Tricky-PC | xboxrecomp port of SSX Tricky (Xbox) incl. RE notes in docs/notes/ |
+| OpenTricky | GiZcesi/OpenTricky | Continuation with improved D3D11 renderer, launcher, ultrawide |
+| ssx3-ps2-decomp | ssxdecomp/ssx3 | Matching decomp of SSX3 (PS2, NTSC-U) as a name/struct reference |
 
-Lizenzen beachten (OpenTricky: GPL-3.0-only; xboxrecomp: MIT; xemu-Teile: LGPL-2.1+).
+Mind the licenses (OpenTricky: GPL-3.0-only; xboxrecomp: MIT; xemu parts: LGPL-2.1+).

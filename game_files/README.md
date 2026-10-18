@@ -1,8 +1,8 @@
 # game_files/
 
-Hier liegt der **entpackte Inhalt deiner eigenen SSX 3 Xbox-Disc** (`default.xbe`, Daten-Archive, Videos …).
-Der Inhalt dieses Ordners ist per `.gitignore` ausgeschlossen und darf nie in das Repo.
+This holds the **extracted contents of your own SSX 3 Xbox disc** (`default.xbe`, data archives, videos …).
+The contents of this folder are excluded via `.gitignore` and must never go into the repo.
 
-    scripts/extract_iso.sh "/pfad/zu/SSX 3 (Xbox).iso"
+    scripts/extract_iso.sh "/path/to/SSX 3 (Xbox).iso"
 
-Benötigt `extract-xiso` oder `xdvdfs`.
+Requires `extract-xiso` or `xdvdfs`.

@@ -1,51 +1,51 @@
 # SSX3-Recomp
 
-Experimentelle **statische Recompilation von SSX 3 (Original-Xbox)** zu einem nativen x86-64-PC-Programm,
-auf Basis von [xboxrecomp](https://github.com/sp00nznet/xboxrecomp) (als Git-Submodul unter `xboxrecomp/`).
+Experimental **static recompilation of SSX 3 (original Xbox)** into a native x86-64 PC program,
+based on [xboxrecomp](https://github.com/sp00nznet/xboxrecomp) (as a Git submodule under `xboxrecomp/`).
 
-> Dieses Repo enthält **keinen Spielcode und keine Spieldaten**. Du brauchst dein eigenes, legal erworbenes
-> SSX-3-Xbox-Disc-Image. Der C-Code wird lokal aus deiner `default.xbe` erzeugt und nie committet.
+> This repo contains **no game code and no game data**. You need your own, legally obtained
+> SSX 3 Xbox disc image. The C code is generated locally from your `default.xbe` and never committed.
 
-Status: Setup vorbereitet, Pipeline noch nicht ausgeführt. Siehe `docs/notes.md`.
+Status: setup prepared, pipeline not run yet. See `docs/notes.md`.
 
-## Schnellstart
+## Quick start
 
 ```bash
-git clone --recurse-submodules <dieses-repo>     # bzw. lokal: git submodule update --init --recursive
+git clone --recurse-submodules <this-repo>       # or locally: git submodule update --init --recursive
 cd SSX3-Recomp
 
-scripts/setup.sh                                  # Python-venv + capstone, Tool-Check
-bash xboxrecomp/tools/linux/install_deps.sh       # nur Linux: SDL2, libepoxy, OpenSSL, ffmpeg (sudo)
+scripts/setup.sh                                  # Python venv + capstone, tool check
+bash xboxrecomp/tools/linux/install_deps.sh       # Linux only: SDL2, libepoxy, OpenSSL, ffmpeg (sudo)
 
-scripts/extract_iso.sh "/pfad/zu/SSX 3 (Xbox).iso"   # -> game_files/default.xbe
-scripts/run_pipeline.sh parse                     # Entry Point etc. -> src/main.c + docs/notes.md
+scripts/extract_iso.sh "/path/to/SSX 3 (Xbox).iso"   # -> game_files/default.xbe
+scripts/run_pipeline.sh parse                     # entry point etc. -> src/main.c + docs/notes.md
 scripts/run_pipeline.sh                           # disasm, func_id, abi, recomp -> src/recomp/gen/
-scripts/doctor.sh                                 # Bring-up-Bericht
-scripts/build.sh                                  # CMake-Build
+scripts/doctor.sh                                 # bring-up report
+scripts/build.sh                                  # CMake build
 ```
 
-Der erste Start stürzt erwartungsgemäß ab – ab da beginnt die iterative Arbeit
-(siehe `xboxrecomp/docs/GETTING_STARTED.md`, Schritt 7–10).
+The first start is expected to crash – that is where the iterative work begins
+(see `xboxrecomp/docs/GETTING_STARTED.md`, steps 7–10).
 
-## Mit Claude Code arbeiten
+## Working with Claude Code
 
-Im Repo-Wurzelverzeichnis `claude` starten: `CLAUDE.md` erklärt Ziel, Layout, Workflow und Regeln.
-Gute erste Aufträge:
+Start `claude` in the repo root: `CLAUDE.md` explains the goal, layout, workflow and rules.
+Good first tasks:
 
-1. „Führe Setup und Pipeline-Schritt `parse` aus und trage die XBE-Werte in `src/main.c` und `docs/notes.md` ein.“
-2. „Vergleiche `reference/OpenTricky/xboxrecomp` mit `xboxrecomp/` und liste, welche Port-Änderungen upstream noch fehlen.“
-3. „Führe die komplette Pipeline aus, dann `scripts/doctor.sh`, und fasse die größten Lücken zusammen.“
+1. "Run setup and the pipeline step `parse`, and fill the XBE values into `src/main.c` and `docs/notes.md`."
+2. "Compare `reference/OpenTricky/xboxrecomp` with `xboxrecomp/` and list which port changes are still missing upstream."
+3. "Run the complete pipeline, then `scripts/doctor.sh`, and summarise the biggest gaps."
 
 ## VS Code
 
-Ordner öffnen (`code .`) und die empfohlenen Erweiterungen installieren. Unter *Terminal → Run Task* gibt es die
-Pipeline-Schritte als Tasks. Der generierte Code in `src/recomp/gen/` ist von Suche und File-Watcher ausgenommen (sehr groß).
+Open the folder (`code .`) and install the recommended extensions. Under *Terminal → Run Task* the
+pipeline steps are available as tasks. The generated code in `src/recomp/gen/` is excluded from search and the file watcher (very large).
 
-## Referenzen
+## References
 
 - xboxrecomp: https://github.com/sp00nznet/xboxrecomp
-- SSX Tricky PC (Xbox-Recomp des Vorgängers): https://github.com/MatiasRiveraC/SSX-Tricky-PC
+- SSX Tricky PC (Xbox recomp of the predecessor): https://github.com/MatiasRiveraC/SSX-Tricky-PC
 - OpenTricky: https://github.com/GiZcesi/OpenTricky
-- SSX3 PS2 Decomp: https://github.com/ssxdecomp/ssx3 · GameCube: https://github.com/ssxdecomp/ssx3_gc
+- SSX3 PS2 decomp: https://github.com/ssxdecomp/ssx3 · GameCube: https://github.com/ssxdecomp/ssx3_gc
 
-Lizenz der eigenen Dateien: noch festzulegen (xboxrecomp: MIT; wenn Code aus OpenTricky übernommen wird: GPL-3.0-only beachten).
+License of our own files: still to be decided (xboxrecomp: MIT; if code from OpenTricky is adopted: observe GPL-3.0-only).

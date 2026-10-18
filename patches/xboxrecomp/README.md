@@ -1,39 +1,39 @@
-# Lokale Patches für das xboxrecomp-Submodul
+# Local patches for the xboxrecomp submodule
 
-Das Submodul (`xboxrecomp/`, v0.14.0) wird nicht committet verändert. Eigene Änderungen liegen hier als Patch und
-werden nach einem frischen Checkout / Submodul-Update angewendet:
+The submodule (`xboxrecomp/`, v0.14.0) is not committed in modified form. Our own changes live here as a patch and
+are applied after a fresh checkout / submodule update:
 
 ```bash
 git -C xboxrecomp apply ../patches/xboxrecomp/0001-linux-x86_64-mmio-traps-casefold-mingw-oldnames.patch
 ```
 
-Alle Kandidaten für einen Upstream-PR an sp00nznet/xboxrecomp.
+All of them are candidates for an upstream PR to sp00nznet/xboxrecomp.
 
-## 0001 – Linux x86-64: Trapped MMIO, Groß/Klein-Schreibung, MinGW-Old-Names
-- `src/platform/mmio_decode.h`: x86-64-Decoder nicht mehr auf `_WIN32` beschränkt. Kontext abstrahiert
-  (`mmio_ctx_t`, `MMIO_CTX_PC`, `MMIO_CTX_EFLAGS`, `mmio_ctx_reg`): Win32 `CONTEXT` bzw. Linux `ucontext_t.gregs[REG_*]`.
-  Decoder-Logik unverändert.
-- `src/apu/apu_mmio_hook.c`: APU-MMIO-Hook auch auf Linux x86-64, neuer Einstieg `apu_hook_handle_mmio_posix`.
-- `src/kernel/xbox_memory_layout.c`: `xbox_PosixMmioFault` und AC'97-Bus-Master-Schreibtrap auf Linux x86-64
-  (bisher nur arm64) – ohne das stürzt XDK-DirectSound mit `RECOMP_AC97_READY=1` beim ersten APU-Register ab.
-- `src/usb/ohci.c`: OHCI-Trap auf Linux x86-64 (`OHCI_TRAP_POSIX_X64`).
-- `src/kernel/kernel_path.c`: POSIX-`xbox_translate_path` löst Pfadkomponenten groß/klein-unabhängig auf, wenn der
-  exakte Pfad fehlt (FATX/XDVDFS und Win32 sind case-insensitive; SSX 3 öffnet `intro_dj.mad`, auf der Disc heißt sie
+## 0001 – Linux x86-64: trapped MMIO, case-insensitivity, MinGW old names
+- `src/platform/mmio_decode.h`: x86-64 decoder no longer restricted to `_WIN32`. Context abstracted
+  (`mmio_ctx_t`, `MMIO_CTX_PC`, `MMIO_CTX_EFLAGS`, `mmio_ctx_reg`): Win32 `CONTEXT` or Linux `ucontext_t.gregs[REG_*]`.
+  Decoder logic unchanged.
+- `src/apu/apu_mmio_hook.c`: APU MMIO hook on Linux x86-64 as well, new entry point `apu_hook_handle_mmio_posix`.
+- `src/kernel/xbox_memory_layout.c`: `xbox_PosixMmioFault` and the AC'97 bus-master write trap on Linux x86-64
+  (previously arm64 only) – without this, XDK DirectSound crashes with `RECOMP_AC97_READY=1` on the first APU register.
+- `src/usb/ohci.c`: OHCI trap on Linux x86-64 (`OHCI_TRAP_POSIX_X64`).
+- `src/kernel/kernel_path.c`: POSIX `xbox_translate_path` resolves path components case-insensitively when the
+  exact path is missing (FATX/XDVDFS and Win32 are case-insensitive; SSX 3 opens `intro_dj.mad`, on the disc it is called
   `Intro_DJ.mad`).
-- `tools/recomp/lifter.py`: MSVC-„Old Names“ aus MinGW-`math.h` (`chgsign`, `fpclass`, `finite`, `j0/j1/jn/y0/y1/yn`)
-  in `_FUNC_RESERVED_IDENT` – sonst bricht ein MinGW-Build an Ghidra-Namen wie `fpclass` ab.
+- `tools/recomp/lifter.py`: MSVC "old names" from MinGW `math.h` (`chgsign`, `fpclass`, `finite`, `j0/j1/jn/y0/y1/yn`)
+  in `_FUNC_RESERVED_IDENT` – otherwise a MinGW build breaks on Ghidra names like `fpclass`.
 
-- `src/kernel/nv2a_pb_exec.c`: **deaktivierte Vertex-Attribute** liefern als Vertex-Programm-Eingabe ihren zuletzt per
-  `SET_VERTEX_DATA*` gesetzten Wert (NV2A-/xemu-Verhalten) statt (0,0,0,1). SSX 3 übergibt die Matrix seines
-  2D/FMV-Programms in v8..v15 per `SET_VERTEX_DATA4F_M` – ohne das wurde jedes Vertex auf denselben Punkt transformiert
-  und das Intro-Video als degenerierte Dreiecke verworfen. Dazu `RECOMP_VSH_TRACE_EVERY=<n>` (Stride des VSH-Trace,
-  Default 20000 wie bisher).
+- `src/kernel/nv2a_pb_exec.c`: **disabled vertex attributes** deliver, as vertex-program input, the value last set via
+  `SET_VERTEX_DATA*` (NV2A/xemu behaviour) instead of (0,0,0,1). SSX 3 passes the matrix of its
+  2D/FMV program in v8..v15 via `SET_VERTEX_DATA4F_M` – without this every vertex was transformed to the same point
+  and the intro video was discarded as degenerate triangles. Plus `RECOMP_VSH_TRACE_EVERY=<n>` (stride of the VSH trace,
+  default 20000 as before).
 
-- `src/kernel/nv2a_pb_exec.c`: **Rasterizer-Thread-Pool auch auf POSIX** (pthreads; bisher nur `_WIN32`, Linux renderte
-  einthreadig) – SSX-3-Titelbild 4,4 → 15,4 fps; Pool-Größe wie unter Windows (`RECOMP_RASTER_THREADS`, Default CPUs−4).
-  Dazu die fps-Anzeige des Executors auf Wanduhr (`GetTickCount64`) statt `clock()` (= Prozess-CPU-Zeit unter POSIX,
-  zeigte bei mehreren beschäftigten Threads ein Vielfaches zu wenig fps).
+- `src/kernel/nv2a_pb_exec.c`: **rasteriser thread pool on POSIX too** (pthreads; previously `_WIN32` only, Linux rendered
+  single-threaded) – SSX 3 title screen 4.4 → 15.4 fps; pool size as on Windows (`RECOMP_RASTER_THREADS`, default CPUs−4).
+  Plus the executor's fps display uses wall-clock time (`GetTickCount64`) instead of `clock()` (= process CPU time on POSIX,
+  which showed several times too few fps with multiple busy threads).
 
-Geprüft: Linux-Build + Windows-Cross-Build (MinGW) bauen; eigener Decoder-Test (8 Fälle, ucontext) grün;
-`tools.recomp.test_reserved_idents` grün; SSX 3 erreicht unter Linux denselben Stand wie unter Proton
-(APU/AC'97/DSP-Doorbell/APU-Interrupts, Intro-Videos werden geöffnet).
+Verified: Linux build + Windows cross build (MinGW) compile; own decoder test (8 cases, ucontext) green;
+`tools.recomp.test_reserved_idents` green; SSX 3 on Linux reaches the same state as under Proton
+(APU/AC'97/DSP doorbell/APU interrupts, intro videos are opened).

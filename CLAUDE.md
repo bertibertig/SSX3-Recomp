@@ -1,63 +1,63 @@
-# SSX3-Recomp – Anweisungen für Claude Code
+# SSX3-Recomp – Instructions for Claude Code
 
-Ziel: **SSX 3 (Original-Xbox, 2003)** mit [xboxrecomp](https://github.com/sp00nznet/xboxrecomp)
-statisch nach C recompilieren und als nativen PC-Port (x86-64) lauffähig machen.
-Kein Emulator: der Spielcode wird einmal in C übersetzt, Kernel/GPU/Audio/Input ersetzt die xboxrecomp-Runtime.
+Goal: statically recompile **SSX 3 (original Xbox, 2003)** to C with [xboxrecomp](https://github.com/sp00nznet/xboxrecomp)
+and get it running as a native PC port (x86-64).
+No emulator: the game code is translated to C once; the xboxrecomp runtime replaces kernel/GPU/audio/input.
 
-## Warum die Xbox-Version
-Xbox-Code ist bereits x86 (keine MIPS/PowerPC-Übersetzung nötig). Für den Vorgänger **SSX Tricky (Xbox)** gibt es
-fertige, funktionierende xboxrecomp-Ports – das ist unsere Vorlage (siehe `reference/`).
-PS2 (PS2Recomp: GS/VU1/DMA noch Stubs) und GameCube (DolRecomp: nur CPU) sind deutlich weiter weg.
+## Why the Xbox version
+Xbox code is already x86 (no MIPS/PowerPC translation needed). For the predecessor **SSX Tricky (Xbox)** there are
+finished, working xboxrecomp ports – those are our template (see `reference/`).
+PS2 (PS2Recomp: GS/VU1/DMA still stubs) and GameCube (DolRecomp: CPU only) are much further away.
 
-## Repo-Layout
+## Repo layout
 ```
-xboxrecomp/        Git-Submodul (sp00nznet/xboxrecomp): Python-Pipeline (tools/) + Runtime-Libs (src/). NICHT hier editieren,
-                   Änderungen gehören in src/ (eigener Code) oder werden bewusst als Patch dokumentiert.
-src/main.c         Host-Einstieg (aus templates/new-game). TODO: Konstanten aus xbe_parser eintragen (siehe unten)
-src/recomp_manual.c  Handgeschriebene Overrides / Stubs für Funktionen, die nicht korrekt lifted werden
-src/recomp/gen/    GENERIERTER Code (gitignored, aus eigener XBE) – nie committen, nie von Hand editieren
-config/            Eigene Konfig, z. B. seed_functions.json (Einsprungpunkte, die die statische Analyse nicht sieht)
-game_files/        Entpackte eigene Disc (gitignored): default.xbe + Daten
-reference/         Lokale Lese-Kopien (gitignored): SSX-Tricky-PC, OpenTricky, ssx3-ps2-decomp
-scripts/           setup.sh, extract_iso.sh, run_pipeline.sh, doctor.sh, build.sh, fetch_references.sh, ghidra.sh (Ghidra-Namen/Triage, Linux)
-docs/notes.md      Laufendes Arbeitsprotokoll (Adressen, Funde, Entscheidungen) – hier ständig nachtragen
+xboxrecomp/        Git submodule (sp00nznet/xboxrecomp): Python pipeline (tools/) + runtime libs (src/). Do NOT edit here;
+                   changes belong in src/ (our own code) or are deliberately documented as a patch.
+src/main.c         Host entry point (from templates/new-game). TODO: fill in constants from xbe_parser (see below)
+src/recomp_manual.c  Hand-written overrides / stubs for functions that are not lifted correctly
+src/recomp/gen/    GENERATED code (gitignored, from your own XBE) – never commit, never edit by hand
+config/            Our own config, e.g. seed_functions.json (entry points the static analysis does not see)
+game_files/        Extracted copy of your own disc (gitignored): default.xbe + data
+reference/         Local read-only copies (gitignored): SSX-Tricky-PC, OpenTricky, ssx3-ps2-decomp
+scripts/           setup.sh, extract_iso.sh, run_pipeline.sh, doctor.sh, build.sh, fetch_references.sh, ghidra.sh (Ghidra names/triage, Linux)
+docs/notes.md      Running work log (addresses, findings, decisions) – keep adding to it
 ```
 
-## Workflow (Reihenfolge einhalten)
-1. `scripts/setup.sh` – venv + capstone; Linux-Build-Deps: `bash xboxrecomp/tools/linux/install_deps.sh` (sudo)
+## Workflow (keep this order)
+1. `scripts/setup.sh` – venv + capstone; Linux build deps: `bash xboxrecomp/tools/linux/install_deps.sh` (sudo)
 2. `scripts/extract_iso.sh <SSX3-Xbox.iso>` → `game_files/default.xbe`
-3. `scripts/run_pipeline.sh parse` – XBE-Header: **Entry Point, Basisadresse, Sektionen, Titel-ID, Kernel-Imports in docs/notes.md notieren**
-   und in `src/main.c` (`YOUR_GAME_ENTRY_POINT`, `YOUR_GAME_XBE_PATH`, `YOUR_GAME_DIR`) eintragen.
-4. `scripts/run_pipeline.sh` (alles) – disasm → func_id → **abi_analysis (nie überspringen!)** → recomp (`--split 250`, nicht 1000: RAM/OOM).
-5. `scripts/doctor.sh` – zeigt, was noch ungelöst ist (unresolved ICALLs, Stubs, ABI-Lücken).
-6. `scripts/build.sh` → erster Start **wird abstürzen**. Das ist normal: stderr lesen, ICALL-Trace auswerten,
-   Overrides in `src/recomp_manual.c`, Seeds in `config/`, dann wiederholen.
-Die Anleitung dazu: `xboxrecomp/docs/GETTING_STARTED.md`, Debugging: `xboxrecomp/docs/pipeline/06-debugging.md`,
+3. `scripts/run_pipeline.sh parse` – XBE header: **record entry point, base address, sections, title ID, kernel imports in docs/notes.md**
+   and fill them into `src/main.c` (`YOUR_GAME_ENTRY_POINT`, `YOUR_GAME_XBE_PATH`, `YOUR_GAME_DIR`).
+4. `scripts/run_pipeline.sh` (everything) – disasm → func_id → **abi_analysis (never skip!)** → recomp (`--split 250`, not 1000: RAM/OOM).
+5. `scripts/doctor.sh` – shows what is still unresolved (unresolved ICALLs, stubs, ABI gaps).
+6. `scripts/build.sh` → the first start **will crash**. That is normal: read stderr, evaluate the ICALL trace,
+   add overrides in `src/recomp_manual.c`, seeds in `config/`, then repeat.
+The guides for this: `xboxrecomp/docs/GETTING_STARTED.md`, debugging: `xboxrecomp/docs/pipeline/06-debugging.md`,
 `xboxrecomp/docs/technical/indirect-calls.md`, `lessons-learned.md`.
 
-## Plattform-Hinweis (wichtig)
-- Das Template (`src/main.c`, `CMakeLists.txt`) ist **Windows-first** (WinMain, VEH, D3D11, dbghelp).
-- Die Pipeline (Schritte 2–5) läuft überall (Python + capstone).
-- Linux/macOS: die Runtime baut mit SDL2 + OpenGL 3.3 (`d3d8_gl.c`), laut Doku **weniger vollständig** als D3D11.
-  Für Linux muss `main.c`/CMake angepasst werden – prüfe `xboxrecomp/README.md`, `src/` (win32_compat), und wie
-  `reference/SSX-Tricky-PC/port/` bzw. NFSU2-Linux es lösen, bevor du etwas erfindest.
-- Wenn die Linux-OpenGL-Route hakt: unter Windows (MSYS2 UCRT64 oder VS2022) bauen, wie `reference/*/docs/building.md`.
+## Platform note (important)
+- The template (`src/main.c`, `CMakeLists.txt`) is **Windows-first** (WinMain, VEH, D3D11, dbghelp).
+- The pipeline (steps 2–5) runs anywhere (Python + capstone).
+- Linux/macOS: the runtime builds with SDL2 + OpenGL 3.3 (`d3d8_gl.c`), which according to the docs is **less complete** than D3D11.
+  For Linux, `main.c`/CMake have to be adapted – check `xboxrecomp/README.md`, `src/` (win32_compat), and how
+  `reference/SSX-Tricky-PC/port/` or NFSU2-Linux solve it, before inventing anything.
+- If the Linux OpenGL route gets stuck: build on Windows (MSYS2 UCRT64 or VS2022), as in `reference/*/docs/building.md`.
 
-## Referenzen (zuerst lesen, bevor du etwas neu erfindest)
-- `reference/SSX-Tricky-PC/` (MatiasRiveraC) und `reference/OpenTricky/` (GiZcesi): xboxrecomp-Ports von **SSX Tricky (Xbox)**.
-  Enthalten NV2A→D3D11-Renderer, Register-Combiner/Vertex-Programs als Shader, Kernel/Timer/Audio-Anpassungen,
-  Launcher, Fix-up-Pässe (`port/tools/regen.sh`), `port/src/seeds.json` und **viele RE-Notizen** in `docs/notes/`
-  (Archivformate, XBD/XSH/FFN, Render-System, Boot-Sequenz, Kamera, Scoring …). SSX3 ist ein Nachfolger derselben Firma/Engine-Linie –
-  Ähnlichkeiten sind plausibel, aber **jeweils verifizieren**, nicht annehmen (SSX3 wurde stark neu konzipiert).
-- Diese Ports vendorn xboxrecomp **mit eigenen Änderungen**. Vor dem Übernehmen vergleichen mit dem Upstream-Stand hier
-  (`xboxrecomp/`, v0.14.0, Stand 2026-10-16): vieles könnte inzwischen upstream sein.
-- `reference/ssx3-ps2-decomp/`: Matching-Decomp von **SSX3 PS2 (NTSC-U, SLUS_207.72)** – nützlich für Funktions-/Struktur-Namen
-  und Spiellogik per Querverweis (Strings, Konstanten), nicht als direkt übertragbarer Code.
+## References (read first, before reinventing anything)
+- `reference/SSX-Tricky-PC/` (MatiasRiveraC) and `reference/OpenTricky/` (GiZcesi): xboxrecomp ports of **SSX Tricky (Xbox)**.
+  They contain an NV2A→D3D11 renderer, register combiners/vertex programs as shaders, kernel/timer/audio adjustments,
+  a launcher, fix-up passes (`port/tools/regen.sh`), `port/src/seeds.json` and **lots of RE notes** in `docs/notes/`
+  (archive formats, XBD/XSH/FFN, render system, boot sequence, camera, scoring …). SSX3 is a successor from the same studio/engine line –
+  similarities are plausible, but **verify each one**, don't assume (SSX3 was heavily redesigned).
+- These ports vendor xboxrecomp **with their own changes**. Before adopting anything, compare with the upstream state here
+  (`xboxrecomp/`, v0.14.0, as of 2026-10-16): a lot of it may be upstream by now.
+- `reference/ssx3-ps2-decomp/`: matching decomp of **SSX3 PS2 (NTSC-U, SLUS_207.72)** – useful for function/struct names
+  and game logic via cross-reference (strings, constants), not as directly transferable code.
 
-## Regeln
-- **Keine Spieldaten, keine XBE, keine ISO, keinen generierten Code committen** (alles in .gitignore). Nur eigene Quellen und Tools.
-- Generierten Code in `src/recomp/gen/` nie manuell ändern – Fixes als Override (`recomp_manual.c`), Seed oder Pipeline-Patch.
-- Änderungen an `xboxrecomp/` (Submodul) nur nach Rücksprache; lieber Patch/Override im eigenen Code oder Upstream-PR.
-- Kleine, überprüfbare Schritte: nach jeder Änderung neu generieren/bauen/starten, Ergebnis in `docs/notes.md` festhalten.
-- Wenn Zahlen/Adressen unklar sind: aus `xbe_parser`-Ausgabe oder Disassembly belegen, nichts raten.
-- Der Speicherbedarf beim Kompilieren ist hoch: `--split 250`, `JOBS=` bei wenig RAM reduzieren.
+## Rules
+- **Do not commit game data, XBE, ISO or generated code** (all in .gitignore). Only our own sources and tools.
+- Never edit generated code in `src/recomp/gen/` by hand – fixes go in as an override (`recomp_manual.c`), seed or pipeline patch.
+- Changes to `xboxrecomp/` (submodule) only after asking; prefer a patch/override in our own code or an upstream PR.
+- Small, verifiable steps: after every change regenerate/build/run, and record the result in `docs/notes.md`.
+- If numbers/addresses are unclear: prove them from `xbe_parser` output or the disassembly, never guess.
+- Memory use during compilation is high: `--split 250`, reduce `JOBS=` when RAM is low.

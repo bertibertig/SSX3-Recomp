@@ -1,0 +1,40 @@
+{
+  "files.eol": "\n",
+  "files.insertFinalNewline": true,
+  "editor.formatOnSave": false,
+
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
+  "python.terminal.activateEnvironment": true,
+
+  "cmake.sourceDirectory": "${workspaceFolder}",
+  "cmake.buildDirectory": "${workspaceFolder}/build",
+  "cmake.configureOnOpen": false,
+  "cmake.exportCompileCommandsFile": true,
+  "C_Cpp.default.compileCommands": "${workspaceFolder}/build/compile_commands.json",
+  "C_Cpp.default.cStandard": "c11",
+  "C_Cpp.intelliSenseEngine": "default",
+
+  // Generierter Code ist riesig (hunderte MB): aus Suche, Watcher und IntelliSense heraushalten.
+  "files.watcherExclude": {
+    "**/src/recomp/gen/**": true,
+    "**/reference/**": true,
+    "**/game_files/**": true,
+    "**/build/**": true,
+    "**/.venv/**": true
+  },
+  "search.exclude": {
+    "**/src/recomp/gen": true,
+    "**/reference": true,
+    "**/game_files": true,
+    "**/build": true,
+    "**/.venv": true
+  },
+  "files.exclude": {
+    "**/__pycache__": true
+  },
+  "C_Cpp.files.exclude": {
+    "**/src/recomp/gen/**": true,
+    "**/reference/**": true
+  },
+  "git.ignoreLimitWarning": true
+}

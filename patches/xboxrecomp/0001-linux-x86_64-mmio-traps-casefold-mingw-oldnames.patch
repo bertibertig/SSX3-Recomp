@@ -1,0 +1,615 @@
+diff --git a/src/apu/apu_mmio_hook.c b/src/apu/apu_mmio_hook.c
+index 235140f..c223d57 100644
+--- a/src/apu/apu_mmio_hook.c
++++ b/src/apu/apu_mmio_hook.c
+@@ -3,10 +3,17 @@
+  *
+  * Decodes the faulting instruction with the shared trapped-MMIO decoders
+  * (src/platform/mmio_decode.h on x86-64 under a VEH, mmio_decode_a64.h on
+- * POSIX arm64 under SIGBUS/SIGSEGV) and routes reads/writes through the MCPX
+- * APU register handlers.
++ * POSIX arm64 under SIGBUS/SIGSEGV, and mmio_decode.h again on Linux x86-64
++ * under SIGSEGV) and routes reads/writes through the MCPX APU register
++ * handlers.
+  */
+ 
++/* Linux x86-64: mmio_decode.h reads the ucontext's gregs[REG_*], which glibc
++ * only declares under _GNU_SOURCE -- before the first system header. */
++#if defined(__linux__) && !defined(_GNU_SOURCE)
++#define _GNU_SOURCE
++#endif
++
+ #include "apu.h"
+ #include <stdio.h>
+ #include <stdlib.h>
+@@ -17,11 +24,13 @@
+  * platform's MMIO hook is active, so define it before the #if guard. */
+ MCPXAPUState *g_apu_state = NULL;
+ 
+-/* Windows: a VEH hands over the CONTEXT. POSIX arm64: a SIGBUS/SIGSEGV
+- * handler hands over the ucontext (apu_hook_handle_mmio_posix, at the end).
+- * x86-64 Linux has no trap yet. */
++/* Windows: a VEH hands over the CONTEXT. POSIX: a SIGBUS/SIGSEGV handler
++ * hands over the ucontext (apu_hook_handle_mmio_posix) -- decoded with the
++ * x86-64 decoder on Linux x86-64, and with the A64 one (at the end) on arm64. */
++#if defined(_WIN32) || (defined(__linux__) && defined(__x86_64__))
+ #if defined(_WIN32)
+ #include <windows.h>
++#endif
+ #include "../platform/mmio_decode.h"
+ 
+ /* APU MMIO base in Xbox VA space */
+@@ -69,9 +78,9 @@ static void apu_mmio_wr(void *dev, uint32_t off, uint64_t v, int size)
+     mcpx_apu_mmio_write((MCPXAPUState *)dev, off, v, (unsigned)size);
+ }
+ 
+-static bool apu_decode_and_handle(PCONTEXT ctx, uint32_t mmio_offset, int is_write)
++static bool apu_decode_and_handle(mmio_ctx_t *ctx, uint32_t mmio_offset, int is_write)
+ {
+-    const uint8_t *ip = (const uint8_t *)ctx->Rip;
++    const uint8_t *ip = (const uint8_t *)(uintptr_t)MMIO_CTX_PC(ctx);
+ 
+     (void)is_write;
+     if (!g_apu_state) return false;
+@@ -82,17 +91,18 @@ static bool apu_decode_and_handle(PCONTEXT ctx, uint32_t mmio_offset, int is_wri
+     g_apu_mmio_decode_fail++;
+     if (g_apu_mmio_decode_fail <= 20) {
+         fprintf(stderr, "[APU] MMIO decode fail at RIP=%p offset=0x%X: %02X %02X %02X %02X %02X %02X\n",
+-                (void*)ctx->Rip, mmio_offset, ip[0], ip[1], ip[2], ip[3], ip[4], ip[5]);
++                (void *)(uintptr_t)MMIO_CTX_PC(ctx), mmio_offset, ip[0], ip[1], ip[2], ip[3], ip[4], ip[5]);
+         fflush(stderr);
+     }
+     return false;
+ }
+ 
+ /* ============================================================
+- * Public API (called from VEH in main.c)
++ * Public API (called from VEH in main.c; on Linux x86-64 from the title's
++ * SIGSEGV handler through xbox_PosixMmioFault)
+  * ============================================================ */
+ 
+-bool apu_hook_handle_mmio(PCONTEXT ctx, uintptr_t fault_addr,
++bool apu_hook_handle_mmio(mmio_ctx_t *ctx, uintptr_t fault_addr,
+                           uint32_t fault_xbox_va, int is_write)
+ {
+     uint32_t mmio_offset = fault_xbox_va - APU_MMIO_BASE;
+@@ -118,7 +128,21 @@ bool apu_hook_handle_mmio(PCONTEXT ctx, uintptr_t fault_addr,
+     return ok;
+ }
+ 
+-#endif /* _WIN32 */
++#if !defined(_WIN32)
++/* Linux x86-64: the POSIX entry point the arm64 hook below also provides.
++ * ucv is the handler's ucontext; is_write is advisory (the decoder reads the
++ * opcode). Not async-signal-safe on the failure path (stdio), as on arm64. */
++bool apu_hook_handle_mmio_posix(void *ucv, uintptr_t fault_addr,
++                                uint32_t fault_xbox_va, int is_write)
++{
++    if (!g_apu_state || fault_xbox_va - APU_MMIO_BASE >= APU_MMIO_SIZE)
++        return false;
++    return apu_hook_handle_mmio((mmio_ctx_t *)ucv, fault_addr, fault_xbox_va,
++                                is_write);
++}
++#endif
++
++#endif /* _WIN32 || Linux x86-64 */
+ 
+ #if !defined(_WIN32) && defined(__aarch64__)
+ /* POSIX arm64: the same hook over sigaction + ucontext, with the A64 decoder
+diff --git a/src/kernel/kernel_path.c b/src/kernel/kernel_path.c
+index 37c3621..f4683ec 100644
+--- a/src/kernel/kernel_path.c
++++ b/src/kernel/kernel_path.c
+@@ -645,12 +645,72 @@ translate:
+ #include <sys/types.h>
+ #include <errno.h>
+ #include <fcntl.h>
++#include <dirent.h>
++#include <strings.h>
+ 
+ static char s_game_dir[MAX_PATH];
+ static char s_save_dir[MAX_PATH];
+ static char s_user_dir[MAX_PATH];   /* UDATA/TDATA root: s_save_dir or RECOMP_SAVE_DIR */
+ static BOOL s_initialized = FALSE;
+ 
++/* Xbox file systems are case-insensitive (FATX, and XDVDFS on the disc), and
++ * so is the Win32 backend; a POSIX host file system is not. A title asks for
++ * D:\data\movies\intro_dj.mad and the extracted disc holds Intro_DJ.mad --
++ * SSX 3 does exactly that, and on Linux the intro video was "not found" while
++ * the same build under Proton played it.
++ *
++ * So when the exact host path does not exist, resolve each component after
++ * prefix_len (the game or save directory, which the runtime owns and whose
++ * spelling is right) against its directory, case-insensitively. The first
++ * component with no match ends the walk and the rest is left as given: that
++ * is a file being created, and it keeps the title's spelling. The common
++ * case -- the name already matches -- costs one stat. */
++static void casefold_resolve(char* path, size_t prefix_len)
++{
++    struct stat st;
++    char* comp;
++
++    if (stat(path, &st) == 0 || strlen(path) <= prefix_len)
++        return;
++    comp = path + prefix_len;
++    while (*comp == '/')
++        comp++;
++    while (*comp) {
++        char* slash = strchr(comp, '/');
++        if (slash)
++            *slash = '\0';
++        if (stat(path, &st) != 0) {
++            char* sep = comp - 1;           /* the '/' ending the parent */
++            DIR* d;
++            struct dirent* de;
++            int found = 0;
++
++            *sep = '\0';
++            d = opendir(path[0] ? path : "/");
++            *sep = '/';
++            if (d) {
++                while ((de = readdir(d)) != NULL) {
++                    if (strcasecmp(de->d_name, comp) == 0) {
++                        memcpy(comp, de->d_name, strlen(comp));
++                        found = 1;
++                        break;
++                    }
++                }
++                closedir(d);
++            }
++            if (!found) {
++                if (slash)
++                    *slash = '/';
++                return;
++            }
++        }
++        if (!slash)
++            return;
++        *slash = '/';
++        comp = slash + 1;
++    }
++}
++
+ /* Strip a single trailing '/' (but never the root '/'). */
+ static void strip_trailing_slash(char* s)
+ {
+@@ -868,6 +928,9 @@ translate:
+                 host_path_buf[--n] = '\0';
+         }
+ 
++        casefold_resolve(host_path_buf,
++                         strlen(base_dir) + (sub_dir ? strlen(sub_dir) : 0));
++
+         XBOX_TRACE(XBOX_LOG_PATH, "%s -> %s", xbox_path, host_path_buf);
+         /* As the Win32 backend does: the bridge reads back the host path
+          * the call it just made translated (the missing-file report, the
+diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
+index 1280565..1bc7cde 100644
+--- a/src/kernel/nv2a_pb_exec.c
++++ b/src/kernel/nv2a_pb_exec.c
+@@ -2684,8 +2684,21 @@ static int transform_vertex(uint32_t index, Nv2aVshOutput *out)
+ 
+     if (!batch_uses_program())
+         return ffp_vertex(index, out);
+-    for (a = 0; a < NV2A_VSH_INPUTS; a++)
+-        fetch_attr(&s_gpu.attr[a], index, in[a]);   /* absent: 0,0,0,1 */
++    for (a = 0; a < NV2A_VSH_INPUTS; a++) {
++        const VertexAttr *at = &s_gpu.attr[a];
++        /* A disabled attribute (no size or no stride) is not 0,0,0,1 on the
++         * NV2A: it holds the last value written through SET_VERTEX_DATA*,
++         * the same register state immediate mode builds vertices from (xemu
++         * feeds it as the "inline" value of every disabled input). A program
++         * may read it as a per-draw constant -- SSX 3's 2D/FMV program reads
++         * its matrix from v8..v15, set with SET_VERTEX_DATA4F_M before each
++         * draw; with 0,0,0,1 every vertex transformed to the same point and
++         * the whole intro video drew as degenerate triangles. */
++        if (!at->size || !at->stride)
++            memcpy(in[a], s_gpu.imm_attr[a], sizeof in[a]);
++        else
++            fetch_attr(at, index, in[a]);
++    }
+     if (!nv2a_vsh_run((const float (*)[4])in, out))
+         return 0;
+     /* oPos.w == 0 comes from a program that never divided by w: x, y and z
+@@ -2781,13 +2794,20 @@ static void raster_batch_program(void)
+         /* RECOMP_VSH_TRACE=<n>: print n program batches -- attribute setup,
+          * raw inputs, key constants, and what came out. */
+         static int left = -1;
++        static uint32_t every = 20000;
+         if (left < 0) {
+             const char *t = getenv("RECOMP_VSH_TRACE");
++            const char *e = getenv("RECOMP_VSH_TRACE_EVERY");
+             left = t ? atoi(t) : 0;
++            if (e && strtoul(e, NULL, 0) > 0)
++                every = (uint32_t)strtoul(e, NULL, 0);
+         }
+-        /* Spread out: one every 20000 program batches, so a run that spends
+-         * its first half in menus still traces the 3D scene. */
+-        if (left > 0 && n >= 3 && s_gpu.batches_program % 20000 == 0) {
++        /* Spread out: one every 20000 program batches by default, so a run
++         * that spends its first half in menus still traces the 3D scene.
++         * RECOMP_VSH_TRACE_EVERY=<n> changes the stride -- 1 traces the very
++         * first batches, which is what a title whose first screen already
++         * draws nothing needs. */
++        if (left > 0 && n >= 3 && s_gpu.batches_program % every == 0) {
+             float in[4];
+             left--;
+             fprintf(stderr, "[VTRACE] prim %u n %u idx %u %u %u\n", s_gpu.prim,
+diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
+index 362cefe..8b83f65 100644
+--- a/src/kernel/xbox_memory_layout.c
++++ b/src/kernel/xbox_memory_layout.c
+@@ -655,8 +655,22 @@ static LONG CALLBACK ac97_write_veh(PEXCEPTION_POINTERS ep)
+     return EXCEPTION_CONTINUE_SEARCH;
+ }
+ 
+-#if !defined(_WIN32) && defined(__aarch64__)
++/* POSIX hosts with a decoder for their own stores: arm64 (A64) and Linux
++ * x86-64 (the Win32 x86-64 decoder over the ucontext). */
++#if !defined(_WIN32) && (defined(__aarch64__) || (defined(__linux__) && defined(__x86_64__)))
++#define AC97_POSIX_TRAP 1
++#endif
++
++#if defined(AC97_POSIX_TRAP)
++#if defined(__aarch64__)
+ #include "../platform/mmio_decode_a64.h"
++#define ac97_posix_emulate(uc, off, dev, rd, wr) \
++    mmio_emulate_a64((ucontext_t *)(uc), (off), (dev), (rd), (wr))
++#else
++#include "../platform/mmio_decode.h"
++#define ac97_posix_emulate(uc, off, dev, rd, wr) \
++    mmio_emulate((mmio_ctx_t *)(uc), (off), (dev), (rd), (wr))
++#endif
+ #include <sys/mman.h>
+ static size_t g_ac97_hsize;    /* host page: 16 KB on arm64 Darwin */
+ 
+@@ -672,7 +686,7 @@ static void ac97_posix_wr(void *dev, uint32_t off, uint64_t v, int size)
+     memcpy((char *)dev + off, &v, size > 8 ? 8 : size);
+ }
+ 
+-/* POSIX arm64 half of the AC'97 write trap: the page is PROT_READ, so a
++/* POSIX half of the AC'97 write trap: the page is PROT_READ, so a
+  * write arrives as SIGBUS/SIGSEGV; the title's fault handler reaches this
+  * through xbox_PosixMmioFault before reporting. The store is emulated onto
+  * the page (open for the moment), the controller's reaction applied, and the
+@@ -704,8 +718,8 @@ int xbox_Ac97PosixFault(void *ucv, uintptr_t fault)
+         __atomic_store_n(&g_ac97_posix_lock, 0, __ATOMIC_RELEASE);
+         return 0;
+     }
+-    ok = mmio_emulate_a64((ucontext_t *)ucv, (uint32_t)(fault - (uintptr_t)g_ac97_page),
+-                          g_ac97_page, ac97_posix_rd, ac97_posix_wr);
++    ok = ac97_posix_emulate(ucv, (uint32_t)(fault - (uintptr_t)g_ac97_page),
++                            g_ac97_page, ac97_posix_rd, ac97_posix_wr);
+     if (ok)
+         ac97_clear_reset_bits();
+     mprotect(g_ac97_page, g_ac97_hsize, PROT_READ);
+@@ -723,7 +737,7 @@ static void ac97_arm_write_trap(void)
+ 
+     if (!g_mcpx_memory || g_ac97_page)
+         return;
+-#if !defined(_WIN32) && !defined(__aarch64__)
++#if !defined(_WIN32) && !defined(AC97_POSIX_TRAP)
+     /* No POSIX decoder for this host's stores: a trapped write would be a
+      * fault nothing services. Leave the page writable. */
+     (void)old;
+@@ -732,7 +746,7 @@ static void ac97_arm_write_trap(void)
+     return;
+ #endif
+     g_ac97_page = (char *)g_mcpx_memory + AC97_NABM_OFFSET;
+-#if !defined(_WIN32) && defined(__aarch64__)
++#if defined(AC97_POSIX_TRAP)
+     (void)old;
+     g_ac97_hsize = (size_t)sysconf(_SC_PAGESIZE);
+     if (g_ac97_hsize < AC97_TRAP_BYTES)
+@@ -830,19 +844,20 @@ int xbox_VehMmioFault(void *exception_pointers)
+     return 0;
+ }
+ #else
+-#if defined(__aarch64__)
++#if defined(__aarch64__) || (defined(__linux__) && defined(__x86_64__))
++#define MMIO_POSIX_DECODER 1
+ extern bool apu_hook_handle_mmio_posix(void *ucv, uintptr_t fault_addr,
+                                        uint32_t fault_xbox_va, int is_write);
+ #endif
+ 
+ /* POSIX: call from the title's SIGBUS/SIGSEGV handler (SA_SIGINFO) with its
+  * ucontext_t * and si_addr; on 1, return from the handler and the thread
+- * resumes after the emulated instruction. APU, then AC'97, then OHCI. Only
+- * arm64 hosts have a decoder; elsewhere nothing is trapped and this returns
+- * 0. */
++ * resumes after the emulated instruction. APU, then AC'97, then OHCI. arm64
++ * hosts decode with the A64 decoder, Linux x86-64 with the x86-64 one over
++ * the ucontext; elsewhere nothing is trapped and this returns 0. */
+ int xbox_PosixMmioFault(void *ucv, uintptr_t fault)
+ {
+-#if defined(__aarch64__)
++#if defined(MMIO_POSIX_DECODER)
+     uint32_t va;
+ 
+     if (!mmio_fault_va(fault, &va))
+diff --git a/src/platform/mmio_decode.h b/src/platform/mmio_decode.h
+index 1916156..3c8acff 100644
+--- a/src/platform/mmio_decode.h
++++ b/src/platform/mmio_decode.h
+@@ -16,6 +16,11 @@
+  * Header-only and static inline: one function, one caller per device, and a
+  * library for it would be more build wiring than code.
+  *
++ * Two hosts share it, behind mmio_ctx_t and the MMIO_CTX_* accessors: Win32
++ * (a VEH's CONTEXT) and Linux x86-64 (a SIGSEGV handler's ucontext_t, whose
++ * gregs[] hold the same registers). A Linux translation unit must define
++ * _GNU_SOURCE before its first system header, or glibc hides REG_RIP & co.
++ *
+  * The instructions covered are what the XDK device code actually emits against
+  * registers -- moves both ways, the immediate forms, the zero-extending loads,
+  * and the ALU, read-modify-write and flag-setting forms a poll loop is built
+@@ -32,12 +37,13 @@
+ 
+ #if defined(_WIN32)
+ #include <windows.h>
++#define MMIO_DECODE_X86_64 1
+ 
+-/* Service one register access. dev is passed straight back to the callbacks. */
+-typedef uint64_t (*mmio_read_fn)(void *dev, uint32_t off, int size);
+-typedef void     (*mmio_write_fn)(void *dev, uint32_t off, uint64_t val, int size);
++typedef CONTEXT mmio_ctx_t;
++#define MMIO_CTX_PC(c)     ((c)->Rip)
++#define MMIO_CTX_EFLAGS(c) ((c)->EFlags)
+ 
+-static inline uint64_t *mmio_ctx_reg(PCONTEXT c, int reg)
++static inline uint64_t *mmio_ctx_reg(mmio_ctx_t *c, int reg)
+ {
+     switch (reg & 0xF) {
+     case 0:  return (uint64_t *)&c->Rax;   case 1:  return (uint64_t *)&c->Rcx;
+@@ -51,6 +57,32 @@ static inline uint64_t *mmio_ctx_reg(PCONTEXT c, int reg)
+     default: return NULL;
+     }
+ }
++#elif defined(__linux__) && defined(__x86_64__)
++#include <ucontext.h>
++#define MMIO_DECODE_X86_64 1
++#ifndef REG_RIP
++#error "mmio_decode.h on Linux needs _GNU_SOURCE defined before the first system header"
++#endif
++
++typedef ucontext_t mmio_ctx_t;
++#define MMIO_CTX_PC(c)     ((c)->uc_mcontext.gregs[REG_RIP])
++#define MMIO_CTX_EFLAGS(c) ((c)->uc_mcontext.gregs[REG_EFL])
++
++/* x86 register number (ModRM/REX order) -> gregs[] slot. */
++static inline uint64_t *mmio_ctx_reg(mmio_ctx_t *c, int reg)
++{
++    static const int slot[16] = {
++        REG_RAX, REG_RCX, REG_RDX, REG_RBX, REG_RSP, REG_RBP, REG_RSI, REG_RDI,
++        REG_R8,  REG_R9,  REG_R10, REG_R11, REG_R12, REG_R13, REG_R14, REG_R15,
++    };
++    return (uint64_t *)&c->uc_mcontext.gregs[slot[reg & 0xF]];
++}
++#endif
++
++#if defined(MMIO_DECODE_X86_64)
++/* Service one register access. dev is passed straight back to the callbacks. */
++typedef uint64_t (*mmio_read_fn)(void *dev, uint32_t off, int size);
++typedef void     (*mmio_write_fn)(void *dev, uint32_t off, uint64_t val, int size);
+ 
+ static inline int mmio_modrm_len(const uint8_t *ip, int rex_b)
+ {
+@@ -80,7 +112,7 @@ static inline uint64_t mmio_size_mask(int size)
+ /* a OP b at the given width, with the flags a following jcc reads: ZF, SF, CF
+  * and OF. PF and AF are left alone; nothing branches on them after a register
+  * read. The logical operations clear CF and OF, as the hardware does. */
+-static inline uint64_t mmio_alu(PCONTEXT ctx, int op, uint64_t a, uint64_t b,
++static inline uint64_t mmio_alu(mmio_ctx_t *ctx, int op, uint64_t a, uint64_t b,
+                                 int size)
+ {
+     uint64_t m = mmio_size_mask(size), sign = 1ULL << (size * 8 - 1), r;
+@@ -102,17 +134,17 @@ static inline uint64_t mmio_alu(PCONTEXT ctx, int op, uint64_t a, uint64_t b,
+     case MMIO_ALU_XOR: r = a ^ b; break;
+     default:           r = a & b; break;                /* AND, TEST */
+     }
+-    ctx->EFlags &= ~(0x0001u | 0x0040u | 0x0080u | 0x0800u);
+-    if (cf)       ctx->EFlags |= 0x0001u;               /* CF */
+-    if (r == 0)   ctx->EFlags |= 0x0040u;               /* ZF */
+-    if (r & sign) ctx->EFlags |= 0x0080u;               /* SF */
+-    if (of)       ctx->EFlags |= 0x0800u;               /* OF */
++    MMIO_CTX_EFLAGS(ctx) &= ~(0x0001u | 0x0040u | 0x0080u | 0x0800u);
++    if (cf)       MMIO_CTX_EFLAGS(ctx) |= 0x0001u;               /* CF */
++    if (r == 0)   MMIO_CTX_EFLAGS(ctx) |= 0x0040u;               /* ZF */
++    if (r & sign) MMIO_CTX_EFLAGS(ctx) |= 0x0080u;               /* SF */
++    if (of)       MMIO_CTX_EFLAGS(ctx) |= 0x0800u;               /* OF */
+     return r;
+ }
+ 
+ /* A general register at an operand width. Without a REX prefix, byte
+  * registers 4-7 are AH, CH, DH and BH -- bits 15:8 of registers 0-3. */
+-static inline uint64_t mmio_get_reg(PCONTEXT c, int reg, int size, int has_rex)
++static inline uint64_t mmio_get_reg(mmio_ctx_t *c, int reg, int size, int has_rex)
+ {
+     if (size == 1 && !has_rex && reg >= 4 && reg < 8)
+         return (*mmio_ctx_reg(c, reg - 4) >> 8) & 0xFF;
+@@ -121,7 +153,7 @@ static inline uint64_t mmio_get_reg(PCONTEXT c, int reg, int size, int has_rex)
+ 
+ /* Write with x86-64 width rules: a 32-bit write zeroes bits 63:32, an 8- or
+  * 16-bit write merges into what was there. */
+-static inline void mmio_set_reg(PCONTEXT c, int reg, uint64_t v, int size,
++static inline void mmio_set_reg(mmio_ctx_t *c, int reg, uint64_t v, int size,
+                                 int has_rex)
+ {
+     uint64_t *d;
+@@ -159,10 +191,10 @@ static inline uint64_t mmio_imm(const uint8_t *p, int size, int *len)
+  * once; a memory-destination form reads, then writes (CMP and TEST only
+  * read). ADC/SBB, the rest of F6/F7 (NOT/NEG/MUL/DIV), string moves and
+  * anything else return 0. */
+-static inline int mmio_emulate(PCONTEXT ctx, uint32_t off, void *dev,
++static inline int mmio_emulate(mmio_ctx_t *ctx, uint32_t off, void *dev,
+                                mmio_read_fn rd, mmio_write_fn wr)
+ {
+-    const uint8_t *ip = (const uint8_t *)ctx->Rip;
++    const uint8_t *ip = (const uint8_t *)(uintptr_t)MMIO_CTX_PC(ctx);
+     int prefix = 0, has66 = 0, rex = 0, has_rex = 0;
+     const uint8_t *op;
+     int size, rex_w, rex_r, rex_b, mlen, reg, ilen, alu;
+@@ -207,7 +239,7 @@ static inline int mmio_emulate(PCONTEXT ctx, uint32_t off, void *dev,
+             if (alu != MMIO_ALU_CMP)
+                 wr(dev, off, v, size);
+         }
+-        ctx->Rip += prefix + 1 + mlen;
++        MMIO_CTX_PC(ctx) += prefix + 1 + mlen;
+         return 1;
+     }
+ 
+@@ -217,7 +249,7 @@ static inline int mmio_emulate(PCONTEXT ctx, uint32_t off, void *dev,
+         mlen = mmio_modrm_len(op + 1, rex_b);
+         reg  = ((op[1] >> 3) & 7) | (rex_r ? 8 : 0);
+         wr(dev, off, mmio_get_reg(ctx, reg, size, has_rex), size);
+-        ctx->Rip += prefix + 1 + mlen;
++        MMIO_CTX_PC(ctx) += prefix + 1 + mlen;
+         return 1;
+ 
+     case 0xC6: case 0xC7:                            /* MOV r/m, imm         */
+@@ -225,7 +257,7 @@ static inline int mmio_emulate(PCONTEXT ctx, uint32_t off, void *dev,
+         mlen = mmio_modrm_len(op + 1, rex_b);
+         imm  = mmio_imm(op + 1 + mlen, size, &ilen);
+         wr(dev, off, imm & mmio_size_mask(size), size);
+-        ctx->Rip += prefix + 1 + mlen + ilen;
++        MMIO_CTX_PC(ctx) += prefix + 1 + mlen + ilen;
+         return 1;
+ 
+     case 0x8A: case 0x8B:                            /* MOV r, r/m   (read)  */
+@@ -233,7 +265,7 @@ static inline int mmio_emulate(PCONTEXT ctx, uint32_t off, void *dev,
+         mlen = mmio_modrm_len(op + 1, rex_b);
+         reg  = ((op[1] >> 3) & 7) | (rex_r ? 8 : 0);
+         mmio_set_reg(ctx, reg, rd(dev, off, size), size, has_rex);
+-        ctx->Rip += prefix + 1 + mlen;
++        MMIO_CTX_PC(ctx) += prefix + 1 + mlen;
+         return 1;
+ 
+     case 0x84: case 0x85:                            /* TEST r/m, r          */
+@@ -242,7 +274,7 @@ static inline int mmio_emulate(PCONTEXT ctx, uint32_t off, void *dev,
+         reg  = ((op[1] >> 3) & 7) | (rex_r ? 8 : 0);
+         mmio_alu(ctx, MMIO_ALU_TEST, rd(dev, off, size),
+                  mmio_get_reg(ctx, reg, size, has_rex), size);
+-        ctx->Rip += prefix + 1 + mlen;
++        MMIO_CTX_PC(ctx) += prefix + 1 + mlen;
+         return 1;
+ 
+     case 0x80: case 0x81: case 0x83:                 /* group 1 r/m, imm     */
+@@ -260,7 +292,7 @@ static inline int mmio_emulate(PCONTEXT ctx, uint32_t off, void *dev,
+         v = mmio_alu(ctx, alu, rd(dev, off, size), imm, size);
+         if (alu != MMIO_ALU_CMP)
+             wr(dev, off, v, size);
+-        ctx->Rip += prefix + 1 + mlen + ilen;
++        MMIO_CTX_PC(ctx) += prefix + 1 + mlen + ilen;
+         return 1;
+ 
+     case 0xF6: case 0xF7:                            /* TEST r/m, imm        */
+@@ -270,7 +302,7 @@ static inline int mmio_emulate(PCONTEXT ctx, uint32_t off, void *dev,
+         mlen = mmio_modrm_len(op + 1, rex_b);
+         imm  = mmio_imm(op + 1 + mlen, size, &ilen);
+         mmio_alu(ctx, MMIO_ALU_TEST, rd(dev, off, size), imm, size);
+-        ctx->Rip += prefix + 1 + mlen + ilen;
++        MMIO_CTX_PC(ctx) += prefix + 1 + mlen + ilen;
+         return 1;
+ 
+     case 0x0F:
+@@ -280,7 +312,7 @@ static inline int mmio_emulate(PCONTEXT ctx, uint32_t off, void *dev,
+             reg   = ((op[2] >> 3) & 7) | (rex_r ? 8 : 0);
+             mmio_set_reg(ctx, reg, rd(dev, off, s) & mmio_size_mask(s),
+                          rex_w ? 8 : (has66 ? 2 : 4), 1);
+-            ctx->Rip += prefix + 2 + mlen;
++            MMIO_CTX_PC(ctx) += prefix + 2 + mlen;
+             return 1;
+         }
+         return 0;
+@@ -290,5 +322,5 @@ static inline int mmio_emulate(PCONTEXT ctx, uint32_t off, void *dev,
+     }
+ }
+ 
+-#endif /* _WIN32 */
++#endif /* MMIO_DECODE_X86_64 */
+ #endif /* MMIO_DECODE_H */
+diff --git a/src/usb/ohci.c b/src/usb/ohci.c
+index d45d8bb..92cd7aa 100644
+--- a/src/usb/ohci.c
++++ b/src/usb/ohci.c
+@@ -6,6 +6,11 @@
+  * plus a trace of every register access, because what the driver does after
+  * that decides how the rest gets built.
+  */
++/* Linux x86-64 decodes with mmio_decode.h over the ucontext's gregs[REG_*],
++ * which glibc only declares under _GNU_SOURCE -- before the first header. */
++#if defined(__linux__) && !defined(_GNU_SOURCE)
++#define _GNU_SOURCE
++#endif
+ #include "ohci.h"
+ #include "../platform/mmio_decode.h"
+ #include "../platform/mmio_decode_a64.h"
+@@ -26,6 +31,8 @@
+ #  define OHCI_TRAP_WIN32 1
+ #elif defined(__aarch64__)
+ #  define OHCI_TRAP_POSIX_A64 1
++#elif defined(__linux__) && defined(__x86_64__)
++#  define OHCI_TRAP_POSIX_X64 1   /* x86-64 decoder over the ucontext */
+ #endif
+ 
+ /* The runtime maps guest memory at a fixed host offset. */
+@@ -1286,7 +1293,8 @@ void xbox_OhciInit(void)
+         if ((unsigned)s_npads > s_ndp)
+             s_ndp = (unsigned)s_npads;      /* a port for every pad */
+     }
+-#if !defined(OHCI_TRAP_WIN32) && !defined(OHCI_TRAP_POSIX_A64)
++#if !defined(OHCI_TRAP_WIN32) && !defined(OHCI_TRAP_POSIX_A64) \
++    && !defined(OHCI_TRAP_POSIX_X64)
+     /* No decoder for this host's instructions, so a trapped access could not
+      * be answered. Leave the aperture as plain memory -- the title then sees
+      * no controller, exactly as with RECOMP_USB unset -- and say so. */
+@@ -1362,7 +1370,8 @@ int xbox_OhciOwnsAddress(uint32_t xbox_va)
+     return hc_for(xbox_va) != NULL;
+ }
+ 
+-#if defined(OHCI_TRAP_POSIX_A64) || defined(OHCI_TRAP_WIN32)
++#if defined(OHCI_TRAP_POSIX_A64) || defined(OHCI_TRAP_WIN32) \
++    || defined(OHCI_TRAP_POSIX_X64)
+ /* Both decoders hand over 8-byte accesses whole (ldr/str x or a d register
+  * on A64, a REX.W mov on x86-64); the registers are 32-bit, so an 8-byte
+  * access is two of them. */
+@@ -1403,16 +1412,19 @@ int xbox_OhciHandleMmio(void *ctx, uint32_t xbox_va)
+         fflush(stderr);
+     }
+     return ok;
+-#elif defined(OHCI_TRAP_WIN32)
++#elif defined(OHCI_TRAP_WIN32) || defined(OHCI_TRAP_POSIX_X64)
++    /* Win32: ctx is the VEH's CONTEXT; Linux x86-64: the handler's ucontext.
++     * mmio_ctx_t is whichever of the two this host has. */
+     OhciController *hc = hc_for(xbox_va);
+     int ok;
+ 
+     if (!hc)
+         return 0;
+-    ok = mmio_emulate((PCONTEXT)ctx, xbox_va - hc->base, hc,
++    ok = mmio_emulate((mmio_ctx_t *)ctx, xbox_va - hc->base, hc,
+                       ohci_read_split, ohci_write_split);
+     if (!ok && hc->decode_fail++ < 20) {
+-        const uint8_t *ip = (const uint8_t *)((PCONTEXT)ctx)->Rip;
++        const uint8_t *ip =
++            (const uint8_t *)(uintptr_t)MMIO_CTX_PC((mmio_ctx_t *)ctx);
+         fprintf(stderr, "  [OHCI%d] undecoded access at +0x%03X: "
+                         "%02X %02X %02X %02X %02X %02X\n",
+                 hc->index, xbox_va - hc->base,
+diff --git a/tools/recomp/lifter.py b/tools/recomp/lifter.py
+index baf1834..e5fa79c 100644
+--- a/tools/recomp/lifter.py
++++ b/tools/recomp/lifter.py
+@@ -87,6 +87,12 @@ _FUNC_RESERVED_IDENT = frozenset({
+     "llrint", "llround", "log1p", "log2", "logb", "lrint", "lround",
+     "nan", "nearbyint", "nextafter", "nexttoward", "remainder", "remquo",
+     "rint", "round", "scalbln", "scalbn", "tgamma", "trunc",
++    # <math.h> MSVC "old names" (no leading underscore) that MinGW-w64's
++    # math.h declares unless NO_OLDNAMES/__STRICT_ANSI__: an MSVC-built title
++    # carries its CRT's own `chgsign` and `fpclass`, and Ghidra's FidDb names
++    # them exactly that. glibc and UCRT do not declare these, so only a MinGW
++    # build failed (SSX 3: "conflicting types for 'chgsign'").
++    "chgsign", "finite", "fpclass", "j0", "j1", "jn", "y0", "y1", "yn",
+     # <stdlib.h>
+     "abort", "abs", "atexit", "atof", "atoi", "atol", "bsearch",
+     "calloc", "div", "exit", "free", "getenv", "labs", "ldiv", "malloc",

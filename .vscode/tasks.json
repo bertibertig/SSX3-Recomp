@@ -1,0 +1,21 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    { "label": "Setup (venv + capstone)", "type": "shell", "command": "scripts/setup.sh", "problemMatcher": [] },
+    { "label": "Pipeline: parse XBE", "type": "shell", "command": "scripts/run_pipeline.sh parse", "problemMatcher": [] },
+    { "label": "Pipeline: disasm", "type": "shell", "command": "scripts/run_pipeline.sh disasm", "problemMatcher": [] },
+    { "label": "Pipeline: func_id", "type": "shell", "command": "scripts/run_pipeline.sh funcid", "problemMatcher": [] },
+    { "label": "Pipeline: abi_analysis", "type": "shell", "command": "scripts/run_pipeline.sh abi", "problemMatcher": [] },
+    { "label": "Pipeline: recomp (generate C)", "type": "shell", "command": "scripts/run_pipeline.sh recomp", "problemMatcher": [] },
+    { "label": "Pipeline: alles", "type": "shell", "command": "scripts/run_pipeline.sh", "problemMatcher": [] },
+    { "label": "Doctor (Health-Report)", "type": "shell", "command": "scripts/doctor.sh", "problemMatcher": [] },
+    {
+      "label": "Build (Release)",
+      "type": "shell",
+      "command": "scripts/build.sh",
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": ["$gcc"]
+    },
+    { "label": "Referenz-Repos holen", "type": "shell", "command": "scripts/fetch_references.sh", "problemMatcher": [] }
+  ]
+}

@@ -1,0 +1,4 @@
+[submodule "xboxrecomp"]
+	path = xboxrecomp
+	url = https://github.com/sp00nznet/xboxrecomp.git
+	ignore = dirty

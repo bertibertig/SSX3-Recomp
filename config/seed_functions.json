@@ -1,0 +1,97 @@
+[
+ {
+  "start": "0x0017ACE0",
+  "observed": true,
+  "note": "PsCreateSystemThreadEx StartContext1 observed at runtime; decodes as a function body."
+ },
+ {
+  "start": "0x00181A5E",
+  "observed": true,
+  "note": "PsCreateSystemThreadEx StartContext1 observed at runtime; decodes as a function body."
+ },
+ {
+  "start": "0x0021C1B5",
+  "observed": true,
+  "note": "PsCreateSystemThreadEx StartContext1 observed at runtime; decodes as a function body."
+ },
+ {
+  "start": "0x0025AF68",
+  "observed": true,
+  "note": "Indirect-call target observed at runtime; decodes as a function body."
+ },
+ {
+  "start": "0x0025AF73",
+  "observed": true,
+  "note": "Indirect-call target observed at runtime; decodes as a function body."
+ },
+ {
+  "start": "0x0025EA0D",
+  "observed": true,
+  "note": "Indirect-call target observed at runtime; decodes as a function body."
+ },
+ {
+  "start": "0x0025EA18",
+  "observed": true,
+  "note": "Indirect-call target observed at runtime; decodes as a function body."
+ },
+ {
+  "start": "0x0027AC53",
+  "observed": true,
+  "note": "Indirect-call target observed at runtime; decodes as a function body."
+ },
+ {
+  "start": "0x001AE3B0",
+  "observed": true,
+  "note": "PsCreateSystemThreadEx StartContext1 observed at runtime; decodes as a function body."
+ },
+ {
+  "start": "0x002000E0",
+  "observed": true,
+  "note": "Indirect-call target observed at runtime; decodes as a function body."
+ },
+ {
+  "start": "0x00279960",
+  "observed": true,
+  "note": "Indirect-call target observed at runtime; decodes as a function body."
+ },
+ {
+  "start": "0x0027A16F",
+  "observed": true,
+  "note": "Indirect-call target observed at runtime; decodes as a function body."
+ },
+ {
+  "start": "0x00192280",
+  "observed": true,
+  "note": "PsCreateSystemThreadEx StartContext1 observed at runtime; decodes as a function body."
+ },
+ {
+  "start": "0x00281A82",
+  "observed": true,
+  "note": "Indirect-call target observed at runtime; decodes as a function body."
+ },
+ {
+  "start": "0x0028101D",
+  "observed": true,
+  "note": "Indirect-call target observed at runtime; decodes as a function body."
+ },
+ {
+  "start": "0x0027A9FD",
+  "observed": false,
+  "note": "XPP class-driver callback from the function pointer tables at 0x002797xx-0x002799xx; follows a ret, found statically (same pattern as 0x00281A82/0x0028101D)."
+ },
+ {
+  "start": "0x0027ECEB",
+  "observed": false,
+  "note": "XPP class-driver callback from the function pointer tables at 0x002797xx-0x002799xx; follows a ret, found statically (same pattern as 0x00281A82/0x0028101D)."
+ },
+ {
+  "start": "0x0028106F",
+  "observed": false,
+  "note": "XPP class-driver callback from the function pointer tables at 0x002797xx-0x002799xx; follows a ret, found statically (same pattern as 0x00281A82/0x0028101D)."
+ },
+ {
+  "start": "0x00281463",
+  "observed": false,
+  "note": "XPP class-driver callback from the function pointer tables at 0x002797xx-0x002799xx; follows a ret, found statically (same pattern as 0x00281A82/0x0028101D)."
+ }
+]

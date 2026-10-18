@@ -1,0 +1,5 @@
+# Python-Abhängigkeiten (Pipeline Schritte 2-5)
+capstone>=5
+# Nur für die Fix-up-/Asset-Tools der Referenz-Ports (SSX-Tricky-PC / OpenTricky)
+numpy
+pillow

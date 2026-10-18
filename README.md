@@ -99,13 +99,14 @@ lowest free Xbox port (`PAD: port 1 <- "…"` in the log). The keyboard keeps wo
 | Start (Menu) / Back (View) | Start / Back |
 | Sticks, stick clicks, D-pad | Same |
 
-- `SSX3_PAD_TRACE=1` prints every button change per port – handy to check a new controller.
+- Rumble: the game's force feedback goes to the pad's motors (SDL rumble / XInput vibration).
+- `SSX3_PAD_TRACE=1` prints every button and rumble change per port – handy to check a new controller.
 - `config/gamecontrollerdb.txt` (or `SSX3_PAD_DB=<file>`) adds SDL mappings for unknown pads
   ([SDL_GameControllerDB](https://github.com/mdqinc/SDL_GameControllerDB) format).
 - `scripts/test_pad.sh` checks hotplug and the map with a virtual pad, no hardware needed.
 
 Code: `src/input/ssx3_pad.c` (replaces the runtime's `xinput_device.c`). Open: PlayStation/Switch
-specifics, rebinding, rumble – see [docs/TODO.md](docs/TODO.md).
+specifics, rebinding – see [docs/TODO.md](docs/TODO.md).
 
 ## How it works
 

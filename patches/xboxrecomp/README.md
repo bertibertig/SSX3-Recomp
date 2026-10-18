@@ -66,6 +66,10 @@ All of them are candidates for an upstream PR to sp00nznet/xboxrecomp.
   swizzled/DXT stage keeps the pitch its stage last had (SSX 3's intro video: 640x480 linear), and the Vulkan back end
   took pitch != 0 for "linear" -- after the intro, the title screen sampled the corner of its textures (only the sky
   was left).
+- `src/usb/ohci.c`, `usb_gamepad.c/.h` (`usb_gamepad_output`): **rumble.** The emulated pad's OUT packets were
+  counted and dropped. Output reports (`00 06 <left u16> <right u16>`) now go to `xbox_InputSetState()`, both on
+  interrupt endpoint 2 and as the data stage of a HID SET_REPORT (`21 09`) on the control pipe -- SSX 3 uses the
+  latter only (`out0` grows, `outN` stays 0 in `RECOMP_USB_STATS`).
 
 Verified: Linux build + Windows cross build (MinGW) compile; own decoder test (8 cases, ucontext) green;
 `tools.recomp.test_reserved_idents` green; SSX 3 on Linux reaches the same state as under Proton

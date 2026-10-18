@@ -265,3 +265,13 @@ _(date – what was done, what was found, next step)_
   apply directly (still verify). Windows/MSVC-first, playable to all peaks. License GPL-2.0-or-later: we use findings,
   not code (see CLAUDE.md → References). Its xemu skill wraps a Windows-only PowerShell tool, so not adopted; a Linux
   xemu tool is a TODO. README reworked: current progress, Linux-first (Steam Deck), Windows next, macOS later.
+- 2026-10-18 – **Rumble.** The emulated USB pad dropped every OUT packet. Runtime patch: `usb_gamepad_output()` parses
+  the XID output report (`00 06`, left/low motor u16, right/high motor u16) and calls `xbox_InputSetState()`; ohci.c
+  calls it for endpoint-2 OUT data and for the data stage of HID SET_REPORT (`21 09`) on ep0. SSX 3 sends rumble
+  **only over the control pipe** (`RECOMP_USB_STATS`: out0 grows, outN 0) – an endpoint-2-only fix would have done
+  nothing. Seen in a race: decaying low-motor pulses 65535 → ~20000 → 0, 171 changes in ~30 s of riding.
+  - `ssx3_pad.c`: SDL rumble with the maximum duration (0xFFFF ms), renewed after 30 s while non-zero, nothing sent
+    while the speeds stay the same (the game repeats them; each send is a HID write). `SSX3_PAD_TRACE=1` logs changes.
+  - `scripts/test_pad.sh` checks rumble on the virtual pad. Quirk: under sdl2-compat (2.32.50+) the virtual pad's
+    rumble callback must return non-zero for success (SDL3 bool), real SDL2 wants 0 – the test picks by version.
+  - Not verified: the feel on a real pad (8BitDo was switched off during the test).

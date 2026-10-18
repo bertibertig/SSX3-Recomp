@@ -1294,7 +1294,7 @@ index 1916156..3c8acff 100644
 +#endif /* MMIO_DECODE_X86_64 */
  #endif /* MMIO_DECODE_H */
 diff --git a/src/usb/ohci.c b/src/usb/ohci.c
-index d45d8bb..92cd7aa 100644
+index d45d8bb..cf82955 100644
 --- a/src/usb/ohci.c
 +++ b/src/usb/ohci.c
 @@ -6,6 +6,11 @@
@@ -1318,7 +1318,37 @@ index d45d8bb..92cd7aa 100644
  #endif
  
  /* The runtime maps guest memory at a fixed host offset. */
-@@ -1286,7 +1293,8 @@ void xbox_OhciInit(void)
+@@ -642,18 +649,27 @@ static uint32_t ohci_do_td(OhciController *hc, uint32_t ed0, uint32_t td)
+             moved = n;
+         }
+     } else {
+-        /* OUT: the status stage of an IN control transfer, or rumble. Both
+-         * are accepted and discarded -- but only the control pipe's ends a
++        /* OUT: the status stage of an IN control transfer, or rumble, which
++         * goes on to the host pad (usb_gamepad_output). Only the control
++         * pipe's ends a
+          * control transfer. A rumble packet on endpoint 2 used to clear the
+          * pending setup too, so a force-feedback write landing between a
+          * control request's stages broke that request; Burnout 3 starts its
+          * engine-rev rumble on the Crash countdown and then paused with the
+          * pad unresponsive. */
++        const uint8_t *data = len > 0 ? guest_ptr(cbp, (uint32_t)len) : NULL;
+         moved = len;
+         if (endpoint == 0) {
++            /* A data stage of HID SET_REPORT (21 09) carries an output
++             * report as well: the same rumble packet, sent the other way. */
++            if (data && g_setup_pending
++                    && g_setup.bmRequestType == 0x21 && g_setup.bRequest == 0x09)
++                usb_gamepad_output(pad, data, len);
+             g_setup_pending = 0;
+             s_n_out_ep0++;
+         } else {
++            if (data)
++                usb_gamepad_output(pad, data, len);
+             s_n_out_other++;
+         }
+     }
+@@ -1286,7 +1302,8 @@ void xbox_OhciInit(void)
          if ((unsigned)s_npads > s_ndp)
              s_ndp = (unsigned)s_npads;      /* a port for every pad */
      }
@@ -1328,7 +1358,7 @@ index d45d8bb..92cd7aa 100644
      /* No decoder for this host's instructions, so a trapped access could not
       * be answered. Leave the aperture as plain memory -- the title then sees
       * no controller, exactly as with RECOMP_USB unset -- and say so. */
-@@ -1362,7 +1370,8 @@ int xbox_OhciOwnsAddress(uint32_t xbox_va)
+@@ -1362,7 +1379,8 @@ int xbox_OhciOwnsAddress(uint32_t xbox_va)
      return hc_for(xbox_va) != NULL;
  }
  
@@ -1338,7 +1368,7 @@ index d45d8bb..92cd7aa 100644
  /* Both decoders hand over 8-byte accesses whole (ldr/str x or a d register
   * on A64, a REX.W mov on x86-64); the registers are 32-bit, so an 8-byte
   * access is two of them. */
-@@ -1403,16 +1412,19 @@ int xbox_OhciHandleMmio(void *ctx, uint32_t xbox_va)
+@@ -1403,16 +1421,19 @@ int xbox_OhciHandleMmio(void *ctx, uint32_t xbox_va)
          fflush(stderr);
      }
      return ok;
@@ -1361,6 +1391,44 @@ index d45d8bb..92cd7aa 100644
          fprintf(stderr, "  [OHCI%d] undecoded access at +0x%03X: "
                          "%02X %02X %02X %02X %02X %02X\n",
                  hc->index, xbox_va - hc->base,
+diff --git a/src/usb/usb_gamepad.c b/src/usb/usb_gamepad.c
+index bd00f3f..2313c4d 100644
+--- a/src/usb/usb_gamepad.c
++++ b/src/usb/usb_gamepad.c
+@@ -630,3 +630,16 @@ int usb_gamepad_report(int pad, uint8_t *out, int max)
+     pad_script_apply(pad, out);
+     return 20;
+ }
++
++/* ---- the output report: rumble ----------------------------------------- */
++
++void usb_gamepad_output(int pad, const uint8_t *data, int len)
++{
++    XBOX_VIBRATION v;
++
++    if (len < 6 || data[0] != 0x00 || data[1] < 6)
++        return;
++    v.wLeftMotorSpeed  = (WORD)(data[2] | (data[3] << 8));
++    v.wRightMotorSpeed = (WORD)(data[4] | (data[5] << 8));
++    xbox_InputSetState((DWORD)(pad & 3), &v);
++}
+diff --git a/src/usb/usb_gamepad.h b/src/usb/usb_gamepad.h
+index 18291d7..50e4750 100644
+--- a/src/usb/usb_gamepad.h
++++ b/src/usb/usb_gamepad.h
+@@ -36,6 +36,12 @@ int usb_gamepad_control(int pad, const UsbSetup *setup, uint8_t *out, int max);
+ /* Fill in pad `pad`'s 20-byte input report. Returns the byte count written. */
+ int usb_gamepad_report(int pad, uint8_t *out, int max);
+ 
++/* An output report from the title, on interrupt endpoint 2 or as a
++ * SET_REPORT data stage: 0x00, 6, then the left (low-frequency) and right
++ * (high-frequency) motor speeds as little-endian 16-bit values. Passed on to
++ * the host pad as rumble; anything shorter or of another id is ignored. */
++void usb_gamepad_output(int pad, const uint8_t *data, int len);
++
+ /* The address the host assigned pad `pad` with SET_ADDRESS, 0 until it does,
+  * and whether it has been configured. */
+ uint8_t usb_gamepad_address(int pad);
 diff --git a/tools/recomp/lifter.py b/tools/recomp/lifter.py
 index baf1834..e5fa79c 100644
 --- a/tools/recomp/lifter.py

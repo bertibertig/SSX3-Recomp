@@ -87,8 +87,9 @@ Order follows `CLAUDE.md` / `xboxrecomp/docs/GETTING_STARTED.md`. Details and fi
 - [ ] **Rebinding.** The binding table `s_bind` in `ssx3_pad.c` is data already: load it from a config file
       (e.g. `config/input.ini`, `white = lb`), per port, then a menu in a launcher/settings screen; deadzone and trigger
       threshold options. First check whether the game's own `config\input*.map` allows rebinding in-game.
-- [ ] **Rumble.** `xbox_InputSetState()` is implemented, but the emulated USB pad (`xboxrecomp/src/usb/ohci.c`) only
-      counts the game's OUT reports on endpoint 2 instead of forwarding them – needs a runtime patch.
+- [x] **Rumble.** Runtime patch forwards the game's output reports (SSX 3: HID SET_REPORT on the control pipe) to
+      `xbox_InputSetState()`; SDL rumble held until the game changes it. Seen in a race (`SSX3_PAD_TRACE=1`).
+- [ ] Rumble on a real pad: feel-check with the 8BitDo / an Xbox pad (strength, whether "low" = big motor feels right).
 - [ ] **Split screen**: test `RECOMP_USB_PADS=2` with two pads; maybe make it the default.
 
 ## Open

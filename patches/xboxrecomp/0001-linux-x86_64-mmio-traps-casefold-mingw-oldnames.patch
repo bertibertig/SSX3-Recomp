@@ -184,10 +184,25 @@ index 37c3621..f4683ec 100644
          /* As the Win32 backend does: the bridge reads back the host path
           * the call it just made translated (the missing-file report, the
 diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
-index 1280565..fce997a 100644
+index 1280565..e242052 100644
 --- a/src/kernel/nv2a_pb_exec.c
 +++ b/src/kernel/nv2a_pb_exec.c
-@@ -2463,9 +2463,111 @@ static void xf_rows_parallel(const XfTri *T, XfCount *total)
+@@ -1939,6 +1939,14 @@ static void backend_flush(int textured)
+     batch.count = s_bcount;
+     batch.texture = NULL;
+     batch.state = &rs;
++    /* With register combiners in use, a stage whose SHADER_STAGE_PROGRAM
++     * mode is NONE samples nothing -- whatever texture it still has enabled
++     * is left over from an earlier batch (the CPU path gives it 0,0,0,1, see
++     * rc_stage_fetch). SSX 3 draws its title-screen sky that way: vertex
++     * colours only, stage 0 "on" with the snowflake atlas from the frame
++     * before, and a back end that multiplied by it drew the sky black. */
++    if (s_gpu.rc_seen && !(s_gpu.rc.stage_program & 0x1F))
++        textured = 0;
+     if (textured && s_gpu.texs[0].valid) {
+         tex.offset = s_gpu.texs[0].offset;
+         tex.width  = s_gpu.texs[0].width;
+@@ -2463,9 +2471,111 @@ static void xf_rows_parallel(const XfTri *T, XfCount *total)
      }
  }
  #else
@@ -300,7 +315,7 @@ index 1280565..fce997a 100644
  }
  #endif
  
-@@ -2684,8 +2786,21 @@ static int transform_vertex(uint32_t index, Nv2aVshOutput *out)
+@@ -2684,8 +2794,21 @@ static int transform_vertex(uint32_t index, Nv2aVshOutput *out)
  
      if (!batch_uses_program())
          return ffp_vertex(index, out);
@@ -324,7 +339,7 @@ index 1280565..fce997a 100644
      if (!nv2a_vsh_run((const float (*)[4])in, out))
          return 0;
      /* oPos.w == 0 comes from a program that never divided by w: x, y and z
-@@ -2781,13 +2896,20 @@ static void raster_batch_program(void)
+@@ -2781,13 +2904,20 @@ static void raster_batch_program(void)
          /* RECOMP_VSH_TRACE=<n>: print n program batches -- attribute setup,
           * raw inputs, key constants, and what came out. */
          static int left = -1;
@@ -348,7 +363,7 @@ index 1280565..fce997a 100644
              float in[4];
              left--;
              fprintf(stderr, "[VTRACE] prim %u n %u idx %u %u %u\n", s_gpu.prim,
-@@ -4087,10 +4209,15 @@ void nv2a_pb_exec_report(void)
+@@ -4087,10 +4217,15 @@ void nv2a_pb_exec_report(void)
      int i, j;
  
      {

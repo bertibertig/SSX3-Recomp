@@ -22,6 +22,8 @@
 #include <SDL.h>
 #include <SDL_vulkan.h>
 
+#include <pthread.h>
+#include <sys/resource.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -117,7 +119,8 @@ static struct {
     uint32_t          swap_count;
     VkImage           swap_images[VKB_MAX_SWAP_IMAGES];
     VkSemaphore       sem_render_done[VKB_MAX_SWAP_IMAGES];
-    int               swap_dirty;          /* resized / out of date */
+    volatile int      swap_dirty;          /* resized / out of date (any thread) */
+    int               host_main;           /* window owned by ssx3_vk_host_main */
 
     VkCommandPool     cmd_pool;
     VkCommandBuffer   cmd;
@@ -742,23 +745,27 @@ static int init_vulkan(void)
     VkSemaphoreCreateInfo sci;
     const char *e;
 
-    if (SDL_InitSubSystem(SDL_INIT_VIDEO) != 0) {
-        fprintf(stderr, "  [VK] SDL video: %s\n", SDL_GetError());
-        return 0;
-    }
     if (volkInitialize() != VK_SUCCESS) {
         fprintf(stderr, "  [VK] no Vulkan loader (libvulkan / vulkan-1.dll)\n");
         return 0;
     }
-    V.window = SDL_CreateWindow("SSX 3 (Recomp, Vulkan)",
-                                SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                                1280, 960,
-                                SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_SHOWN);
     if (!V.window) {
-        fprintf(stderr, "  [VK] SDL_CreateWindow: %s\n", SDL_GetError());
-        return 0;
+        /* No ssx3_vk_host_main: open the window here, on the NV2A thread,
+         * which then also pumps its events (from flip). */
+        if (SDL_InitSubSystem(SDL_INIT_VIDEO) != 0) {
+            fprintf(stderr, "  [VK] SDL video: %s\n", SDL_GetError());
+            return 0;
+        }
+        V.window = SDL_CreateWindow("SSX 3 (Recomp, Vulkan)",
+                                    SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+                                    1280, 960,
+                                    SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_SHOWN);
+        if (!V.window) {
+            fprintf(stderr, "  [VK] SDL_CreateWindow: %s\n", SDL_GetError());
+            return 0;
+        }
+        xbox_InputSdlInit();
     }
-    xbox_InputSdlInit();
     if (!create_instance())
         return 0;
     if (!SDL_Vulkan_CreateSurface(V.window, V.instance, &V.wsi)) {
@@ -1020,13 +1027,44 @@ static void begin_rendering(VkbSurface *c, VkbDepth *d)
 
 /* ---- textures ------------------------------------------------------------ */
 
-static uint64_t hash_texels(const uint32_t *p, size_t n)
+extern ptrdiff_t xbox_GetMemoryOffset(void);   /* xbox_memory_layout.h */
+
+/* Hash of the guest bytes a texture lives in, to notice when the title has
+ * rewritten it. Raw memory, not decoded texels: decoding every texture every
+ * frame just to compare it was a third of the NV2A thread's time.
+ *
+ * The exact byte size depends on the format (8/16/32 bpp, DXT, palettes), so
+ * this hashes an upper bound -- pitch*height for linear textures, w*h*4 for
+ * swizzled ones -- clamped to the guest region it lies in. Hashing a little
+ * past the end only risks a spurious re-decode, never a stale texture.
+ * 64-bit multiply-xorshift per 8 bytes: several GB/s, so a frame's worth of
+ * textures costs well under a millisecond. */
+static uint64_t hash_guest_texture(const Nv2aTexture *g)
 {
-    uint64_t h = 0xcbf29ce484222325ull;    /* FNV-1a over 32-bit words */
-    size_t i;
-    for (i = 0; i < n; i++)
-        h = (h ^ p[i]) * 0x100000001b3ull;
-    return h;
+    const uint8_t *mem = (const uint8_t *)xbox_GetMemoryOffset();
+    uint64_t va = g->offset, bytes, limit, h = 0x9E3779B97F4A7C15ull, w;
+    const uint8_t *p;
+    size_t i, n;
+
+    bytes = g->pitch ? (uint64_t)g->pitch * g->height
+                     : (uint64_t)g->width * g->height * 4;
+    if (va >= 0x80000000ull && va < 0x84000000ull)
+        limit = 0x84000000ull - va;            /* contiguous window */
+    else if (va < 0x04000000ull)
+        limit = 0x04000000ull - va;            /* main RAM */
+    else
+        return 0;
+    if (bytes > limit)
+        bytes = limit;
+    p = mem + va;
+    n = (size_t)(bytes / 8);
+    for (i = 0; i < n; i++) {
+        memcpy(&w, p + i * 8, 8);
+        h ^= w;
+        h *= 0xBF58476D1CE4E5B9ull;
+        h ^= h >> 31;
+    }
+    return h | 1;                              /* 0 means "never uploaded" */
 }
 
 static void texture_free(VkbTexture *t)
@@ -1127,6 +1165,12 @@ static VkImageView texture_view(const Nv2aTexture *g)
         t->last_used = V.flips;
         return t->view;
     }
+    h = hash_guest_texture(g);
+    if (t && h && t->hash == h) {              /* unchanged since the upload */
+        t->checked = V.flips;
+        t->last_used = V.flips;
+        return t->view;
+    }
 
     n = (size_t)g->width * g->height;
     if (n > V.decode_cap) {
@@ -1138,7 +1182,8 @@ static VkImageView texture_view(const Nv2aTexture *g)
     }
     if (!nv2a_backend_decode_texture(g, V.decode_buf))
         return NULL;                       /* format the executor cannot decode */
-    h = hash_texels(V.decode_buf, n) | 1;  /* never 0: 0 means "not uploaded" */
+    if (!h)
+        h = 1;                             /* outside guest RAM: upload once */
 
     if (!t) {
         for (i = 0; i < VKB_MAX_TEXTURES; i++) {
@@ -1163,11 +1208,9 @@ static VkImageView texture_view(const Nv2aTexture *g)
         t->offset = g->offset; t->width = g->width; t->height = g->height;
         t->color = g->color;   t->pitch = g->pitch;
     }
-    if (t->hash != h) {
-        if (!texture_upload(t, V.decode_buf))
-            return t->hash ? t->view : NULL;
-        t->hash = h;
-    }
+    if (!texture_upload(t, V.decode_buf))
+        return t->hash ? t->view : NULL;
+    t->hash = h;
     t->checked = V.flips;
     t->last_used = V.flips;
     return t->view;
@@ -1566,6 +1609,14 @@ static void update_title(void)
              (double)(V.flips - V.title_flips) * 1000.0 / (double)(now - V.title_ms),
              V.last_frame_draws);
     SDL_SetWindowTitle(V.window, tb);
+    {
+        /* The same figure in the log every 5 s, for runs nobody watches. */
+        static uint32_t logged;
+        if (now - logged >= 5000) {
+            fprintf(stderr, "  [VK] %s\n", tb + sizeof "SSX 3 (Recomp, Vulkan) | " - 1);
+            logged = now;
+        }
+    }
     V.title_ms = now;
     V.title_flips = V.flips;
 }
@@ -1584,11 +1635,13 @@ static void vkb_flip(void)
 
     if (!ensure_ready())
         return;
-    pump_events();
+    if (!V.host_main) {
+        pump_events();
+        update_title();
+    }
     V.flips++;
     V.last_frame_draws = V.frame_draws;
     V.frame_draws = 0;
-    update_title();
     if (V.swap_dirty) {
         destroy_swapchain();
         if (!create_swapchain())
@@ -1597,11 +1650,24 @@ static void vkb_flip(void)
     if (!ensure_recording())
         return;
 
-    r = vkAcquireNextImageKHR(V.device, V.swapchain, UINT64_MAX, V.sem_acquire,
-                              VK_NULL_HANDLE, &idx);
-    if (r == VK_ERROR_OUT_OF_DATE_KHR) {
-        V.swap_dirty = 1;
-        return;                            /* keep recording; next flip retries */
+    /* Bounded: the NV2A thread must never block on the window (a hidden or
+     * unresponsive window can withhold images indefinitely). Without an image
+     * the frame's work is still submitted, just not shown. */
+    r = vkAcquireNextImageKHR(V.device, V.swapchain, 100000000ull /* 100 ms */,
+                              V.sem_acquire, VK_NULL_HANDLE, &idx);
+    if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) {
+        VkSubmitInfo none;
+        if (r == VK_ERROR_OUT_OF_DATE_KHR)
+            V.swap_dirty = 1;
+        end_rendering();
+        vkEndCommandBuffer(V.cmd);
+        V.recording = 0;
+        memset(&none, 0, sizeof none);
+        none.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        none.commandBufferCount = 1;
+        none.pCommandBuffers = &V.cmd;
+        vkQueueSubmit(V.queue, 1, &none, V.frame_fence);
+        return;
     }
     img = V.swap_images[idx];
     end_rendering();
@@ -1665,6 +1731,107 @@ static void vkb_flip(void)
 }
 
 static const Nv2aBackend s_vk_backend = { vkb_clear, vkb_draw, vkb_flip };
+
+/* ---- the window on the process main thread ------------------------------ */
+
+extern void xbox_InputSetMainPump(int on);    /* src/input/xinput_device.c */
+
+static int (*s_guest_main)(void);
+static int s_guest_rc;
+static Uint32 s_guest_done_event = (Uint32)-1;
+
+static void *guest_thread(void *unused)
+{
+    SDL_Event ev;
+
+    (void)unused;
+    s_guest_rc = s_guest_main();
+    memset(&ev, 0, sizeof ev);
+    ev.type = s_guest_done_event;
+    SDL_PushEvent(&ev);
+    return NULL;
+}
+
+/* The guest's thread, with xbox_HostWindowMain's stack rule: at least the
+ * main thread's and generously more, since lifted code recurses on it. */
+static int start_guest_thread(void)
+{
+    pthread_attr_t attr;
+    pthread_t th;
+    struct rlimit rl;
+    size_t stack = 64u << 20;
+    int rc;
+
+    if (getrlimit(RLIMIT_STACK, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY
+            && rl.rlim_cur > stack)
+        stack = (size_t)rl.rlim_cur;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, stack);
+    rc = pthread_create(&th, &attr, guest_thread, NULL);
+    pthread_attr_destroy(&attr);
+    if (rc != 0)
+        return 0;
+    pthread_detach(th);
+    return 1;
+}
+
+int ssx3_vk_host_main(int (*guest_main)(void))
+{
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_GAMECONTROLLER) != 0) {
+        fprintf(stderr, "  [VK] SDL init: %s; running without a window thread\n",
+                SDL_GetError());
+        return guest_main();
+    }
+    V.window = SDL_CreateWindow("SSX 3 (Recomp, Vulkan) | loading",
+                                SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+                                1280, 960,
+                                SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_SHOWN);
+    s_guest_done_event = SDL_RegisterEvents(1);
+    if (!V.window || s_guest_done_event == (Uint32)-1) {
+        fprintf(stderr, "  [VK] window: %s; running without a window thread\n",
+                SDL_GetError());
+        if (V.window) {
+            SDL_DestroyWindow(V.window);
+            V.window = NULL;
+        }
+        return guest_main();
+    }
+    xbox_InputSetMainPump(1);
+    xbox_InputSdlInit();
+    V.host_main = 1;
+    s_guest_main = guest_main;
+    if (!start_guest_thread()) {
+        fprintf(stderr, "  [VK] cannot start the guest thread\n");
+        V.host_main = 0;
+        xbox_InputSetMainPump(0);
+        return guest_main();
+    }
+    fprintf(stderr, "  [VK] window open; guest runs on its own thread\n");
+
+    /* Pump from the start, through the whole load, so the desktop never sees
+     * an unresponsive window; refresh the FPS title while frames come. */
+    for (;;) {
+        SDL_Event ev;
+        if (SDL_WaitEventTimeout(&ev, 16)) {
+            do {
+                if (ev.type == s_guest_done_event)
+                    return s_guest_rc;
+                if (ev.type == SDL_QUIT) {
+                    fprintf(stderr, "  [VK] window closed\n");
+                    fflush(stderr);
+                    _Exit(0);
+                }
+                if (ev.type == SDL_WINDOWEVENT
+                        && (ev.window.event == SDL_WINDOWEVENT_SIZE_CHANGED
+                            || ev.window.event == SDL_WINDOWEVENT_RESIZED))
+                    V.swap_dirty = 1;
+                xbox_InputSdlEvent(&ev);
+            } while (SDL_PollEvent(&ev));
+        }
+        if (V.flips)
+            update_title();
+    }
+}
 
 int ssx3_vk_register(void)
 {

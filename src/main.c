@@ -745,6 +745,15 @@ int main(int argc, char **argv)
     install_posix_fault_handler();
     if (boot_memory() != 0)
         return 1;
+#if defined(SSX3_HAVE_VULKAN)
+    {
+        /* The Vulkan renderer owns the window: opened here on the main thread,
+         * pumped from the start (the guest runs on its own thread). */
+        const char *renderer = getenv("SSX3_RENDERER");
+        if (renderer && strcmp(renderer, "vulkan") == 0)
+            return ssx3_vk_host_main(boot_and_run);
+    }
+#endif
     return xbox_HostWindowMain(boot_and_run);
 }
 #endif

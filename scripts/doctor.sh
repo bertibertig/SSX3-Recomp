@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Bring-up-Gesundheitsbericht (was ist noch ungelöst?). Optional: Laufzeit-Log als Argument.
+# Bring-up health report (what is still unresolved?). Optional: runtime log as argument.
 #   scripts/doctor.sh [runtime.log]
 source "$(dirname "$0")/_common.sh"
 use_venv

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Richtet die Python-Umgebung für die xboxrecomp-Pipeline ein und prüft Build-Tools.
+# Sets up the Python environment for the xboxrecomp pipeline and checks build tools.
 #   scripts/setup.sh
 source "$(dirname "$0")/_common.sh"
 
 if [ ! -f "$TOOLKIT/CMakeLists.txt" ]; then
-  echo "xboxrecomp-Submodul fehlt, hole es ..."
+  echo "xboxrecomp submodule missing, fetching it ..."
   git -C "$ROOT" submodule update --init --recursive
 fi
 
@@ -17,18 +17,18 @@ python -m pip install -r "$ROOT/requirements.txt"
 python -c "import capstone; print('capstone', capstone.__version__)"
 
 echo
-echo "== Prüfe Werkzeuge =="
+echo "== Checking tools =="
 for t in git python3 cmake gcc; do
-  printf '  %-10s' "$t"; command -v "$t" >/dev/null && echo ok || echo "FEHLT"
+  printf '  %-10s' "$t"; command -v "$t" >/dev/null && echo ok || echo "MISSING"
 done
 printf '  %-10s' "ISO-Extraktor"
 if command -v extract-xiso >/dev/null || command -v xdvdfs >/dev/null; then echo ok
-else echo "FEHLT (extract-xiso oder xdvdfs installieren)"; fi
+else echo "MISSING (install extract-xiso or xdvdfs)"; fi
 
 if [ "$(uname -s)" = "Linux" ]; then
   echo
-  echo "Für den Linux-Build (SDL2/OpenGL/OpenSSL/ffmpeg) einmalig ausführen:"
-  echo "  bash xboxrecomp/tools/linux/install_deps.sh     # braucht sudo"
+  echo "For the Linux build (SDL2/OpenGL/OpenSSL/ffmpeg) run once:"
+  echo "  bash xboxrecomp/tools/linux/install_deps.sh     # needs sudo"
 fi
 echo
-echo "Fertig. Nächster Schritt: scripts/extract_iso.sh <SSX3-Xbox.iso>"
+echo "Done. Next step: scripts/extract_iso.sh <SSX3-Xbox.iso>"

@@ -1,49 +1,49 @@
 #!/usr/bin/env bash
-# Linux-Ersatz für xboxrecomp/tools/ghidra_naming/run_ghidra.sh (das ruft analyzeHeadless.bat,
-# cygpath und `py -3` auf – nur Windows/Git-Bash). Gleiche Schritte, gleiche Ausgabeorte, damit
-# merge_names.py unverändert funktioniert:
+# Linux replacement for xboxrecomp/tools/ghidra_naming/run_ghidra.sh (which calls analyzeHeadless.bat,
+# cygpath and `py -3` – Windows/Git Bash only). Same steps, same output locations, so that
+# merge_names.py works unchanged:
 #   1. extract_for_ghidra.py  → xboxrecomp/tools/ghidra_naming/work/xbe_flat.bin
-#   2. analyzeHeadless: Raw-Import x86:LE:32 @ 0x10000, Auto-Analyse (SetAnalysisOptions.java)
+#   2. analyzeHeadless: raw import x86:LE:32 @ 0x10000, auto-analysis (SetAnalysisOptions.java)
 #   3. ExportXbeNames.py      → xboxrecomp/tools/ghidra_naming/export/{functions,symbols}.json
 #
-# Aufruf:
-#   scripts/ghidra.sh                     # importieren + analysieren + exportieren
-#   scripts/ghidra.sh decompile 4000      # zusätzlich bis zu 4000 Funktionen dekompilieren
-#   scripts/ghidra.sh decompile all       # alles (Stunden)
-#   scripts/ghidra.sh merge [--apply]     # merge_names.py (→ ghidra_names.json, --apply schreibt functions.json)
-#   scripts/ghidra.sh classify 0x22E280 … # ClassifyTargets.java gegen das fertige Projekt (read-only)
-#   scripts/ghidra.sh dump [out.txt]      # DumpEntries.java (alle Ghidra-Funktionseinträge)
-#   scripts/ghidra.sh xrefs 0x24B0D8 …    # scripts/ghidra/XrefsTo.java: alle Referenzen (read-only)
-#   scripts/ghidra.sh decomp 0x23A840 …   # scripts/ghidra/Decomp.java: Funktion dekompilieren (read-only)
+# Usage:
+#   scripts/ghidra.sh                     # import + analyse + export
+#   scripts/ghidra.sh decompile 4000      # additionally decompile up to 4000 functions
+#   scripts/ghidra.sh decompile all       # everything (hours)
+#   scripts/ghidra.sh merge [--apply]     # merge_names.py (→ ghidra_names.json, --apply writes functions.json)
+#   scripts/ghidra.sh classify 0x22E280 … # ClassifyTargets.java against the finished project (read-only)
+#   scripts/ghidra.sh dump [out.txt]      # DumpEntries.java (all Ghidra function entries)
+#   scripts/ghidra.sh xrefs 0x24B0D8 …    # scripts/ghidra/XrefsTo.java: all references (read-only)
+#   scripts/ghidra.sh decomp 0x23A840 …   # scripts/ghidra/Decomp.java: decompile a function (read-only)
 #
 # Env:
 #   GHIDRA_HOME   (Default: /opt/ghidra)
-#   IMPORT=0      Programm ist schon im Projekt → nur öffnen
-#   ANALYZE=0     keine Auto-Analyse, nur (erneut) exportieren / weiter dekompilieren
-#   GHIDRA_HEADLESS_MAXMEM  Heap für Ghidra (Default hier: 8G; Ghidra selbst: 2G)
+#   IMPORT=0      program is already in the project → just open it
+#   ANALYZE=0     no auto-analysis, only (re-)export / continue decompiling
+#   GHIDRA_HEADLESS_MAXMEM  heap for Ghidra (default here: 8G; Ghidra itself: 2G)
 #
-# Die Ghidra-Skripte von xboxrecomp sind Jython (`@runtime Jython`). Ghidra 12 liefert Jython nur noch
-# als Extension-Zip aus; fehlt sie, wird sie einmalig nach ~/.config/ghidra/<version>/Extensions entpackt.
+# xboxrecomp's Ghidra scripts are Jython (`@runtime Jython`). Ghidra 12 only ships Jython
+# as an extension zip; if it is missing, it is unpacked once into ~/.config/ghidra/<version>/Extensions.
 source "$(dirname "$0")/_common.sh"
 use_venv; need_xbe
 
 GHIDRA_HOME="${GHIDRA_HOME:-/opt/ghidra}"
 HEADLESS="$GHIDRA_HOME/support/analyzeHeadless"
-[ -x "$HEADLESS" ] || { echo "analyzeHeadless nicht gefunden: $HEADLESS (GHIDRA_HOME setzen)" >&2; exit 1; }
+[ -x "$HEADLESS" ] || { echo "analyzeHeadless not found: $HEADLESS (set GHIDRA_HOME)" >&2; exit 1; }
 export GHIDRA_HEADLESS_MAXMEM="${GHIDRA_HEADLESS_MAXMEM:-8G}"
 
 GN="$TOOLKIT/tools/ghidra_naming"
 WORK="$GN/work"
 PROJ_DIR="$WORK/ghidra_project"
-PROJ_NAME="$(basename "$(dirname "$XBE")")"   # wie run_ghidra.sh: Ordner der XBE (= game_files)
+PROJ_NAME="$(basename "$(dirname "$XBE")")"   # like run_ghidra.sh: folder of the XBE (= game_files)
 EXPORT_DIR="$GN/export"
 SCRIPT_DIR="$GN/ghidra_scripts"
-OWN_SCRIPT_DIR="$ROOT/scripts/ghidra"   # eigene Abfrage-Skripte
+OWN_SCRIPT_DIR="$ROOT/scripts/ghidra"   # our own query scripts
 FLAT="$WORK/xbe_flat.bin"
 PROG_NAME="xbe_flat.bin"
 LOG="$WORK/analyze.log"
 
-# --- Jython-Extension sicherstellen ------------------------------------------------------------
+# --- Ensure the Jython extension --------------------------------------------------------------
 ensure_jython() {
   local props ver rel user_ext zip
   props="$GHIDRA_HOME/Ghidra/application.properties"
@@ -52,15 +52,15 @@ ensure_jython() {
   user_ext="${XDG_CONFIG_HOME:-$HOME/.config}/ghidra/ghidra_${ver}_${rel}/Extensions"
   [ -d "$GHIDRA_HOME/Ghidra/Extensions/Jython" ] || [ -d "$user_ext/Jython" ] && return 0
   zip="$(ls "$GHIDRA_HOME"/Extensions/Ghidra/ghidra_*_Jython.zip 2>/dev/null | head -1)"
-  [ -n "$zip" ] || { echo "Jython-Extension fehlt und kein Zip unter $GHIDRA_HOME/Extensions/Ghidra" >&2; exit 1; }
-  echo "Installiere Jython-Extension: $(basename "$zip") → $user_ext"
+  [ -n "$zip" ] || { echo "Jython extension missing and no zip under $GHIDRA_HOME/Extensions/Ghidra" >&2; exit 1; }
+  echo "Installing Jython extension: $(basename "$zip") → $user_ext"
   mkdir -p "$user_ext"
   unzip -q "$zip" -d "$user_ext"
 }
 
-# Gemeinsame Argumente für Abfragen gegen das fertige Projekt (ändert nichts am Projekt).
+# Shared arguments for queries against the finished project (does not modify the project).
 query() {
-  [ -d "$PROJ_DIR/$PROJ_NAME.rep" ] || { echo "Kein Ghidra-Projekt – erst: scripts/ghidra.sh" >&2; exit 1; }
+  [ -d "$PROJ_DIR/$PROJ_NAME.rep" ] || { echo "No Ghidra project – first run: scripts/ghidra.sh" >&2; exit 1; }
   "$HEADLESS" "$PROJ_DIR" "$PROJ_NAME" -process "$PROG_NAME" -readOnly -noanalysis \
     -scriptPath "$SCRIPT_DIR;$OWN_SCRIPT_DIR" -postScript "$@"
 }
@@ -86,14 +86,14 @@ echo "=== Ghidra-Naming: $XBE"
 echo "    GHIDRA_HOME=$GHIDRA_HOME  Heap=$GHIDRA_HEADLESS_MAXMEM  Decompile=$DO_DECOMPILE ($DECOMP_LIMIT, ${DECOMP_TIMEOUT}s)"
 echo "    Log: $LOG"
 
-echo "[1/2] Flat-Image aus der XBE bauen ..."
+echo "[1/2] Building flat image from the XBE ..."
 python "$GN/extract_for_ghidra.py" "$XBE" --out-dir "$WORK"
 
-# Kein "-analysisTimeoutPerFile 0": headless heißt das 0 Sekunden, nicht unbegrenzt.
+# No "-analysisTimeoutPerFile 0": in headless mode that means 0 seconds, not unlimited.
 EXPORT_ARGS=(-scriptPath "$SCRIPT_DIR"
              -postScript ExportXbeNames.py "$EXPORT_DIR" "$DO_DECOMPILE" "$DECOMP_LIMIT" "$DECOMP_TIMEOUT")
 if [ "$IMPORT" = "1" ]; then
-  echo "[2/2] Import + Analyse + Export (dauert) ..."
+  echo "[2/2] Import + analysis + export (takes a while) ..."
   NOANALYSIS=(); [ "$ANALYZE" = "0" ] && NOANALYSIS=(-noanalysis)
   "$HEADLESS" "$PROJ_DIR" "$PROJ_NAME" \
     -import "$FLAT" \
@@ -106,7 +106,7 @@ if [ "$IMPORT" = "1" ]; then
     -preScript SetAnalysisOptions.java \
     "${EXPORT_ARGS[@]}" 2>&1 | tee "$LOG"
 else
-  echo "[2/2] Vorhandenes Programm öffnen + Export ..."
+  echo "[2/2] Opening existing program + export ..."
   NOANALYSIS=(-noanalysis); [ "$ANALYZE" = "1" ] && NOANALYSIS=()
   "$HEADLESS" "$PROJ_DIR" "$PROJ_NAME" \
     -process "$PROG_NAME" \
@@ -114,9 +114,9 @@ else
     "${EXPORT_ARGS[@]}" 2>&1 | tee "$LOG"
 fi
 
-# Headless meldet Skriptfehler nur im Log, Exit-Code bleibt 0.
+# Headless only reports script errors in the log; the exit code stays 0.
 if grep -qE 'ERROR .*(Script|script)|Traceback' "$LOG"; then
-  echo "WARNUNG: Fehler im Log – siehe $LOG" >&2
+  echo "WARNING: errors in the log – see $LOG" >&2
 fi
-echo "=== Fertig. Exporte:"; ls -la "$EXPORT_DIR"
-echo "Nächster Schritt: scripts/ghidra.sh merge   (dann: scripts/ghidra.sh merge --apply + recomp neu)"
+echo "=== Done. Exports:"; ls -la "$EXPORT_DIR"
+echo "Next step: scripts/ghidra.sh merge   (then: scripts/ghidra.sh merge --apply + re-run recomp)"

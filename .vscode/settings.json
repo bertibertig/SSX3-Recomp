@@ -14,7 +14,7 @@
   "C_Cpp.default.cStandard": "c11",
   "C_Cpp.intelliSenseEngine": "default",
 
-  // Generierter Code ist riesig (hunderte MB): aus Suche, Watcher und IntelliSense heraushalten.
+  // Generated code is huge (hundreds of MB): keep it out of search, watcher and IntelliSense.
   "files.watcherExclude": {
     "**/src/recomp/gen/**": true,
     "**/reference/**": true,

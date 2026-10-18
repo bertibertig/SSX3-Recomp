@@ -1,4 +1,4 @@
-/* Test für den x86-64-MMIO-Decoder über Linux-ucontext (xboxrecomp-Patch 0001).
+/* Test for the x86-64 MMIO decoder via Linux ucontext (xboxrecomp patch 0001).
  *   gcc -Wall -Wextra -Ixboxrecomp/src/platform tests/mmio_decode_x64_linux.c -o /tmp/t && /tmp/t   */
 #define _GNU_SOURCE
 #include <stdio.h>

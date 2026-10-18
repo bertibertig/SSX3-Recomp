@@ -1,4 +1,4 @@
-# --- Spieldaten: eigene, legal erworbene Kopie. NIE committen ---
+# --- Game data: your own, legally obtained copy. NEVER commit ---
 game_files/*
 !game_files/README.md
 game/
@@ -7,11 +7,11 @@ game/
 *.xiso
 *.xbx
 
-# --- Generierter Code (aus der eigenen XBE erzeugt, enthält übersetzten Spielcode) ---
+# --- Generated code (produced from your own XBE, contains translated game code) ---
 src/recomp/gen/*
 !src/recomp/gen/.gitkeep
 
-# --- Referenz-Repos (lokale Kopien, nur zum Lesen) ---
+# --- Reference repos (local copies, read-only) ---
 reference/*
 !reference/README.md
 
@@ -38,7 +38,7 @@ compile_commands.json
 *.log
 stderr*.txt
 
-# --- IDE / OS (.vscode/ wird bewusst mit eingecheckt) ---
+# --- IDE / OS (.vscode/ is checked in on purpose) ---
 .idea/
 .vs/
 *.swp
@@ -47,5 +47,5 @@ stderr*.txt
 Thumbs.db
 logs/
 
-# Laufzeit-Log der xboxrecomp-Runtime (wird ins Arbeitsverzeichnis geschrieben)
+# Runtime log of the xboxrecomp runtime (written to the working directory)
 xbox_kernel.log

@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
-# Startet build-win/ssx3_recomp.exe unter Proton (umu-run), Arbeitsverzeichnis = Repo-Root (Pfade in src/main.c).
-#   scripts/run_win.sh                       # Ausgabe danach auf die Konsole
-#   scripts/run_win.sh > logs/win.log        # zum Auswerten
-# Muster: xboxrecomp/tests/proton_run.sh – über eine Batch-Datei, weil umu-run stderr des Programms verwirft.
+# Starts build-win/ssx3_recomp.exe under Proton (umu-run), working directory = repo root (paths in src/main.c).
+#   scripts/run_win.sh                       # output to the console afterwards
+#   scripts/run_win.sh > logs/win.log        # for analysis
+# Pattern: xboxrecomp/tests/proton_run.sh – via a batch file, because umu-run discards the program's stderr.
 # Env: WINEPREFIX (Default ~/.local/share/ssx3-recomp-proton), PROTONPATH (Default GE-Proton),
-#      RUN_TIMEOUT (Sekunden, Default 60), RECOMP_* werden durchgereicht (Defaults wie scripts/run.sh).
+#      RUN_TIMEOUT (seconds, default 60), RECOMP_* are passed through (defaults as in scripts/run.sh).
 source "$(dirname "$0")/_common.sh"
 EXE="$ROOT/build-win/ssx3_recomp.exe"
-[ -f "$EXE" ] || { echo "Kein Windows-Build. Erst: scripts/build_win.sh" >&2; exit 1; }
-command -v umu-run >/dev/null || { echo "umu-run fehlt" >&2; exit 1; }
+[ -f "$EXE" ] || { echo "No Windows build. First run: scripts/build_win.sh" >&2; exit 1; }
+command -v umu-run >/dev/null || { echo "umu-run missing" >&2; exit 1; }
 export RECOMP_TITLE_KEVENTS="${RECOMP_TITLE_KEVENTS:-1}"
 export RECOMP_VBLANK="${RECOMP_VBLANK:-1}"
 export RECOMP_AC97_READY="${RECOMP_AC97_READY:-1}"
-export RECOMP_PB_EXEC="${RECOMP_PB_EXEC:-1}"          # Pushbuffer ausführen (CPU-Rasterizer) – sonst kein Bild
-export RECOMP_FB_WINDOW="${RECOMP_FB_WINDOW:-1}"      # Fenster mit dem Framebuffer
-export RECOMP_USB="${RECOMP_USB:-1}"                  # emulierter USB-Controller (XPP/OHCI)
-export RECOMP_KEYBOARD="${RECOMP_KEYBOARD:-1}"        # Tastatur = Controller 1 (Enter=Start, Z=A, X=B, Pfeile=D-Pad …)
-export SSX3_SKIP_LOGOS="${SSX3_SKIP_LOGOS:-1}"        # EA-BIG- und THX-Logo überspringen (SSX3_SKIP_INTRO=1: auch das Intro)
+export RECOMP_PB_EXEC="${RECOMP_PB_EXEC:-1}"          # execute the pushbuffer (CPU rasteriser) – otherwise no picture
+export RECOMP_FB_WINDOW="${RECOMP_FB_WINDOW:-1}"      # window showing the framebuffer
+export RECOMP_USB="${RECOMP_USB:-1}"                  # emulated USB controller (XPP/OHCI)
+export RECOMP_KEYBOARD="${RECOMP_KEYBOARD:-1}"        # keyboard = controller 1 (Enter=Start, Z=A, X=B, arrows=D-pad …)
+export SSX3_SKIP_LOGOS="${SSX3_SKIP_LOGOS:-1}"        # skip the EA BIG and THX logos (SSX3_SKIP_INTRO=1: the intro too)
 
 winpath() { local p="Z:$1"; echo "${p//\//\\}"; }
 out=$(mktemp "${TMPDIR:-/tmp}/ssx3_win.XXXXXX"); bat=$out.cmd
@@ -32,7 +32,7 @@ cd "$ROOT"
 env "${envs[@]}" timeout -k 10 -s INT "${RUN_TIMEOUT:-60}" umu-run cmd.exe /c "$(winpath "$bat")" </dev/null >"$out.umu" 2>&1 || true
 rc=$(grep -a -o 'run_win_exit=[0-9-]*' "$out" 2>/dev/null | tail -1 | cut -d= -f2 || true)
 grep -a -v 'run_win_exit=' "$out" 2>/dev/null || true
-[ -n "$rc" ] || { echo "--- umu-run-Ausgabe (letzte 15 Zeilen):"; tail -15 "$out.umu"; }
+[ -n "$rc" ] || { echo "--- umu-run output (last 15 lines):"; tail -15 "$out.umu"; }
 rm -f "$out" "$bat" "$out.umu"
-[ -n "$rc" ] || { echo "run_win: kein Exit-Code (Timeout oder Start fehlgeschlagen)"; exit 125; }
+[ -n "$rc" ] || { echo "run_win: no exit code (timeout or start failed)"; exit 125; }
 echo "run_win: exit $rc"

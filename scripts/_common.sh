@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Gemeinsame Pfade für alle Skripte (wird mit `source` geladen).
+# Shared paths for all scripts (loaded with `source`).
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TOOLKIT="$ROOT/xboxrecomp"
@@ -7,21 +7,21 @@ GAME_FILES="$ROOT/game_files"
 GEN_DIR="$ROOT/src/recomp/gen"
 VENV="$ROOT/.venv"
 XBE="$GAME_FILES/default.xbe"
-export PYTHONUNBUFFERED=1   # Logs live schreiben (sonst puffert Python bei Umleitung in Dateien)
+export PYTHONUNBUFFERED=1   # write logs live (otherwise Python buffers when redirected to files)
 
 use_venv() {
   if [ -f "$VENV/bin/activate" ]; then
     # shellcheck disable=SC1091
     . "$VENV/bin/activate"
   else
-    echo "Kein .venv gefunden – bitte zuerst: scripts/setup.sh" >&2
+    echo "No .venv found – run first: scripts/setup.sh" >&2
     exit 1
   fi
 }
 
 need_xbe() {
   if [ ! -f "$XBE" ]; then
-    echo "game_files/default.xbe fehlt. Erst: scripts/extract_iso.sh <SSX3-Xbox.iso>" >&2
+    echo "game_files/default.xbe missing. First run: scripts/extract_iso.sh <SSX3-Xbox.iso>" >&2
     exit 1
   fi
 }

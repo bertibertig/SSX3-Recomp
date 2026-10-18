@@ -55,6 +55,8 @@ The guides for this: `xboxrecomp/docs/GETTING_STARTED.md`, debugging: `xboxrecom
   and game logic via cross-reference (strings, constants), not as directly transferable code.
 
 ## Rules
+- **The repo language is English**: docs, code comments, script output, commit messages, `docs/notes.md` entries –
+  even though the game itself supports English, French, German and Spanish.
 - **Do not commit game data, XBE, ISO or generated code** (all in .gitignore). Only our own sources and tools.
 - Never edit generated code in `src/recomp/gen/` by hand – fixes go in as an override (`recomp_manual.c`), seed or pipeline patch.
 - Changes to `xboxrecomp/` (submodule) only after asking; prefer a patch/override in our own code or an upstream PR.

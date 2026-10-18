@@ -38,6 +38,16 @@ All of them are candidates for an upstream PR to sp00nznet/xboxrecomp.
   texture when that stage's `SHADER_STAGE_PROGRAM` is not NONE (as the CPU path does in `rc_stage_fetch`) – otherwise
   the Vulkan back end multiplied SSX 3's title-screen sky by the left-over snowflake atlas and drew it black.
 
+- `src/kernel/nv2a_backend.h`, `nv2a_pb_exec.c` (`backend_flush`, `backend_from_xf`): **back-end interface
+  extension** `Nv2aBatchExt` for transformed batches: register-combiner state, all four texture stages, and per vertex
+  the four texture-coordinate sets, specular colour and fog factor (what the CPU path feeds `nv2a_rc_eval`).
+  `Nv2aBatch.ext` is NULL for screen-space batches; a back end that ignores it draws as before.
+- `src/kernel/nv2a_pb_exec.c` (`raster_batch_program`): **post-transform vertex cache** per batch (direct mapped by
+  index, off while CXT_WRITE is on): indexed meshes ran the vertex program once per index instead of once per vertex.
+- `src/kernel/nv2a_vsh_interp.c`: **programs are decoded once** (fields extracted into `VshIns` when the program or
+  start slot changes) instead of per source per vertex, and sources an op does not read are not fetched.
+  New `nv2a_vsh_cxt_write_enabled()`. Together with the cache: SSX 3 race 23 → 55–60 fps on the Vulkan back end.
+
 Verified: Linux build + Windows cross build (MinGW) compile; own decoder test (8 cases, ucontext) green;
 `tools.recomp.test_reserved_idents` green; SSX 3 on Linux reaches the same state as under Proton
 (APU/AC'97/DSP doorbell/APU interrupts, intro videos are opened).

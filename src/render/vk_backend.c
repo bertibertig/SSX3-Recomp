@@ -1,8 +1,8 @@
 /*
  * Vulkan render back end: device, window, swapchain, clears, flips
- * (milestone 1) and triangles with texture stage 0, blend, depth, stencil
- * and alpha test (milestone 2). Register combiners: milestone 3
- * (docs/vulkan-backend.md).
+ * (milestone 1), triangles with blend, depth, stencil and alpha test
+ * (milestone 2), register combiners and four texture stages as one
+ * uber-shader (milestone 3). Design: docs/vulkan-backend.md.
  *
  * Threading: every entry point is called on the NV2A poll thread, one at a
  * time (nv2a_backend.h), so this file keeps no locks. Vulkan, the window and
@@ -17,6 +17,7 @@
  *   SSX3_VK_DUMP=<prefix>   write the presented surface as <prefix>NNNNN.bmp
  *   SSX3_VK_DUMP_EVERY=<n>  ... every n-th flip (default 60)
  *   SSX3_VK_GPU=<substr>    pick the physical device whose name contains it
+ *   SSX3_VK_TEXLOG=1        log the first 60 re-decodes of cached textures
  */
 #include "volk.h"
 #include <SDL.h>
@@ -98,8 +99,22 @@ typedef struct {
     float    surface_size[2];
     float    tex_size[2];
     float    z_scale;
-    uint32_t flags;          /* 1 textured | func<<8 | ref<<16 | 1<<31 alpha test */
+    uint32_t flags;          /* 1 textured | 2 combiners | func<<8 | ref<<16
+                              * | 1<<31 alpha test */
 } VkbPush;
+
+/* One batch's register-combiner state, std140, as nv2a.frag's RC block. */
+typedef struct {
+    uint32_t cw[8][4];       /* color_icw, alpha_icw, color_ocw, alpha_ocw */
+    float    c0[8][4], c1[8][4];
+    uint32_t fin[4];         /* final0, final1, control, stage_program */
+    float    fc0[4], fc1[4], fog_color[4];
+    float    tex_scale[4][4];
+    uint32_t misc[4];        /* clip_plane_mode */
+} VkbCombiners;
+
+/* Bindings of the push-descriptor set: four stage samplers, then the UBO. */
+#define VKB_BIND_RC 4
 
 static struct {
     int               failed;              /* init failed: stay inert */
@@ -140,6 +155,9 @@ static struct {
     uint32_t          sampler_keys[VKB_MAX_SAMPLERS];
     uint32_t          nsamplers;
     VkbRing           vring, staging;
+    VkDeviceSize      ubo_align;           /* minUniformBufferOffsetAlignment */
+    VkbCombiners      last_rc;             /* last UBO written this frame ... */
+    VkDeviceSize      last_rc_off;         /* ... and where (~0: none yet) */
     VkbDepth          depths[VKB_MAX_SURFACES];
     VkbTexture        textures[VKB_MAX_TEXTURES];
     VkbTexture        white;               /* bound when a batch is untextured */
@@ -152,6 +170,9 @@ static struct {
     VkbDepth         *rt_depth;
 
     uint32_t          frame_draws;         /* draw() calls since the last flip */
+    uint32_t          stat_decodes;        /* texture decodes since the last log */
+    uint64_t          stat_decode_px;      /* ... and their texels */
+    uint32_t          stat_new;            /* ... of which first sight / cache misses */
     uint32_t          last_frame_draws;
     uint32_t          title_ms, title_flips;   /* window-title FPS counter */
 
@@ -304,6 +325,9 @@ static int pick_gpu(void)
         vkGetPhysicalDeviceProperties(V.gpu, &p);
         fprintf(stderr, "  [VK] GPU: %s (Vulkan %u.%u)\n", p.deviceName,
                 VK_API_VERSION_MAJOR(p.apiVersion), VK_API_VERSION_MINOR(p.apiVersion));
+        V.ubo_align = p.limits.minUniformBufferOffsetAlignment;
+        if (V.ubo_align < 16)
+            V.ubo_align = 16;
     }
     vkGetPhysicalDeviceMemoryProperties(V.gpu, &V.memprops);
     return 1;
@@ -592,14 +616,14 @@ static VkShaderModule shader_module(const uint32_t *code, size_t bytes)
  * the attachment formats and filled polygons. */
 static int create_pipeline(void)
 {
-    VkDescriptorSetLayoutBinding bind;
+    VkDescriptorSetLayoutBinding bind[VKB_BIND_RC + 1];
     VkDescriptorSetLayoutCreateInfo dslci;
     VkPushConstantRange pcr;
     VkPipelineLayoutCreateInfo plci;
     VkShaderModule vs, fs;
     VkPipelineShaderStageCreateInfo stages[2];
-    VkVertexInputBindingDescription vbind;
-    VkVertexInputAttributeDescription vattr[3];
+    VkVertexInputBindingDescription vbind[2];
+    VkVertexInputAttributeDescription vattr[9];
     VkPipelineVertexInputStateCreateInfo vi;
     VkPipelineInputAssemblyStateCreateInfo ia;
     VkPipelineViewportStateCreateInfo vp;
@@ -623,18 +647,23 @@ static int create_pipeline(void)
         VK_DYNAMIC_STATE_STENCIL_REFERENCE,
         VK_DYNAMIC_STATE_COLOR_BLEND_ENABLE_EXT, VK_DYNAMIC_STATE_COLOR_BLEND_EQUATION_EXT,
         VK_DYNAMIC_STATE_COLOR_WRITE_MASK_EXT,
+        VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE,
     };
+    int i;
 
-    memset(&bind, 0, sizeof bind);
-    bind.binding = 0;
-    bind.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    bind.descriptorCount = 1;
-    bind.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    memset(bind, 0, sizeof bind);
+    for (i = 0; i <= VKB_BIND_RC; i++) {
+        bind[i].binding = (uint32_t)i;
+        bind[i].descriptorType = i == VKB_BIND_RC ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
+                                                  : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        bind[i].descriptorCount = 1;
+        bind[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    }
     memset(&dslci, 0, sizeof dslci);
     dslci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     dslci.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
-    dslci.bindingCount = 1;
-    dslci.pBindings = &bind;
+    dslci.bindingCount = VKB_BIND_RC + 1;
+    dslci.pBindings = bind;
     VK_CHECK(vkCreateDescriptorSetLayout(V.device, &dslci, NULL, &V.set_layout));
 
     pcr.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -661,9 +690,14 @@ static int create_pipeline(void)
     stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
     stages[1].module = fs;
 
-    vbind.binding = 0;
-    vbind.stride = sizeof(Nv2aVertex);
-    vbind.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    /* Binding 0: Nv2aVertex. Binding 1: Nv2aVertexExt, its stride dynamic so
+     * a batch without the extension can bind one zeroed element (stride 0). */
+    vbind[0].binding = 0;
+    vbind[0].stride = sizeof(Nv2aVertex);
+    vbind[0].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    vbind[1].binding = 1;
+    vbind[1].stride = sizeof(Nv2aVertexExt);
+    vbind[1].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
     vattr[0].location = 0; vattr[0].binding = 0;
     vattr[0].format = VK_FORMAT_R32G32B32A32_SFLOAT;
     vattr[0].offset = (uint32_t)offsetof(Nv2aVertex, x);
@@ -673,11 +707,22 @@ static int create_pipeline(void)
     vattr[2].location = 2; vattr[2].binding = 0;
     vattr[2].format = VK_FORMAT_R32G32_SFLOAT;
     vattr[2].offset = (uint32_t)offsetof(Nv2aVertex, u);
+    for (i = 0; i < 4; i++) {
+        vattr[3 + i].location = 3 + (uint32_t)i; vattr[3 + i].binding = 1;
+        vattr[3 + i].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+        vattr[3 + i].offset = (uint32_t)(offsetof(Nv2aVertexExt, tex) + i * 16);
+    }
+    vattr[7].location = 7; vattr[7].binding = 1;
+    vattr[7].format = VK_FORMAT_B8G8R8A8_UNORM;
+    vattr[7].offset = (uint32_t)offsetof(Nv2aVertexExt, specular);
+    vattr[8].location = 8; vattr[8].binding = 1;
+    vattr[8].format = VK_FORMAT_R32_SFLOAT;
+    vattr[8].offset = (uint32_t)offsetof(Nv2aVertexExt, fog);
     memset(&vi, 0, sizeof vi);
     vi.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    vi.vertexBindingDescriptionCount = 1;
-    vi.pVertexBindingDescriptions = &vbind;
-    vi.vertexAttributeDescriptionCount = 3;
+    vi.vertexBindingDescriptionCount = 2;
+    vi.pVertexBindingDescriptions = vbind;
+    vi.vertexAttributeDescriptionCount = 9;
     vi.pVertexAttributeDescriptions = vattr;
 
     memset(&ia, 0, sizeof ia);
@@ -774,7 +819,8 @@ static int init_vulkan(void)
     }
     if (!pick_gpu() || !create_device() || !create_swapchain() || !create_pipeline())
         return 0;
-    if (!ring_create(&V.vring, VKB_VERTEX_RING, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)
+    if (!ring_create(&V.vring, VKB_VERTEX_RING,
+                     VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT)
             || !ring_create(&V.staging, VKB_STAGING_RING, VK_BUFFER_USAGE_TRANSFER_SRC_BIT))
         return 0;
 
@@ -837,6 +883,7 @@ static int ensure_recording(void)
     /* The previous frame has retired (fence above): its ring slices are free. */
     V.vring.used = 0;
     V.staging.used = 0;
+    V.last_rc_off = ~(VkDeviceSize)0;
     return 1;
 }
 
@@ -1033,12 +1080,33 @@ extern ptrdiff_t xbox_GetMemoryOffset(void);   /* xbox_memory_layout.h */
  * rewritten it. Raw memory, not decoded texels: decoding every texture every
  * frame just to compare it was a third of the NV2A thread's time.
  *
- * The exact byte size depends on the format (8/16/32 bpp, DXT, palettes), so
- * this hashes an upper bound -- pitch*height for linear textures, w*h*4 for
- * swizzled ones -- clamped to the guest region it lies in. Hashing a little
- * past the end only risks a spurious re-decode, never a stale texture.
- * 64-bit multiply-xorshift per 8 bytes: several GB/s, so a frame's worth of
- * textures costs well under a millisecond. */
+ * Level 0's exact size: an upper bound (w*h*4 for everything swizzled) took
+ * in whatever lies behind a DXT texture, and in a race that is data the
+ * title rewrites every frame -- ~20 textures and 1.9 M texels were decoded
+ * again each frame for nothing (race at 8-10 fps). Clamped to the guest
+ * region the texture lies in. 64-bit multiply-xorshift per 8 bytes: several
+ * GB/s, so a frame's worth of textures costs well under a millisecond. */
+static uint64_t texture_bytes(const Nv2aTexture *g)
+{
+    uint64_t w = g->width, h = g->height;
+
+    if (g->pitch)
+        return (uint64_t)g->pitch * h;
+    switch (g->color) {
+    case 0x0C:                                  /* DXT1: 8 bytes per 4x4 */
+        return ((w + 3) / 4) * ((h + 3) / 4) * 8;
+    case 0x0E: case 0x0F:                       /* DXT3/5: 16 bytes per 4x4 */
+        return ((w + 3) / 4) * ((h + 3) / 4) * 16;
+    case 0x00: case 0x01: case 0x0B: case 0x19: /* Y8, AY8, P8, A8 */
+        return w * h;
+    case 0x02: case 0x03: case 0x04: case 0x05: /* A1R5G5B5 .. R5G6B5 */
+    case 0x1A: case 0x27: case 0x28:            /* A8Y8, R6G5B5, G8B8 */
+        return w * h * 2;
+    default:                                    /* 32 bpp, or unknown: bound */
+        return w * h * 4;
+    }
+}
+
 static uint64_t hash_guest_texture(const Nv2aTexture *g)
 {
     const uint8_t *mem = (const uint8_t *)xbox_GetMemoryOffset();
@@ -1046,8 +1114,7 @@ static uint64_t hash_guest_texture(const Nv2aTexture *g)
     const uint8_t *p;
     size_t i, n;
 
-    bytes = g->pitch ? (uint64_t)g->pitch * g->height
-                     : (uint64_t)g->width * g->height * 4;
+    bytes = texture_bytes(g);
     if (va >= 0x80000000ull && va < 0x84000000ull)
         limit = 0x84000000ull - va;            /* contiguous window */
     else if (va < 0x04000000ull)
@@ -1166,7 +1233,7 @@ static VkImageView texture_view(const Nv2aTexture *g)
         return t->view;
     }
     h = hash_guest_texture(g);
-    if (t && h && t->hash == h) {              /* unchanged since the upload */
+    if (t && (!h || t->hash == h)) {           /* unchanged, or unhashable: once */
         t->checked = V.flips;
         t->last_used = V.flips;
         return t->view;
@@ -1182,6 +1249,16 @@ static VkImageView texture_view(const Nv2aTexture *g)
     }
     if (!nv2a_backend_decode_texture(g, V.decode_buf))
         return NULL;                       /* format the executor cannot decode */
+    V.stat_decodes++;
+    V.stat_decode_px += n;
+    V.stat_new += !t;
+    if (t && getenv("SSX3_VK_TEXLOG")) {
+        static int nlog;
+        if (nlog++ < 60)
+            fprintf(stderr, "  [VK] re-decode %08X %ux%u fmt %02X pitch %u hash %016llx\n",
+                    g->offset, g->width, g->height, g->color, g->pitch,
+                    (unsigned long long)h);
+    }
     if (!h)
         h = 1;                             /* outside guest RAM: upload once */
 
@@ -1492,17 +1569,81 @@ static void vkb_clear(const Nv2aSurface *g, const Nv2aRenderState *rs,
     }
 }
 
+static void unpack_argb(uint32_t c, float o[4])
+{
+    o[0] = (float)((c >> 16) & 0xFF) / 255.0f;
+    o[1] = (float)((c >>  8) & 0xFF) / 255.0f;
+    o[2] = (float)( c        & 0xFF) / 255.0f;
+    o[3] = (float)( c >> 24        ) / 255.0f;
+}
+
+/* The batch's combiner state in this frame's ring, as nv2a.frag reads it.
+ * Consecutive batches mostly share it, so an unchanged block is reused. */
+static int combiners_upload(const Nv2aBatchExt *e, VkDeviceSize *off)
+{
+    const Nv2aCombiner *rc = e->rc;
+    uint32_t flags = rc->control >> 8;
+    VkbCombiners u;
+    void *dst;
+    int i;
+
+    memset(&u, 0, sizeof u);
+    for (i = 0; i < 8; i++) {
+        u.cw[i][0] = rc->color_icw[i];
+        u.cw[i][1] = rc->alpha_icw[i];
+        u.cw[i][2] = rc->color_ocw[i];
+        u.cw[i][3] = rc->alpha_ocw[i];
+        /* One c0/c1 for every stage, or one per stage (COMBINERCOUNT). */
+        unpack_argb(rc->factor0[(flags & 0x010) ? i : 0], u.c0[i]);
+        unpack_argb(rc->factor1[(flags & 0x100) ? i : 0], u.c1[i]);
+    }
+    u.fin[0] = rc->final0;
+    u.fin[1] = rc->final1;
+    u.fin[2] = rc->control;
+    u.fin[3] = rc->stage_program;
+    unpack_argb(rc->final_c0, u.fc0);
+    unpack_argb(rc->final_c1, u.fc1);
+    unpack_argb(e->fog_color, u.fog_color);
+    for (i = 0; i < 4; i++) {
+        const Nv2aTexture *t = e->textures[i];
+        /* Linear textures take texel coordinates, the rest normalised ones. */
+        u.tex_scale[i][0] = (t && t->pitch && t->width) ? 1.0f / (float)t->width : 1.0f;
+        u.tex_scale[i][1] = (t && t->pitch && t->height) ? 1.0f / (float)t->height : 1.0f;
+    }
+    u.misc[0] = e->clip_plane_mode;
+
+    if (V.last_rc_off != ~(VkDeviceSize)0 && !memcmp(&u, &V.last_rc, sizeof u)) {
+        *off = V.last_rc_off;
+        return 1;
+    }
+    if (!(dst = ring_alloc(&V.vring, sizeof u, V.ubo_align, off)))
+        return 0;
+    memcpy(dst, &u, sizeof u);
+    V.last_rc = u;
+    V.last_rc_off = *off;
+    return 1;
+}
+
 static void vkb_draw(const Nv2aSurface *g, const Nv2aBatch *b)
 {
     const Nv2aRenderState *rs = b->state;
+    const Nv2aBatchExt *e = b->ext;
+    int use_rc = e && e->rc;
     VkbSurface *s;
     VkbDepth *d;
-    VkImageView view = VK_NULL_HANDLE;
-    VkDescriptorImageInfo dii;
-    VkWriteDescriptorSet w;
+    const Nv2aTexture *stex[4] = { NULL, NULL, NULL, NULL };
+    VkImageView views[4] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
+    VkDescriptorImageInfo dii[4];
+    VkDescriptorBufferInfo dbi;
+    VkWriteDescriptorSet w[VKB_BIND_RC + 1];
     VkbPush pc;
-    VkDeviceSize off, bytes = (VkDeviceSize)b->count * sizeof(Nv2aVertex);
-    void *dst;
+    VkDeviceSize voff[2], vstride[2], rc_off = 0;
+    VkDeviceSize bytes = (VkDeviceSize)b->count * sizeof(Nv2aVertex);
+    VkDeviceSize ebytes = e ? (VkDeviceSize)b->count * sizeof(Nv2aVertexExt)
+                            : sizeof(Nv2aVertexExt);
+    VkBuffer vbufs[2];
+    void *dst, *edst;
+    int i;
 
     if (!b->count || !ensure_ready() || !ensure_recording() || !white_ready())
         return;
@@ -1514,40 +1655,68 @@ static void vkb_draw(const Nv2aSurface *g, const Nv2aBatch *b)
     if (!d)
         return;
 
-    /* Texture first: an upload or a render-to-texture transition ends the
-     * rendering scope, which begin_rendering below reopens. */
-    if (b->texture)
-        view = texture_view(b->texture);
-    if (!(dst = ring_alloc(&V.vring, bytes, 16, &off))) {
+    /* Textures first: an upload or a render-to-texture transition ends the
+     * rendering scope, which begin_rendering below reopens. With combiners
+     * every stage samples what the extension names; without, stage 0 is the
+     * batch's one texture. */
+    if (use_rc)
+        for (i = 0; i < 4; i++)
+            stex[i] = e->textures[i];
+    else
+        stex[0] = b->texture;
+    for (i = 0; i < 4; i++)
+        if (stex[i])
+            views[i] = texture_view(stex[i]);
+
+    if (!(dst = ring_alloc(&V.vring, bytes, 16, &voff[0]))
+            || !(edst = ring_alloc(&V.vring, ebytes, 16, &voff[1]))
+            || (use_rc && !combiners_upload(e, &rc_off))) {
         static int warned;
         if (!warned++)
             fprintf(stderr, "  [VK] vertex ring full this frame\n");
         return;
     }
     memcpy(dst, b->vertices, (size_t)bytes);
+    if (e)
+        memcpy(edst, e->vertices, (size_t)ebytes);
+    else
+        memset(edst, 0, (size_t)ebytes);
 
     begin_rendering(s, d);
     apply_state(rs);
 
-    memset(&dii, 0, sizeof dii);
-    dii.sampler = sampler_get(view ? b->texture : NULL);
-    dii.imageView = view ? view : V.white.view;
-    dii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    memset(&w, 0, sizeof w);
-    w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    w.dstBinding = 0;
-    w.descriptorCount = 1;
-    w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    w.pImageInfo = &dii;
+    memset(w, 0, sizeof w);
+    for (i = 0; i < 4; i++) {
+        /* A stage with nothing usable reads white, as on the CPU path. */
+        dii[i].sampler = sampler_get(views[i] ? stex[i] : NULL);
+        dii[i].imageView = views[i] ? views[i] : V.white.view;
+        dii[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        w[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w[i].dstBinding = (uint32_t)i;
+        w[i].descriptorCount = 1;
+        w[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        w[i].pImageInfo = &dii[i];
+    }
+    /* The UBO binding must be valid even when the shader skips it: without
+     * combiners rc_off stays 0, an in-range block it never reads. */
+    dbi.buffer = V.vring.buffer;
+    dbi.offset = rc_off;
+    dbi.range = sizeof(VkbCombiners);
+    w[VKB_BIND_RC].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    w[VKB_BIND_RC].dstBinding = VKB_BIND_RC;
+    w[VKB_BIND_RC].descriptorCount = 1;
+    w[VKB_BIND_RC].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    w[VKB_BIND_RC].pBufferInfo = &dbi;
     vkCmdPushDescriptorSetKHR(V.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, V.pipe_layout,
-                              0, 1, &w);
+                              0, VKB_BIND_RC + 1, w);
 
     pc.surface_size[0] = (float)s->width;
     pc.surface_size[1] = (float)s->height;
-    pc.tex_size[0] = view ? (float)b->texture->width : 1.0f;
-    pc.tex_size[1] = view ? (float)b->texture->height : 1.0f;
+    pc.tex_size[0] = (!use_rc && views[0]) ? (float)b->texture->width : 1.0f;
+    pc.tex_size[1] = (!use_rc && views[0]) ? (float)b->texture->height : 1.0f;
     pc.z_scale = 1.0f / 16777215.0f;
-    pc.flags = (view ? 1u : 0u)
+    pc.flags = ((!use_rc && views[0]) ? 1u : 0u)
+             | (use_rc ? 2u : 0u)
              | ((rs->alpha_func >= 0x200 && rs->alpha_func <= 0x207
                  ? rs->alpha_func - 0x200 : 7u) << 8)
              | ((rs->alpha_ref & 0xFF) << 16)
@@ -1555,7 +1724,10 @@ static void vkb_draw(const Nv2aSurface *g, const Nv2aBatch *b)
     vkCmdPushConstants(V.cmd, V.pipe_layout,
                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                        0, sizeof pc, &pc);
-    vkCmdBindVertexBuffers(V.cmd, 0, 1, &V.vring.buffer, &off);
+    vbufs[0] = vbufs[1] = V.vring.buffer;
+    vstride[0] = sizeof(Nv2aVertex);
+    vstride[1] = e ? sizeof(Nv2aVertexExt) : 0;
+    vkCmdBindVertexBuffers2(V.cmd, 0, 2, vbufs, voff, NULL, vstride);
     vkCmdDraw(V.cmd, b->count, 1, 0, 0);
 }
 
@@ -1613,7 +1785,11 @@ static void update_title(void)
         /* The same figure in the log every 5 s, for runs nobody watches. */
         static uint32_t logged;
         if (now - logged >= 5000) {
-            fprintf(stderr, "  [VK] %s\n", tb + sizeof "SSX 3 (Recomp, Vulkan) | " - 1);
+            fprintf(stderr, "  [VK] %s | decodes/5s: %u (%u new, %.1f Mtexels)\n",
+                    tb + sizeof "SSX 3 (Recomp, Vulkan) | " - 1, V.stat_decodes,
+                    V.stat_new, (double)V.stat_decode_px / 1e6);
+            V.stat_decodes = V.stat_new = 0;
+            V.stat_decode_px = 0;
             logged = now;
         }
     }

@@ -45,10 +45,14 @@ Order follows `CLAUDE.md` / `xboxrecomp/docs/GETTING_STARTED.md`. Details and fi
 - [x] 19 seeds → key presses work: skip intro, title screen, main menu, character select reached
 - [x] Linux performance: raster pool on POSIX + wall-clock fps (CPU 4.4 → 15 fps), then the Vulkan back end:
       **60 fps** title/menu, 55–57 fps character select (`SSX3_RENDERER=vulkan`, default; `=cpu` as reference)
-- [ ] **Vulkan M3:** extend the interface (combiner state, texture stages 1–3, specular/fog) + combiner uber-shader;
-      fixes among others the semi-transparent 3D rider model in character select
+- [x] **Vulkan M3:** interface extension (combiner state, texture stages 1–3, specular/fog) + combiner uber-shader;
+      rider model solid again. Exact texture hash sizes, vertex cache, pre-decoded vertex programs
+- [x] Race started and in-game graphics checked (Vulkan matches the CPU reference): race **55–60 fps**, pre-race
+      screen ~40 fps
+- [ ] Pre-race screen / busy race scenes below 60: NV2A thread is CPU-bound in the vertex program interpreter →
+      parallelise transforms over the raster pool, or (long term, needed for >60 fps) vertex programs on the GPU
+- [ ] Vulkan M3 leftovers: cube maps (face 0 only), bump-env/dot-product stage modes, palettised textures
 - [ ] Vulkan M4: verify render-to-texture, AA/resolution, per-triangle culling, frames in flight, Windows (Win32 surface)
-- [ ] Next: start a race (pick character → track), check in-game graphics
 - [ ] Fence: replace the mirror with `nv2a_pb_set_semaphore_target` once desyncs/graphics glitches show up
 - [ ] `t:\$u\contentmeta.xbx` is missing at boot – check whether it matters
 - [ ] Offer xboxrecomp patch 0001 as an upstream PR (sp00nznet/xboxrecomp)

@@ -27,14 +27,23 @@ available as the reference (`SSX3_RENDERER=cpu`) for comparison dumps; the Vulka
   checked once per frame and the texture re-decoded only when it changed (FMV frames are rewritten in place).
   Render-to-texture: a texture that points at a surface the GPU rendered samples that GPU image.
 
-## What the interface does not (yet) provide → runtime patch, milestone 3
-Only texture stage 0, one UV set, only the diffuse colour, no register combiners, no specular/fog. SSX 3 uses
-combiners heavily (`nv2a_rc_eval` was the hottest function in the CPU profile). Plan: extend `Nv2aBatch` with an
-optional extension pointer (4 texture stages, 4 UV sets, specular, fog, full combiner state); combiners as an
-**uber-shader** (state in push constants/UBO, one precompiled SPIR-V – no run-time shader compiler, no pipeline flood).
+## Register combiners (milestone 3)
+- Runtime patch: `Nv2aBatch.ext` (`Nv2aBatchExt`) carries, for transformed batches, the combiner state, all four
+  texture stages and per vertex four texture-coordinate sets, specular and fog factor. Screen-space batches have
+  none (the CPU path does not run them through the combiners either) and draw stage-0 texel × diffuse.
+- `nv2a.frag` is an **uber-shader**: a line-by-line port of the CPU path (`rc_stage_fetch` + `nv2a_rc_eval`, after
+  xemu's psh.c). Combiner state goes into a 528-byte std140 UBO in the frame's ring (reused while unchanged),
+  bound through the push descriptor next to the four stage samplers (bindings 0-3, UBO 4). One precompiled SPIR-V,
+  one pipeline; the ext vertex data is a second vertex binding with dynamic stride (0 + one zeroed element without
+  ext).
+- Not yet: cube maps (face 0 sampled as 2D), bump-env/dot-product stage modes (read 0, as on the CPU path),
+  palettised textures.
+- Texture change detection hashes exactly level 0's bytes (DXT block size, bpp per format): an upper bound
+  (w*h*4) took in per-frame data behind DXT textures and re-decoded ~20 textures every race frame.
 
 ## Milestones
 1. ✅ Vulkan init, window, swapchain; `clear` + `flip`. Debug dump as BMP (`SSX3_VK_DUMP`).
 2. ✅ Triangles with vertex colour + texture stage 0, blend/depth/stencil/alpha test. 60 fps title/menu.
-3. Interface extension + combiner uber-shader + multitexturing.
+3. ✅ Interface extension + combiner uber-shader + multitexturing. Race 55–60 fps (with the vertex cache and
+   pre-decoded vertex programs in the runtime patch).
 4. Render-to-texture checks, AA/resolution, per-triangle culling, frames in flight, Windows (Win32 surface instead of SDL).

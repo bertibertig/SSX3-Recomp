@@ -183,14 +183,154 @@ index 37c3621..f4683ec 100644
          XBOX_TRACE(XBOX_LOG_PATH, "%s -> %s", xbox_path, host_path_buf);
          /* As the Win32 backend does: the bridge reads back the host path
           * the call it just made translated (the missing-file report, the
+diff --git a/src/kernel/nv2a_backend.h b/src/kernel/nv2a_backend.h
+index 327f01d..86f966c 100644
+--- a/src/kernel/nv2a_backend.h
++++ b/src/kernel/nv2a_backend.h
+@@ -20,15 +20,21 @@
+  * so a back end only ever sees surface pixels. Blend, depth, alpha, cull and
+  * stencil state arrive in Nv2aRenderState.
+  *
+- * ponytail: register-combiner state and texture stages 1-3 are not passed on:
+- * a back end sees stage 0 and the diffuse colour. Extend Nv2aBatch when that
+- * matters rather than adding callbacks.
++ * Batches that went through the transform (vertex program or fixed function)
++ * also carry an Nv2aBatchExt: the register-combiner state, all four texture
++ * stages, and per vertex every texture coordinate set, the specular colour
++ * and the fog factor -- what the executor's own rasteriser feeds its
++ * combiners. A back end that ignores it gets the old "stage-0 texel *
++ * diffuse" picture. Screen-space batches have no extension (the CPU path
++ * does not run them through the combiners either).
+  */
+ #ifndef NV2A_BACKEND_H
+ #define NV2A_BACKEND_H
+ 
+ #include <stdint.h>
+ 
++#include "nv2a_combiner.h"
++
+ /* The colour surface being drawn into, in real (anti-aliased) pixels.
+  * aa_sx/aa_sy give the anti-aliasing factor, so width/aa_sx is the logical
+  * size the title thinks it renders at (e.g. 640x480). */
+@@ -82,11 +88,35 @@ typedef struct {
+     uint32_t stencil_write_mask, stencil_fail, stencil_zfail, stencil_zpass;
+ } Nv2aRenderState;
+ 
++/* Per-vertex data beyond Nv2aVertex, parallel to Nv2aBatch.vertices. */
++typedef struct {
++    /* Texture coordinates per stage as the transform produced them (s,t,r,q):
++     * normalised for swizzled/DXT textures, texels for linear ones. The stage
++     * samples at (s/q, t/q) -- q = 0 reads as 1. */
++    float    tex[4][4];
++    uint32_t specular;          /* 0xAARRGGBB (the combiners' v1) */
++    float    fog;               /* fog factor after the fog unit, 1 = no fog */
++} Nv2aVertexExt;
++
++typedef struct {
++    const Nv2aVertexExt *vertices;
++    /* NULL: the title has not programmed the combiners yet; draw stage-0
++     * texel * diffuse as without the extension. */
++    const Nv2aCombiner  *rc;
++    /* What each stage samples when its SHADER_STAGE_PROGRAM mode (rc->
++     * stage_program, 5 bits per stage) reads a texture; NULL when the stage
++     * has nothing usable bound (the CPU path reads white then). */
++    const Nv2aTexture   *textures[4];
++    uint32_t             clip_plane_mode;   /* SET_SHADER_CLIP_PLANE_MODE */
++    uint32_t             fog_color;         /* 0xAARRGGBB */
++} Nv2aBatchExt;
++
+ typedef struct {
+     const Nv2aVertex  *vertices;    /* triangle list: count is a multiple of 3 */
+     uint32_t           count;
+     const Nv2aTexture *texture;     /* NULL: untextured */
+     const Nv2aRenderState *state;
++    const Nv2aBatchExt *ext;        /* NULL: screen-space batch, see above */
+ } Nv2aBatch;
+ 
+ typedef struct {
 diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
-index 1280565..e242052 100644
+index 1280565..4726563 100644
 --- a/src/kernel/nv2a_pb_exec.c
 +++ b/src/kernel/nv2a_pb_exec.c
-@@ -1939,6 +1939,14 @@ static void backend_flush(int textured)
+@@ -1894,12 +1894,21 @@ static int s_xf_no_tex;
+ #define NV_BACKEND_MAX_VERTS (NV_MAX_INDICES * 3)
+ static Nv2aVertex *s_bverts;     /* about 5.5 MB: allocated by the first vertex */
+ static uint32_t   s_bcount;
++/* Nv2aBatchExt vertex data, parallel to s_bverts, for transformed batches.
++ * s_bext_used: the batch being collected came through the transform. */
++static Nv2aVertexExt *s_bext;
++static int        s_bext_used;
++
++static float fog_factor(float d);
+ 
+ static Nv2aVertex *backend_slot(void)
+ {
+     if (!s_bverts
+         && !(s_bverts = (Nv2aVertex *)calloc(NV_BACKEND_MAX_VERTS, sizeof *s_bverts)))
+         return NULL;
++    if (!s_bext
++        && !(s_bext = (Nv2aVertexExt *)calloc(NV_BACKEND_MAX_VERTS, sizeof *s_bext)))
++        return NULL;
+     if (s_bcount + 3 > NV_BACKEND_MAX_VERTS)
+         return NULL;
+     return &s_bverts[s_bcount];
+@@ -1920,6 +1929,13 @@ static void backend_from_xf(const Nv2aVshOutput *v, Nv2aVertex *o)
+     o->diffuse = pack_color(v->d0);
+     o->u = v->tex[0][0] * su;
+     o->v = v->tex[0][1] * sv;
++    {
++        Nv2aVertexExt *e = &s_bext[o - s_bverts];
++        memcpy(e->tex, v->tex, sizeof e->tex);
++        e->specular = pack_color(v->d1);
++        e->fog = fog_factor(v->fog[0]);
++        s_bext_used = 1;
++    }
+ }
+ 
+ /* `textured`: the batch carried texture coordinates, so the bound texture is
+@@ -1928,8 +1944,10 @@ static void backend_flush(int textured)
+ {
+     Nv2aSurface surf;
+     Nv2aRenderState rs;
+-    Nv2aTexture tex;
++    Nv2aTexture tex, stex[4];
+     Nv2aBatch batch;
++    Nv2aBatchExt ext;
++    int st;
+ 
+     if (!s_bcount)
+         return;
+@@ -1939,6 +1957,41 @@ static void backend_flush(int textured)
      batch.count = s_bcount;
      batch.texture = NULL;
      batch.state = &rs;
++    batch.ext = NULL;
++    if (s_bext_used) {
++        uint32_t fc = s_gpu.fog_color;
++        memset(&ext, 0, sizeof ext);
++        ext.vertices = s_bext;
++        ext.rc = s_gpu.rc_seen ? &s_gpu.rc : NULL;
++        for (st = 0; st < 4; st++) {
++            const Texture *t = &s_gpu.texs[st];
++            if (!t->valid || !((s_gpu.rc.stage_program >> (st * 5)) & 0x1F))
++                continue;
++            stex[st].offset = t->offset;
++            stex[st].width  = t->width;
++            stex[st].height = t->height;
++            stex[st].pitch  = t->pitch;
++            stex[st].color  = t->color;
++            stex[st].addr_u = t->addr_u;
++            stex[st].addr_v = t->addr_v;
++            stex[st].levels = t->pitch ? 1 : t->levels;
++            stex[st].filter = t->filter;
++            ext.textures[st] = &stex[st];
++        }
++        ext.clip_plane_mode = s_gpu.clip_plane_mode;
++        /* FOG_COLOR is R in bits 0-7, the reverse of a D3DCOLOR. */
++        ext.fog_color = (fc & 0xFF00FF00u) | ((fc & 0xFF) << 16) | ((fc >> 16) & 0xFF);
++        batch.ext = &ext;
++        s_bext_used = 0;
++    }
 +    /* With register combiners in use, a stage whose SHADER_STAGE_PROGRAM
 +     * mode is NONE samples nothing -- whatever texture it still has enabled
 +     * is left over from an earlier batch (the CPU path gives it 0,0,0,1, see
@@ -202,7 +342,7 @@ index 1280565..e242052 100644
      if (textured && s_gpu.texs[0].valid) {
          tex.offset = s_gpu.texs[0].offset;
          tex.width  = s_gpu.texs[0].width;
-@@ -2463,9 +2471,111 @@ static void xf_rows_parallel(const XfTri *T, XfCount *total)
+@@ -2463,9 +2516,111 @@ static void xf_rows_parallel(const XfTri *T, XfCount *total)
      }
  }
  #else
@@ -315,7 +455,7 @@ index 1280565..e242052 100644
  }
  #endif
  
-@@ -2684,8 +2794,21 @@ static int transform_vertex(uint32_t index, Nv2aVshOutput *out)
+@@ -2684,8 +2839,21 @@ static int transform_vertex(uint32_t index, Nv2aVshOutput *out)
  
      if (!batch_uses_program())
          return ffp_vertex(index, out);
@@ -339,7 +479,50 @@ index 1280565..e242052 100644
      if (!nv2a_vsh_run((const float (*)[4])in, out))
          return 0;
      /* oPos.w == 0 comes from a program that never divided by w: x, y and z
-@@ -2781,13 +2904,20 @@ static void raster_batch_program(void)
+@@ -2721,15 +2889,40 @@ static void xf_set_viewport(void)
+     s_xf_o[2] = of[2];
+ }
+ 
++/* Post-transform vertex cache, per batch: an indexed mesh names each vertex
++ * several times (about six in a closed triangle list), and the program
++ * runs on the CPU, so each repeat used to cost a full program run -- in a
++ * SSX 3 race the interpreter was the NV2A thread's whole budget. Direct
++ * mapped by index; an entry counts only for the batch (generation) that
++ * wrote it. Off while programs may write constants (CXT_WRITE), where a
++ * vertex's result can depend on the ones before it. */
++#define NV_VCACHE_SIZE 4096
++static uint32_t s_vc_idx[NV_VCACHE_SIZE], s_vc_gen[NV_VCACHE_SIZE];
++static uint32_t s_vc_pos[NV_VCACHE_SIZE], s_vc_cur;
++
+ static void raster_batch_program(void)
+ {
+     uint32_t i, n = s_gpu.idx_count;
++    int cache = !nv2a_vsh_cxt_write_enabled();
+ 
+     if (!s_xf && !(s_xf = (Nv2aVshOutput *)calloc(NV_MAX_INDICES, sizeof *s_xf)))
+         return;
+-    for (i = 0; i < n; i++)
+-        if (!transform_vertex(s_gpu.idx[i], &s_xf[i]))
++    if (++s_vc_cur == 0) {                 /* generation wrapped: forget all */
++        memset(s_vc_gen, 0, sizeof s_vc_gen);
++        s_vc_cur = 1;
++    }
++    for (i = 0; i < n; i++) {
++        uint32_t ix = s_gpu.idx[i], slot = ix & (NV_VCACHE_SIZE - 1);
++        if (cache && s_vc_gen[slot] == s_vc_cur && s_vc_idx[slot] == ix) {
++            s_xf[i] = s_xf[s_vc_pos[slot]];
++            continue;
++        }
++        if (!transform_vertex(ix, &s_xf[i]))
+             return;                                    /* no program loaded */
++        s_vc_gen[slot] = s_vc_cur;
++        s_vc_idx[slot] = ix;
++        s_vc_pos[slot] = i;
++    }
+     xf_set_viewport();
+     {
+         const VertexAttr *tc = texcoord_attr();
+@@ -2781,13 +2974,20 @@ static void raster_batch_program(void)
          /* RECOMP_VSH_TRACE=<n>: print n program batches -- attribute setup,
           * raw inputs, key constants, and what came out. */
          static int left = -1;
@@ -363,7 +546,7 @@ index 1280565..e242052 100644
              float in[4];
              left--;
              fprintf(stderr, "[VTRACE] prim %u n %u idx %u %u %u\n", s_gpu.prim,
-@@ -4087,10 +4217,15 @@ void nv2a_pb_exec_report(void)
+@@ -4087,10 +4287,15 @@ void nv2a_pb_exec_report(void)
      int i, j;
  
      {
@@ -381,6 +564,279 @@ index 1280565..e242052 100644
          if (last_ms && now > last_ms)
              fprintf(stderr, "[GPU] %.2f fps (%u flips)%c",
                      (s_gpu.flips - last_flips) * 1000.0 / (now - last_ms),
+diff --git a/src/kernel/nv2a_vsh_interp.c b/src/kernel/nv2a_vsh_interp.c
+index c3fba75..9764b13 100644
+--- a/src/kernel/nv2a_vsh_interp.c
++++ b/src/kernel/nv2a_vsh_interp.c
+@@ -41,6 +41,26 @@ static uint32_t s_const_load, s_const_word;
+ static uint32_t s_cxt_write;
+ static int      s_const_trace = -1;      /* RECOMP_VSH_DUMP: constant traffic */
+ 
++/* The program from the start slot to its FINAL instruction, with every field
++ * extracted once. Field extraction per source per vertex was most of the
++ * interpreter's time (read_src); a program changes far less often than it
++ * runs. Rebuilt lazily after any upload or start-slot change. */
++typedef struct {
++    uint8_t  neg, mux, reg, rel;    /* rel: constant index + a0.x */
++    uint8_t  sw[4];                 /* component per lane */
++    uint16_t index;                 /* input (mux 2) or constant (mux 3) */
++} VshSrc;
++
++typedef struct {
++    VshSrc   src[3];
++    uint8_t  mac, ilu, mac_mask, ilu_mask, tdst, omask, oaddr;
++    uint8_t  out_ilu, out_o, uses[3];
++} VshIns;
++
++static VshIns   s_decoded[NV2A_VSH_SLOTS];
++static uint32_t s_ndecoded;
++static int      s_decoded_ok;           /* 0: rebuild before the next run */
++
+ static int vsh_dump_enabled(void)
+ {
+     if (s_const_trace < 0)
+@@ -65,14 +85,21 @@ void nv2a_vsh_program_word(uint32_t word)
+ {
+     if (s_load_slot < NV2A_VSH_SLOTS)
+         s_program[s_load_slot][s_load_word] = word;
++    s_decoded_ok = 0;
+     if (++s_load_word == 4) {
+         s_load_word = 0;
+         s_load_slot++;
+     }
+ }
+ 
+-void nv2a_vsh_set_start_slot(uint32_t slot) { s_start_slot = slot; }
++void nv2a_vsh_set_start_slot(uint32_t slot)
++{
++    if (slot != s_start_slot)
++        s_decoded_ok = 0;
++    s_start_slot = slot;
++}
+ void nv2a_vsh_set_cxt_write(uint32_t enable) { s_cxt_write = enable; }
++int  nv2a_vsh_cxt_write_enabled(void) { return s_cxt_write != 0; }
+ 
+ void nv2a_vsh_set_constant_load(uint32_t index)
+ {
+@@ -116,6 +143,7 @@ void nv2a_vsh_set_instruction(uint32_t slot, const uint32_t words[4])
+ {
+     if (slot < NV2A_VSH_SLOTS)
+         memcpy(s_program[slot], words, sizeof s_program[slot]);
++    s_decoded_ok = 0;
+ }
+ 
+ /* ---- disassembly (RECOMP_VSH_DUMP) --------------------------------------- */
+@@ -198,43 +226,86 @@ void nv2a_vsh_constant_component(uint32_t index, uint32_t comp, uint32_t word)
+ 
+ typedef struct { float v[4]; } vec4;
+ 
+-static vec4 read_src(const uint32_t *ins, int which,
+-                     const float in[NV2A_VSH_INPUTS][4],
+-                     const vec4 *temp, const vec4 *opos, int a0)
++static void decode_src(const uint32_t *ins, int which, VshSrc *d)
+ {
+-    uint32_t neg, swz, mux, reg;
+-    const float *s;
+-    vec4 r;
++    uint32_t swz;
+ 
+     if (which == 0) {
+-        neg = field(ins, 1, 8, 1); swz = field(ins, 1, 0, 8);
+-        mux = field(ins, 2, 26, 2); reg = field(ins, 2, 28, 4);
++        d->neg = (uint8_t)field(ins, 1, 8, 1); swz = field(ins, 1, 0, 8);
++        d->mux = (uint8_t)field(ins, 2, 26, 2); d->reg = (uint8_t)field(ins, 2, 28, 4);
+     } else if (which == 1) {
+-        neg = field(ins, 2, 25, 1); swz = field(ins, 2, 17, 8);
+-        mux = field(ins, 2, 11, 2); reg = field(ins, 2, 13, 4);
++        d->neg = (uint8_t)field(ins, 2, 25, 1); swz = field(ins, 2, 17, 8);
++        d->mux = (uint8_t)field(ins, 2, 11, 2); d->reg = (uint8_t)field(ins, 2, 13, 4);
+     } else {
+-        neg = field(ins, 2, 10, 1); swz = field(ins, 2, 2, 8);
+-        mux = field(ins, 3, 28, 2);
+-        reg = (field(ins, 2, 0, 2) << 2) | field(ins, 3, 30, 2);
++        d->neg = (uint8_t)field(ins, 2, 10, 1); swz = field(ins, 2, 2, 8);
++        d->mux = (uint8_t)field(ins, 3, 28, 2);
++        d->reg = (uint8_t)((field(ins, 2, 0, 2) << 2) | field(ins, 3, 30, 2));
+     }
++    d->sw[0] = (uint8_t)((swz >> 6) & 3);
++    d->sw[1] = (uint8_t)((swz >> 4) & 3);
++    d->sw[2] = (uint8_t)((swz >> 2) & 3);
++    d->sw[3] = (uint8_t)(swz & 3);
++    d->rel = (uint8_t)field(ins, 3, 1, 1);
++    d->index = (uint16_t)(d->mux == 2 ? field(ins, 1, 9, 4) : field(ins, 1, 13, 8));
++}
+ 
+-    if (mux == 1)
+-        s = (reg == 12) ? opos->v : (reg < 12 ? temp[reg].v : temp[0].v);
+-    else if (mux == 2)
+-        s = in[field(ins, 1, 9, 4)];
++static void decode_program(void)
++{
++    uint32_t s;
++
++    s_ndecoded = 0;
++    for (s = s_start_slot; s < NV2A_VSH_SLOTS; s++) {
++        const uint32_t *ins = s_program[s];
++        VshIns *d = &s_decoded[s_ndecoded++];
++        int k;
++
++        for (k = 0; k < 3; k++)
++            decode_src(ins, k, &d->src[k]);
++        d->mac = (uint8_t)field(ins, 1, 21, 4);
++        d->ilu = (uint8_t)field(ins, 1, 25, 3);
++        d->mac_mask = (uint8_t)field(ins, 3, 24, 4);
++        d->ilu_mask = (uint8_t)field(ins, 3, 16, 4);
++        d->tdst = (uint8_t)field(ins, 3, 20, 4);
++        d->omask = (uint8_t)field(ins, 3, 12, 4);
++        d->oaddr = (uint8_t)field(ins, 3, 3, 8);
++        d->out_ilu = (uint8_t)field(ins, 3, 2, 1);
++        d->out_o = (uint8_t)field(ins, 3, 11, 1);
++        /* Which sources the ops read: the MAC A (and B, C by op), the ILU C. */
++        d->uses[0] = d->mac != 0;
++        d->uses[1] = d->mac == 2 || d->mac == 4 || (d->mac >= 5 && d->mac <= 12);
++        d->uses[2] = d->mac == 3 || d->mac == 4 || d->ilu != 0;
++        if (field(ins, 3, 0, 1))
++            break;
++    }
++    /* No FINAL within program memory: nothing to run (see nv2a_vsh_run). */
++    if (s == NV2A_VSH_SLOTS)
++        s_ndecoded = 0;
++    s_decoded_ok = 1;
++}
++
++static vec4 read_src(const VshSrc *d, const float in[NV2A_VSH_INPUTS][4],
++                     const vec4 *temp, const vec4 *opos, int a0)
++{
++    const float *s;
++    vec4 r;
++
++    if (d->mux == 1)
++        s = (d->reg == 12) ? opos->v : (d->reg < 12 ? temp[d->reg].v : temp[0].v);
++    else if (d->mux == 2)
++        s = in[d->index];
+     else {
+-        int ci = (int)field(ins, 1, 13, 8);
+-        if (field(ins, 3, 1, 1))
++        int ci = (int)d->index;
++        if (d->rel)
+             ci += a0;
+         if (ci < 0 || ci >= NV2A_VSH_CONSTANTS)
+             ci = 0;
+         s = s_const[ci];
+     }
+-    r.v[0] = s[(swz >> 6) & 3];
+-    r.v[1] = s[(swz >> 4) & 3];
+-    r.v[2] = s[(swz >> 2) & 3];
+-    r.v[3] = s[swz & 3];
+-    if (neg) {
++    r.v[0] = s[d->sw[0]];
++    r.v[1] = s[d->sw[1]];
++    r.v[2] = s[d->sw[2]];
++    r.v[3] = s[d->sw[3]];
++    if (d->neg) {
+         r.v[0] = -r.v[0]; r.v[1] = -r.v[1];
+         r.v[2] = -r.v[2]; r.v[3] = -r.v[3];
+     }
+@@ -368,27 +439,30 @@ int nv2a_vsh_run(const float in[NV2A_VSH_INPUTS][4], Nv2aVshOutput *out)
+      * unwritten stage at infinity. */
+     outregs[9][3] = outregs[10][3] = outregs[11][3] = outregs[12][3] = 1.0f;
+ 
+-    for (s = s_start_slot; s < NV2A_VSH_SLOTS; s++) {
+-        const uint32_t *ins = s_program[s];
+-        uint32_t mac = field(ins, 1, 21, 4), ilu = field(ins, 1, 25, 3);
+-        uint32_t mac_mask = field(ins, 3, 24, 4), ilu_mask = field(ins, 3, 16, 4);
+-        uint32_t tdst = field(ins, 3, 20, 4);
+-        uint32_t omask = field(ins, 3, 12, 4), oaddr = field(ins, 3, 3, 8);
+-        vec4 a = read_src(ins, 0, in, temp, &opos, a0);
+-        vec4 b = read_src(ins, 1, in, temp, &opos, a0);
+-        vec4 c = read_src(ins, 2, in, temp, &opos, a0);
+-        vec4 mres = {{0, 0, 0, 0}}, ires = {{0, 0, 0, 0}};
++    if (!s_decoded_ok)
++        decode_program();
++    for (s = 0; s < s_ndecoded; s++) {
++        const VshIns *ins = &s_decoded[s];
++        uint32_t mac = ins->mac, ilu = ins->ilu;
++        uint32_t tdst = ins->tdst, omask = ins->omask, oaddr = ins->oaddr;
++        vec4 zero = {{0, 0, 0, 0}}, a = zero, b = zero, c = zero;
++        vec4 mres = zero, ires = zero;
++
++        /* Sources an op does not read are not fetched; it never sees them. */
++        if (ins->uses[0]) a = read_src(&ins->src[0], in, temp, &opos, a0);
++        if (ins->uses[1]) b = read_src(&ins->src[1], in, temp, &opos, a0);
++        if (ins->uses[2]) c = read_src(&ins->src[2], in, temp, &opos, a0);
+ 
+         if (mac)
+             mres = run_mac(mac, a, b, c, &a0);
+         if (ilu)
+             ires = run_ilu(ilu, c);
+ 
+-        if (mac && mac != 13 && mac_mask) {
++        if (mac && mac != 13 && ins->mac_mask) {
+             float *d = tdst == 12 ? opos.v : (tdst < 12 ? temp[tdst].v : NULL);
+-            if (d) write_masked(d, &mres, mac_mask);
++            if (d) write_masked(d, &mres, ins->mac_mask);
+         }
+-        if (ilu && ilu_mask) {
++        if (ilu && ins->ilu_mask) {
+             /* Paired with any MAC op, the ILU can only write R1 -- even when
+              * the MAC half writes no temp at all. The D3D epilogue is exactly
+              * that: `mul o[0].xyz` beside `rcc R1.x`, then `mad` with R1.x.
+@@ -396,11 +470,11 @@ int nv2a_vsh_run(const float in[NV2A_VSH_INPUTS][4], Nv2aVshOutput *out)
+              * put every vertex of every 3D batch at c[59]. */
+             uint32_t it = mac ? 1u : tdst;
+             float *d = it == 12 ? opos.v : (it < 12 ? temp[it].v : NULL);
+-            if (d) write_masked(d, &ires, ilu_mask);
++            if (d) write_masked(d, &ires, ins->ilu_mask);
+         }
+         if (omask) {
+-            const vec4 *src = field(ins, 3, 2, 1) ? &ires : &mres;
+-            if (!field(ins, 3, 11, 1)) {                  /* to c[] */
++            const vec4 *src = ins->out_ilu ? &ires : &mres;
++            if (!ins->out_o) {                            /* to c[] */
+                 if (s_cxt_write && oaddr < NV2A_VSH_CONSTANTS)
+                     write_masked(s_const[oaddr], src, omask);
+             } else if (oaddr == 0) {
+@@ -409,17 +483,17 @@ int nv2a_vsh_run(const float in[NV2A_VSH_INPUTS][4], Nv2aVshOutput *out)
+                 write_masked(outregs[oaddr], src, omask);
+             }
+         }
+-        if (field(ins, 3, 0, 1)) {
+-            memcpy(out->pos, opos.v, sizeof out->pos);
+-            memcpy(out->d0, outregs[3], sizeof out->d0);
+-            memcpy(out->d1, outregs[4], sizeof out->d1);
+-            memcpy(out->fog, outregs[5], sizeof out->fog);
+-            memcpy(out->tex[0], outregs[9], sizeof out->tex[0]);
+-            memcpy(out->tex[1], outregs[10], sizeof out->tex[1]);
+-            memcpy(out->tex[2], outregs[11], sizeof out->tex[2]);
+-            memcpy(out->tex[3], outregs[12], sizeof out->tex[3]);
+-            return 1;
+-        }
++    }
++    if (s_ndecoded) {
++        memcpy(out->pos, opos.v, sizeof out->pos);
++        memcpy(out->d0, outregs[3], sizeof out->d0);
++        memcpy(out->d1, outregs[4], sizeof out->d1);
++        memcpy(out->fog, outregs[5], sizeof out->fog);
++        memcpy(out->tex[0], outregs[9], sizeof out->tex[0]);
++        memcpy(out->tex[1], outregs[10], sizeof out->tex[1]);
++        memcpy(out->tex[2], outregs[11], sizeof out->tex[2]);
++        memcpy(out->tex[3], outregs[12], sizeof out->tex[3]);
++        return 1;
+     }
+     return 0;
+ }
+diff --git a/src/kernel/nv2a_vsh_interp.h b/src/kernel/nv2a_vsh_interp.h
+index 8acb0af..c7a266b 100644
+--- a/src/kernel/nv2a_vsh_interp.h
++++ b/src/kernel/nv2a_vsh_interp.h
+@@ -43,6 +43,7 @@ void nv2a_vsh_set_start_slot(uint32_t slot);          /* _PROGRAM_START     */
+ void nv2a_vsh_set_constant_load(uint32_t index);      /* _CONSTANT_LOAD     */
+ void nv2a_vsh_constant_word(uint32_t word);           /* _CONSTANT(i)       */
+ void nv2a_vsh_set_cxt_write(uint32_t enable);         /* _CXT_WRITE_EN      */
++int  nv2a_vsh_cxt_write_enabled(void);  /* programs may write c[]: results order-dependent */
+ 
+ /* Run the program from the start slot on one vertex. Inputs are the ten
+  * attribute values as floats. Returns 0 if there is no program to run (no
 diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
 index 362cefe..8b83f65 100644
 --- a/src/kernel/xbox_memory_layout.c

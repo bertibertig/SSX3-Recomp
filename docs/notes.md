@@ -217,3 +217,16 @@ _(date – what was done, what was found, next step)_
     (`ssx3_vk_host_main`, guest on its own thread with a 64 MB stack like `xbox_HostWindowMain`), `vkAcquireNextImageKHR`
     with a 100 ms timeout. Window title "FPS | draws", the same line every 5 s as `[VK] FPS:` in the log.
   - Open: 3D rider model semi-transparent (combiners/depth → M3), character select just under 60.
+- 2026-10-18 – **Vulkan M3 + first race.** Runtime patch: `Nv2aBatchExt` (combiner state, 4 texture stages, per-vertex
+  tex coords/specular/fog) for transformed batches; `nv2a.frag` became a combiner uber-shader (port of
+  `nv2a_rc_eval`/`rc_stage_fetch`), state in a UBO from the frame ring. Character-select rider solid again.
+  - With `SSX3_SKIP_INTRO=1` the route boot → race is: START, START, then A ×8 (peak, mode, event, rules, pre-race
+    screen) – timing-sensitive, check with `SSX3_VK_DUMP`. In-game renders like the CPU reference (snow, mountains,
+    riders, HUD).
+  - Race first at **7–10 fps**: (1) ~22 textures re-decoded every frame (1.9 M texels) – the change hash covered
+    w*h*4 bytes, for DXT textures (formats 0x0C/0x0E/0x0F) 4–8× the real size, i.e. per-frame data behind them →
+    hash exactly level 0 (`texture_bytes`); also a texture outside guest RAM (hash 0) no longer re-decodes every frame.
+    → 23 fps. (2) Then the vertex program interpreter was ~one full core (`nv2a_vsh_run` 24 %, `read_src` 9 %) →
+    per-batch post-transform vertex cache by index + programs decoded once (runtime patch) → race **55–60 fps**,
+    pre-race screen ~40. CPU renderer still renders the race (3 fps).
+  - Remaining guest time is the D3D spin `sub_00234A10` waiting on the NV2A thread.

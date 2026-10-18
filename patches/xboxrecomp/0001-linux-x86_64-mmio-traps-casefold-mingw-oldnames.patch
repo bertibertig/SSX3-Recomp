@@ -184,10 +184,123 @@ index 37c3621..f4683ec 100644
          /* As the Win32 backend does: the bridge reads back the host path
           * the call it just made translated (the missing-file report, the
 diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
-index 1280565..1bc7cde 100644
+index 1280565..fce997a 100644
 --- a/src/kernel/nv2a_pb_exec.c
 +++ b/src/kernel/nv2a_pb_exec.c
-@@ -2684,8 +2684,21 @@ static int transform_vertex(uint32_t index, Nv2aVshOutput *out)
+@@ -2463,9 +2463,111 @@ static void xf_rows_parallel(const XfTri *T, XfCount *total)
+     }
+ }
+ #else
++/* The same pool on POSIX hosts, over pthreads.
++ *
++ * It used to exist on Windows only, and every POSIX build rasterised on the
++ * executor thread alone: SSX 3's front end ran at 1.5 fps on Linux and
++ * 7-13 fps under Proton from the same source, with the title's two D3D
++ * threads spinning on the GPU the whole time. Same split as above -- worker
++ * k takes rows miny+k, miny+k+n, ...; the caller takes the last share. A
++ * generation counter under one mutex starts a round, so a worker that is
++ * slow to wake still runs exactly once per triangle. */
++#include <pthread.h>
++#include <unistd.h>
++
++static struct {
++    int n;                                  /* threads incl. the caller */
++    pthread_mutex_t mu;
++    pthread_cond_t go, done;
++    unsigned gen;                           /* bumped once per triangle */
++    int pending;
++    const XfTri *tri;
++    XfCount cnt[NV_RASTER_MAX_THREADS];
++} s_pool = { 0, PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER,
++             PTHREAD_COND_INITIALIZER, 0, 0, NULL, {{0, 0, 0}} };
++
++static void *raster_worker(void *arg)
++{
++    int k = (int)(intptr_t)arg;
++    unsigned seen = 0;
++
++    for (;;) {
++        const XfTri *T;
++
++        pthread_mutex_lock(&s_pool.mu);
++        while (s_pool.gen == seen)
++            pthread_cond_wait(&s_pool.go, &s_pool.mu);
++        seen = s_pool.gen;
++        T = s_pool.tri;
++        pthread_mutex_unlock(&s_pool.mu);
++
++        memset(&s_pool.cnt[k], 0, sizeof s_pool.cnt[k]);
++        xf_rows(T, T->miny + k, s_pool.n, &s_pool.cnt[k]);
++
++        pthread_mutex_lock(&s_pool.mu);
++        if (--s_pool.pending == 0)
++            pthread_cond_signal(&s_pool.done);
++        pthread_mutex_unlock(&s_pool.mu);
++    }
++    return NULL;
++}
++
++static int raster_pool_size(void)
++{
++    static int init;
++    if (!init) {
++        const char *e = getenv("RECOMP_RASTER_THREADS");
++        long cpus = sysconf(_SC_NPROCESSORS_ONLN);
++        int n, k;
++        init = 1;
++        n = e ? atoi(e) : (int)cpus - 4;
++        if (n < 1) n = 1;
++        if (n > NV_RASTER_MAX_THREADS) n = NV_RASTER_MAX_THREADS;
++        s_pool.n = 1;
++        for (k = 0; k < n - 1; k++) {
++            pthread_t th;
++            if (pthread_create(&th, NULL, raster_worker,
++                               (void *)(intptr_t)k) != 0)
++                break;
++            pthread_detach(th);
++        }
++        s_pool.n = k + 1;                   /* the workers that started */
++        fprintf(stderr, "  [GPU] rasteriser: %d thread(s)\n", s_pool.n);
++    }
++    return s_pool.n;
++}
++
+ static void xf_rows_parallel(const XfTri *T, XfCount *total)
+ {
+-    xf_rows(T, T->miny, 1, total);
++    int n = raster_pool_size(), k;
++    long px = (long)(T->maxx - T->minx) * (T->maxy - T->miny);
++
++    if (n <= 1 || px < NV_RASTER_MT_MIN_PIXELS || T->maxy - T->miny < n) {
++        xf_rows(T, T->miny, 1, total);
++        return;
++    }
++    pthread_mutex_lock(&s_pool.mu);
++    s_pool.tri = T;
++    s_pool.pending = n - 1;
++    s_pool.gen++;
++    pthread_cond_broadcast(&s_pool.go);
++    pthread_mutex_unlock(&s_pool.mu);
++    {
++        XfCount mine = {0, 0, 0};
++        xf_rows(T, T->miny + (n - 1), n, &mine);
++        pthread_mutex_lock(&s_pool.mu);
++        while (s_pool.pending > 0)
++            pthread_cond_wait(&s_pool.done, &s_pool.mu);
++        pthread_mutex_unlock(&s_pool.mu);
++        total->depth_fail += mine.depth_fail;
++        total->pixels += mine.pixels;
++        total->zpass += mine.zpass;
++    }
++    for (k = 0; k < n - 1; k++) {
++        total->depth_fail += s_pool.cnt[k].depth_fail;
++        total->pixels += s_pool.cnt[k].pixels;
++        total->zpass += s_pool.cnt[k].zpass;
++    }
+ }
+ #endif
+ 
+@@ -2684,8 +2786,21 @@ static int transform_vertex(uint32_t index, Nv2aVshOutput *out)
  
      if (!batch_uses_program())
          return ffp_vertex(index, out);
@@ -211,7 +324,7 @@ index 1280565..1bc7cde 100644
      if (!nv2a_vsh_run((const float (*)[4])in, out))
          return 0;
      /* oPos.w == 0 comes from a program that never divided by w: x, y and z
-@@ -2781,13 +2794,20 @@ static void raster_batch_program(void)
+@@ -2781,13 +2896,20 @@ static void raster_batch_program(void)
          /* RECOMP_VSH_TRACE=<n>: print n program batches -- attribute setup,
           * raw inputs, key constants, and what came out. */
          static int left = -1;
@@ -235,6 +348,24 @@ index 1280565..1bc7cde 100644
              float in[4];
              left--;
              fprintf(stderr, "[VTRACE] prim %u n %u idx %u %u %u\n", s_gpu.prim,
+@@ -4087,10 +4209,15 @@ void nv2a_pb_exec_report(void)
+     int i, j;
+ 
+     {
+-        /* Frames per second of guest time, from flips between reports. */
++        /* Frames per second of wall time, from flips between reports.
++         * Not clock(): that is process CPU time on POSIX, and with the
++         * executor, the rasteriser pool and the title's GPU waits all busy
++         * it ran several times faster than the wall -- Linux reported 1.5 fps
++         * for a front end flipping about 4 times a second (MSVC's clock() is
++         * wall time, so Windows read right). */
+         static uint32_t last_flips;
+         static unsigned long last_ms;
+-        unsigned long now = (unsigned long)(clock() * 1000.0 / CLOCKS_PER_SEC);
++        unsigned long now = (unsigned long)GetTickCount64();
+         if (last_ms && now > last_ms)
+             fprintf(stderr, "[GPU] %.2f fps (%u flips)%c",
+                     (s_gpu.flips - last_flips) * 1000.0 / (now - last_ms),
 diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
 index 362cefe..8b83f65 100644
 --- a/src/kernel/xbox_memory_layout.c

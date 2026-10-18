@@ -29,6 +29,11 @@ Alle Kandidaten für einen Upstream-PR an sp00nznet/xboxrecomp.
   und das Intro-Video als degenerierte Dreiecke verworfen. Dazu `RECOMP_VSH_TRACE_EVERY=<n>` (Stride des VSH-Trace,
   Default 20000 wie bisher).
 
+- `src/kernel/nv2a_pb_exec.c`: **Rasterizer-Thread-Pool auch auf POSIX** (pthreads; bisher nur `_WIN32`, Linux renderte
+  einthreadig) – SSX-3-Titelbild 4,4 → 15,4 fps; Pool-Größe wie unter Windows (`RECOMP_RASTER_THREADS`, Default CPUs−4).
+  Dazu die fps-Anzeige des Executors auf Wanduhr (`GetTickCount64`) statt `clock()` (= Prozess-CPU-Zeit unter POSIX,
+  zeigte bei mehreren beschäftigten Threads ein Vielfaches zu wenig fps).
+
 Geprüft: Linux-Build + Windows-Cross-Build (MinGW) bauen; eigener Decoder-Test (8 Fälle, ucontext) grün;
 `tools.recomp.test_reserved_idents` grün; SSX 3 erreicht unter Linux denselben Stand wie unter Proton
 (APU/AC'97/DSP-Doorbell/APU-Interrupts, Intro-Videos werden geöffnet).

@@ -195,3 +195,11 @@ _(Datum – was getan, was gefunden, nächster Schritt)_
   Timer-Thread) → Spiel schläft zu lange; (3) Kickoff-Spin wartet auf das Busy-Bit, das der Poll-Thread nur alle 256 Worte
   löscht. Werkzeuge: `RECOMP_KERNEL_LOG_BUDGET`, gdb mit SIGSTOP-Timer (Skripte in der Session), `strace -f -tt -T`
   (nur als Startprozess, `ptrace_scope=1`).
+- 2026-10-18 – **Performance, Teil 1.** Mit `perf` (`perf record -e cycles:u -g --user-callchains`, paranoid=2):
+  Rasterizer-gebunden. NV2A-Thread rendert (`nv2a_rc_eval`, `sample_tex`, `read_rgb`, `raster_xf_triangle`), Hauptthread
+  spinnt im D3D-Kickoff `sub_00234A10`, ein zweiter D3D-Thread in `sub_0023B490` (beide warten auf die GPU). Die
+  gdb-SIGSTOP-Stichproben von gestern waren irreführend (trafen nur Wartezustände). Ursachen des Linux-Rückstands:
+  (1) Rasterizer-Thread-Pool war `_WIN32`-only → POSIX-Pool mit pthreads (Runtime-Patch); (2) die fps-Anzeige nutzte
+  `clock()` = CPU-Zeit → Linux-Werte ~3× zu niedrig (gestriges „1,5 vs. 13 fps“ war teils Messartefakt; real 4,4 fps).
+  Titelbild real: 1 Thread 4,4 fps → 12 Threads **15,4 fps**; `-march=x86-64-v3` nur +8 % (16,7). Alle 12 Raster-Threads
+  gleichmäßig ausgelastet → für 60 fps braucht es ein GPU-Render-Back-End (Empfehlung OpenGL zuerst, Vulkan später).

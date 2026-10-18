@@ -51,6 +51,10 @@ Order follows `CLAUDE.md` / `xboxrecomp/docs/GETTING_STARTED.md`. Details and fi
       screen ~40 fps
 - [ ] Pre-race screen / busy race scenes below 60: NV2A thread is CPU-bound in the vertex program interpreter →
       parallelise transforms over the raster pool, or (long term, needed for >60 fps) vertex programs on the GPU
+- [x] Random 1–70 s boot (lost vblanks) and empty title screen after the intro fixed (runtime patch)
+- [ ] Crash right after the intro/attract video opens (`sub_00177F80`, VA 0xE0220705), intermittent
+- [ ] VBlank rate: the runtime ticks ~50 Hz by accident; derive it from the display mode (PAL 50 / PAL-60 / NTSC),
+      check which mode SSX 3 (PAL) sets; prerequisite for the unlocked/high-fps work
 - [ ] Vulkan M3 leftovers: cube maps (face 0 only), bump-env/dot-product stage modes, palettised textures
 - [ ] Vulkan M4: verify render-to-texture, AA/resolution, per-triangle culling, frames in flight, Windows (Win32 surface)
 - [ ] Fence: replace the mirror with `nv2a_pb_set_semaphore_target` once desyncs/graphics glitches show up

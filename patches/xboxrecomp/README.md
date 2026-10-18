@@ -47,6 +47,17 @@ All of them are candidates for an upstream PR to sp00nznet/xboxrecomp.
 - `src/kernel/nv2a_vsh_interp.c`: **programs are decoded once** (fields extracted into `VshIns` when the program or
   start slot changes) instead of per source per vertex, and sources an op does not read are not fetched.
   New `nv2a_vsh_cxt_write_enabled()`. Together with the cache: SSX 3 race 23 → 55–60 fps on the Vulkan back end.
+- `src/kernel/xbox_memory_layout.c` (`xbox_Nv2aRaiseVblank`, `xbox_Nv2aAckBusyBits`), `kernel_bridge.c`
+  (`kernel_vblank_tick`): **the vblank stays pending until the title acknowledges it.** The ack thread held every
+  interrupt status register at zero and often wiped PMC_INTR_0 bit 24 / PCRTC_INTR_0 bit 0 between the timer thread
+  raising the vblank and the D3D ISR's DPC reading it; the DPC then skipped its vblank work and never set the event
+  `D3DDevice_BlockUntilVerticalBlank` waits on. SSX 3 waits there once per `AvSetDisplayMode` step, so boot took
+  0.7 s to over 70 s at random. Now the raise also sets a marker bit (31) in PCRTC_INTR_0 that D3D's ack (a write
+  of exactly 1) removes; only then are the bits cleared (fallback after 100 ms). Boot: 0.5–0.6 s every run.
+- `src/kernel/nv2a_pb_exec.c` (`backend_flush`): an `Nv2aTexture` carries a pitch only for linear formats. A
+  swizzled/DXT stage keeps the pitch its stage last had (SSX 3's intro video: 640x480 linear), and the Vulkan back end
+  took pitch != 0 for "linear" -- after the intro, the title screen sampled the corner of its textures (only the sky
+  was left).
 
 Verified: Linux build + Windows cross build (MinGW) compile; own decoder test (8 cases, ucontext) green;
 `tools.recomp.test_reserved_idents` green; SSX 3 on Linux reaches the same state as under Proton

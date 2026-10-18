@@ -96,6 +96,26 @@ index 235140f..c223d57 100644
  
  #if !defined(_WIN32) && defined(__aarch64__)
  /* POSIX arm64: the same hook over sigaction + ucontext, with the A64 decoder
+diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
+index 965dd08..3176c4b 100644
+--- a/src/kernel/kernel_bridge.c
++++ b/src/kernel/kernel_bridge.c
+@@ -2723,8 +2723,13 @@ static void kernel_vblank_tick(void)
+     if (!xbox_GetConnectedInterrupt(NV2A_VECTOR))
+         return;
+ 
+-    BRIDGE_MEM32(XBOX_NV2A_REG_BASE + NV2A_PCRTC_INTR_0) |= NV2A_PCRTC_INTR_VBLANK;
+-    BRIDGE_MEM32(XBOX_NV2A_REG_BASE + NV2A_PMC_INTR_0)   |= NV2A_PMC_INTR_PCRTC;
++    /* Held pending until the title acknowledges it: the ack thread would
++     * otherwise zero the bits before the ISR's DPC reads them (see
++     * xbox_Nv2aRaiseVblank). */
++    if (!xbox_Nv2aRaiseVblank()) {
++        BRIDGE_MEM32(XBOX_NV2A_REG_BASE + NV2A_PCRTC_INTR_0) |= NV2A_PCRTC_INTR_VBLANK;
++        BRIDGE_MEM32(XBOX_NV2A_REG_BASE + NV2A_PMC_INTR_0)   |= NV2A_PMC_INTR_PCRTC;
++    }
+ 
+     {
+         static unsigned n;
 diff --git a/src/kernel/kernel_path.c b/src/kernel/kernel_path.c
 index 37c3621..f4683ec 100644
 --- a/src/kernel/kernel_path.c
@@ -184,7 +204,7 @@ index 37c3621..f4683ec 100644
          /* As the Win32 backend does: the bridge reads back the host path
           * the call it just made translated (the missing-file report, the
 diff --git a/src/kernel/nv2a_backend.h b/src/kernel/nv2a_backend.h
-index 327f01d..86f966c 100644
+index 327f01d..caeb766 100644
 --- a/src/kernel/nv2a_backend.h
 +++ b/src/kernel/nv2a_backend.h
 @@ -20,15 +20,21 @@
@@ -212,6 +232,15 @@ index 327f01d..86f966c 100644
  /* The colour surface being drawn into, in real (anti-aliased) pixels.
   * aa_sx/aa_sy give the anti-aliasing factor, so width/aa_sx is the logical
   * size the title thinks it renders at (e.g. 640x480). */
+@@ -44,7 +50,7 @@ typedef struct {
+ typedef struct {
+     uint32_t offset;            /* guest address of texel (0,0) */
+     uint32_t width, height;
+-    uint32_t pitch;             /* linear formats only */
++    uint32_t pitch;             /* linear formats only; 0 for swizzled/DXT */
+     uint32_t color;             /* NV097 colour-format code */
+     uint32_t addr_u, addr_v;    /* NV097 wrap mode per axis (1 wrap, 3 clamp) */
+     /* Mip levels stored after level 0 (the format word's MIPMAP_LEVELS; 1 for
 @@ -82,11 +88,35 @@ typedef struct {
      uint32_t stencil_write_mask, stencil_fail, stencil_zfail, stencil_zpass;
  } Nv2aRenderState;
@@ -249,7 +278,7 @@ index 327f01d..86f966c 100644
  
  typedef struct {
 diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
-index 1280565..4726563 100644
+index 1280565..71b340d 100644
 --- a/src/kernel/nv2a_pb_exec.c
 +++ b/src/kernel/nv2a_pb_exec.c
 @@ -1894,12 +1894,21 @@ static int s_xf_no_tex;
@@ -300,7 +329,7 @@ index 1280565..4726563 100644
  
      if (!s_bcount)
          return;
-@@ -1939,6 +1957,41 @@ static void backend_flush(int textured)
+@@ -1939,15 +1957,55 @@ static void backend_flush(int textured)
      batch.count = s_bcount;
      batch.texture = NULL;
      batch.state = &rs;
@@ -317,11 +346,16 @@ index 1280565..4726563 100644
 +            stex[st].offset = t->offset;
 +            stex[st].width  = t->width;
 +            stex[st].height = t->height;
-+            stex[st].pitch  = t->pitch;
++            /* Linear or not is the format's call, as everywhere else here: a
++             * swizzled texture keeps whatever pitch the stage last had (SSX 3's
++             * intro video leaves its 640x480 linear one), and a back end that
++             * took pitch != 0 for "linear" scaled the title screen's
++             * coordinates to its corner. */
++            stex[st].pitch  = tex_size_from_format(t->color) ? 0 : t->pitch;
 +            stex[st].color  = t->color;
 +            stex[st].addr_u = t->addr_u;
 +            stex[st].addr_v = t->addr_v;
-+            stex[st].levels = t->pitch ? 1 : t->levels;
++            stex[st].levels = stex[st].pitch ? 1 : t->levels;
 +            stex[st].filter = t->filter;
 +            ext.textures[st] = &stex[st];
 +        }
@@ -342,7 +376,18 @@ index 1280565..4726563 100644
      if (textured && s_gpu.texs[0].valid) {
          tex.offset = s_gpu.texs[0].offset;
          tex.width  = s_gpu.texs[0].width;
-@@ -2463,9 +2516,111 @@ static void xf_rows_parallel(const XfTri *T, XfCount *total)
+         tex.height = s_gpu.texs[0].height;
+-        tex.pitch  = s_gpu.texs[0].pitch;
++        tex.pitch  = tex_size_from_format(s_gpu.texs[0].color) ? 0 : s_gpu.texs[0].pitch;
+         tex.color  = s_gpu.texs[0].color;
+         tex.addr_u = s_gpu.texs[0].addr_u;
+         tex.addr_v = s_gpu.texs[0].addr_v;
+-        tex.levels = s_gpu.texs[0].pitch ? 1 : s_gpu.texs[0].levels;
++        tex.levels = tex.pitch ? 1 : s_gpu.texs[0].levels;
+         tex.filter = s_gpu.texs[0].filter;
+         batch.texture = &tex;
+     }
+@@ -2463,9 +2521,111 @@ static void xf_rows_parallel(const XfTri *T, XfCount *total)
      }
  }
  #else
@@ -455,7 +500,7 @@ index 1280565..4726563 100644
  }
  #endif
  
-@@ -2684,8 +2839,21 @@ static int transform_vertex(uint32_t index, Nv2aVshOutput *out)
+@@ -2684,8 +2844,21 @@ static int transform_vertex(uint32_t index, Nv2aVshOutput *out)
  
      if (!batch_uses_program())
          return ffp_vertex(index, out);
@@ -479,7 +524,7 @@ index 1280565..4726563 100644
      if (!nv2a_vsh_run((const float (*)[4])in, out))
          return 0;
      /* oPos.w == 0 comes from a program that never divided by w: x, y and z
-@@ -2721,15 +2889,40 @@ static void xf_set_viewport(void)
+@@ -2721,15 +2894,40 @@ static void xf_set_viewport(void)
      s_xf_o[2] = of[2];
  }
  
@@ -522,7 +567,7 @@ index 1280565..4726563 100644
      xf_set_viewport();
      {
          const VertexAttr *tc = texcoord_attr();
-@@ -2781,13 +2974,20 @@ static void raster_batch_program(void)
+@@ -2781,13 +2979,20 @@ static void raster_batch_program(void)
          /* RECOMP_VSH_TRACE=<n>: print n program batches -- attribute setup,
           * raw inputs, key constants, and what came out. */
          static int left = -1;
@@ -546,7 +591,7 @@ index 1280565..4726563 100644
              float in[4];
              left--;
              fprintf(stderr, "[VTRACE] prim %u n %u idx %u %u %u\n", s_gpu.prim,
-@@ -4087,10 +4287,15 @@ void nv2a_pb_exec_report(void)
+@@ -4087,10 +4292,15 @@ void nv2a_pb_exec_report(void)
      int i, j;
  
      {
@@ -838,7 +883,7 @@ index 8acb0af..c7a266b 100644
  /* Run the program from the start slot on one vertex. Inputs are the ten
   * attribute values as floats. Returns 0 if there is no program to run (no
 diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
-index 362cefe..8b83f65 100644
+index 362cefe..5ecd60f 100644
 --- a/src/kernel/xbox_memory_layout.c
 +++ b/src/kernel/xbox_memory_layout.c
 @@ -655,8 +655,22 @@ static LONG CALLBACK ac97_write_veh(PEXCEPTION_POINTERS ep)
@@ -929,6 +974,124 @@ index 362cefe..8b83f65 100644
      uint32_t va;
  
      if (!mmio_fault_va(fault, &va))
+@@ -1350,17 +1365,100 @@ static void framebuffer_probe_tick(void)
+  * and a level load, thousands of kickoffs long, looked frozen. Clearing them
+  * from inside the walk answers the kickoff within a few hundred commands,
+  * without a thread of its own spinning on a host core. */
++/* A pending vblank, held in the status registers until the title acks it.
++ *
++ * The table above holds every interrupt status register at zero, which is
++ * right for interrupts nothing raises and wrong for the one that is raised:
++ * the timer thread sets PCRTC_INTR_0 bit 0 and PMC_INTR_0 bit 24, calls the
++ * D3D ISR, and the ISR's DPC then reads PMC_INTR_0 to see what happened. This
++ * thread zeroed the bits in between often enough that the DPC saw nothing,
++ * skipped its vblank handling and never set the event D3D waits on in
++ * BlockUntilVerticalBlank. SSX 3 sits in exactly that wait while it sets the
++ * display mode (one wait per AvSetDisplayMode step), and boot took anywhere
++ * from 0.7 s to over 70 s depending on who won; its title-screen fade-in,
++ * which counts vblanks, stalled the same way.
++ *
++ * The bits stay set until the title acknowledges. Hardware clears on a write
++ * of 1, which plain memory cannot see, so the raise also sets a marker bit
++ * (31) in PCRTC_INTR_0 that no title writes: XDK D3D acks with exactly 1, the
++ * marker disappears, and the next pass clears both registers. A title that
++ * never acks is let go after NV2A_VBLANK_HOLD_MS. The lock keeps this thread
++ * from zeroing a vblank between the raise's two writes. */
++#define NV2A_PMC_INTR_PCRTC      (1u << 24)
++#define NV2A_PCRTC_INTR_VBLANK   (1u << 0)
++#define NV2A_PCRTC_ACK_MARKER    (1u << 31)
++#define NV2A_VBLANK_HOLD_MS      100
++static volatile LONG s_vblank_pending;
++static ULONGLONG     s_vblank_raised_ms;
++static CRITICAL_SECTION s_vblank_lock;
++static INIT_ONCE s_vblank_lock_once = INIT_ONCE_STATIC_INIT;
++
++static BOOL CALLBACK vblank_lock_init(PINIT_ONCE o, PVOID p, PVOID *c)
++{
++    (void)o; (void)p; (void)c;
++    InitializeCriticalSection(&s_vblank_lock);
++    return TRUE;
++}
++
++int xbox_Nv2aRaiseVblank(void)
++{
++    volatile uint32_t *regs = (volatile uint32_t *)g_nv2a_memory;
++
++    if (!regs)
++        return 0;
++    InitOnceExecuteOnce(&s_vblank_lock_once, vblank_lock_init, NULL, NULL);
++    EnterCriticalSection(&s_vblank_lock);
++    regs[0x600100 / 4] |= NV2A_PCRTC_INTR_VBLANK | NV2A_PCRTC_ACK_MARKER;
++    regs[0x000100 / 4] |= NV2A_PMC_INTR_PCRTC;
++    s_vblank_raised_ms = GetTickCount64();
++    s_vblank_pending = 1;
++    LeaveCriticalSection(&s_vblank_lock);
++    return 1;
++}
++
+ void xbox_Nv2aAckBusyBits(void)
+ {
+     volatile uint32_t *regs = (volatile uint32_t *)g_nv2a_memory;
++    int hold = 0;
+ 
+     if (!regs)
+         return;
++    if (s_vblank_pending) {
++        EnterCriticalSection(&s_vblank_lock);
++        if (s_vblank_pending) {
++            if ((regs[0x600100 / 4] & NV2A_PCRTC_ACK_MARKER)
++                    && GetTickCount64() - s_vblank_raised_ms < NV2A_VBLANK_HOLD_MS)
++                hold = 1;                       /* not acknowledged yet */
++            else
++                s_vblank_pending = 0;
++        }
++        if (hold) {
++            /* Everything but the pending vblank clears as before. */
++            regs[0x000100 / 4] &= NV2A_PMC_INTR_PCRTC;
++            regs[0x600100 / 4] &= NV2A_PCRTC_INTR_VBLANK | NV2A_PCRTC_ACK_MARKER;
++        } else {
++            regs[0x000100 / 4] = 0;
++            regs[0x600100 / 4] = 0;
++        }
++        LeaveCriticalSection(&s_vblank_lock);
++    }
+     for (size_t i = 0; i < sizeof(NV2A_ACK) / sizeof(NV2A_ACK[0]); i++) {
+         volatile uint32_t *r =
+             (volatile uint32_t *)((char *)regs + NV2A_ACK[i].offset);
++        if (hold && (NV2A_ACK[i].offset == 0x000100 || NV2A_ACK[i].offset == 0x600100))
++            continue;
+         if (*r & NV2A_ACK[i].busy_mask) {
+-            *r &= ~NV2A_ACK[i].busy_mask;
++            /* A raise between the test above and this write would be wiped:
++             * the two vblank registers clear under the lock. */
++            if (NV2A_ACK[i].offset == 0x000100 || NV2A_ACK[i].offset == 0x600100) {
++                InitOnceExecuteOnce(&s_vblank_lock_once, vblank_lock_init, NULL, NULL);
++                EnterCriticalSection(&s_vblank_lock);
++                if (!s_vblank_pending)
++                    *r &= ~NV2A_ACK[i].busy_mask;
++                LeaveCriticalSection(&s_vblank_lock);
++            } else {
++                *r &= ~NV2A_ACK[i].busy_mask;
++            }
+         }
+     }
+ }
+diff --git a/src/kernel/xbox_memory_layout.h b/src/kernel/xbox_memory_layout.h
+index 14eee45..5293311 100644
+--- a/src/kernel/xbox_memory_layout.h
++++ b/src/kernel/xbox_memory_layout.h
+@@ -181,6 +181,11 @@ void xbox_Nv2aFrameCounterFlip(void);
+ /* A word of the NV2A register file (offset from the register base); NULL until
+  * the aperture is mapped. */
+ volatile uint32_t *xbox_Nv2aRegPtr(uint32_t offset);
++/* Raise the vblank in the interrupt status registers (PCRTC_INTR_0 bit 0,
++ * PMC_INTR_0 bit 24) and keep it pending until the title acknowledges it,
++ * as write-1-to-clear hardware does; see the comment at the definition.
++ * Returns 0 before the aperture is mapped. */
++int xbox_Nv2aRaiseVblank(void);
+ 
+ /* Tell the runtime where the display framebuffer is (from AvSetDisplayMode). */
+ void xbox_SetDisplayFramebuffer(uint32_t fb_va, uint32_t pitch);
 diff --git a/src/platform/mmio_decode.h b/src/platform/mmio_decode.h
 index 1916156..3c8acff 100644
 --- a/src/platform/mmio_decode.h

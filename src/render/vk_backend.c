@@ -14,10 +14,11 @@
  *
  * Switches:
  *   SSX3_VK_VALIDATE=1      enable VK_LAYER_KHRONOS_validation (if installed)
- *   SSX3_VK_DUMP=<prefix>   write the presented surface as <prefix>NNNNN.bmp
+ *   SSX3_VK_DUMP=<prefix>   write the presented surface as <prefix><flip number>.bmp
  *   SSX3_VK_DUMP_EVERY=<n>  ... every n-th flip (default 60)
  *   SSX3_VK_GPU=<substr>    pick the physical device whose name contains it
  *   SSX3_VK_TEXLOG=1        log the first 60 re-decodes of cached textures
+ *   SSX3_VK_NO_RC=1         ignore the combiner extension (milestone-2 look)
  */
 #include "volk.h"
 #include <SDL.h>
@@ -170,6 +171,7 @@ static struct {
     VkbDepth         *rt_depth;
 
     uint32_t          frame_draws;         /* draw() calls since the last flip */
+    int               first_draw_logged;
     uint32_t          stat_decodes;        /* texture decodes since the last log */
     uint64_t          stat_decode_px;      /* ... and their texels */
     uint32_t          stat_new;            /* ... of which first sight / cache misses */
@@ -178,7 +180,6 @@ static struct {
 
     const char       *dump_prefix;
     uint32_t          dump_every;
-    uint32_t          dump_seq;
 } V;
 
 /* ---- helpers --------------------------------------------------------- */
@@ -1396,7 +1397,8 @@ static void dump_surface(VkbSurface *s)
     vkWaitForFences(V.device, 1, &V.frame_fence, VK_TRUE, UINT64_MAX);
 
     vkMapMemory(V.device, mem, 0, size, 0, (void **)&px);
-    snprintf(path, sizeof path, "%s%05u.bmp", V.dump_prefix, V.dump_seq++);
+    /* Named by flip number, so a dump can be matched to log lines. */
+    snprintf(path, sizeof path, "%s%06u.bmp", V.dump_prefix, V.flips);
     f = fopen(path, "wb");
     if (f) {
         row_bytes = s->width * 3;
@@ -1627,8 +1629,9 @@ static int combiners_upload(const Nv2aBatchExt *e, VkDeviceSize *off)
 static void vkb_draw(const Nv2aSurface *g, const Nv2aBatch *b)
 {
     const Nv2aRenderState *rs = b->state;
-    const Nv2aBatchExt *e = b->ext;
-    int use_rc = e && e->rc;
+    static int no_rc = -1;
+    const Nv2aBatchExt *e;
+    int use_rc;
     VkbSurface *s;
     VkbDepth *d;
     const Nv2aTexture *stex[4] = { NULL, NULL, NULL, NULL };
@@ -1639,12 +1642,16 @@ static void vkb_draw(const Nv2aSurface *g, const Nv2aBatch *b)
     VkbPush pc;
     VkDeviceSize voff[2], vstride[2], rc_off = 0;
     VkDeviceSize bytes = (VkDeviceSize)b->count * sizeof(Nv2aVertex);
-    VkDeviceSize ebytes = e ? (VkDeviceSize)b->count * sizeof(Nv2aVertexExt)
-                            : sizeof(Nv2aVertexExt);
+    VkDeviceSize ebytes;
     VkBuffer vbufs[2];
     void *dst, *edst;
     int i;
 
+    if (no_rc < 0)
+        no_rc = getenv("SSX3_VK_NO_RC") != NULL;
+    e = no_rc ? NULL : b->ext;
+    use_rc = e && e->rc;
+    ebytes = e ? (VkDeviceSize)b->count * sizeof(Nv2aVertexExt) : sizeof(Nv2aVertexExt);
     if (!b->count || !ensure_ready() || !ensure_recording() || !white_ready())
         return;
     if (!(s = surface_get(g)))
@@ -1816,6 +1823,14 @@ static void vkb_flip(void)
         update_title();
     }
     V.flips++;
+    if (V.flips == 1 || (V.frame_draws && !V.first_draw_logged)) {
+        /* Boot time to the first flip and the first frame with draws. */
+        fprintf(stderr, "  [VK] %s at %.1f s (flip %u)\n",
+                V.flips == 1 ? "first flip" : "first frame with draws",
+                (double)SDL_GetTicks() / 1000.0, V.flips);
+        if (V.frame_draws)
+            V.first_draw_logged = 1;
+    }
     V.last_frame_draws = V.frame_draws;
     V.frame_draws = 0;
     if (V.swap_dirty) {

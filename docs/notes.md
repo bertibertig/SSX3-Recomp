@@ -230,3 +230,20 @@ _(date – what was done, what was found, next step)_
     per-batch post-transform vertex cache by index + programs decoded once (runtime patch) → race **55–60 fps**,
     pre-race screen ~40. CPU renderer still renders the race (3 fps).
   - Remaining guest time is the D3D spin `sub_00234A10` waiting on the NV2A thread.
+- 2026-10-18 – **Title screen empty after the intro / slow, random boot.** Two separate bugs, both runtime patch:
+  - Boot (0.7 s … >70 s to the first drawn frame, random): main thread in `sub_0022C620` (D3D mode set: loop of
+    `BlockUntilVerticalBlank` `sub_0022DF20` + `AvSetDisplayMode` steps) waiting on the vblank event (D3D device
+    0x0024B0E0 + 0x1DAC). ISR `sub_0023B290` (vector 3) claimed every vblank, its DPC `sub_0023BC60` reads PMC_INTR_0
+    and calls the vblank handler `sub_0023B490` (`KeSetEvent` on the event) only if bit 24 is still set – but the
+    runtime's ack thread zeroes all interrupt status registers continuously and usually won. Fix: vblank held pending
+    until D3D acks (marker bit in PCRTC_INTR_0). Boot now 0.5–0.6 s in every run. Note: the timer thread ticks
+    vblank every ~20 ms (50 Hz) – by accident (Sleep(10) + 16 ms gate), not from the display mode (PAL!). Revisit
+    with the unlocked-framerate work.
+  - Title screen only sky after the intro was played and skipped: the intro's linear 640x480 video texture leaves its
+    pitch in the texture stage; the M3 combiner path took pitch != 0 as "linear" and scaled the title textures'
+    coordinates by 1/size. Runtime now passes pitch 0 for swizzled/DXT formats. My earlier tests used
+    `SSX3_SKIP_INTRO=1` and missed it – test the default flow (intro + key skip) too.
+  - Still open: intermittent crash right after `intro_dj.mad` opens (attract-mode video, also seen at boot):
+    `sub_00177F80`, eax=0xE0220701, Xbox VA 0xE0220705 – garbage pointer, not investigated yet.
+  - New: `[VK] first flip / first frame with draws at X s (flip N)` log line, Vulkan dumps named by flip number,
+    `SSX3_VK_NO_RC=1` (ignore the combiner extension, for comparisons).

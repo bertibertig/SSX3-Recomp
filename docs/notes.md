@@ -667,5 +667,6 @@ _(date – what was done, what was found, next step)_
   the order 1,3,0,4,6,5,2 (table 0x2934D4) via 0x56600; buying (0x4E570) costs table 0x300CDC[value/5 − 1]
   (250, 500, 750 … 2500, 5000) and checks the bank. The save diff matches exactly: attribute 4 5 → 9, total
   5 → 1018, bank 5 → 18 (4 × 250 spent). Also changed in Zoe's record: +0xDC 0 → 2 and +0xE0 0 → 3 (no direct
-  references; perhaps equipped gear – open). Static analysis plus the save diff only; not yet checked in a
+  references; not gear – the user only bought attribute points, so likely counters of that session – open).
+  Where the equipped outfit and board sit needs a save diff after changing only those. Static analysis plus the save diff only; not yet checked in a
   running game. For LAN: `lan_profile.attrib[7]` carries the raw bytes; "equal stats" sets them all to 5.

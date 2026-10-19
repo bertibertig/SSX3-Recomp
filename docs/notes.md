@@ -634,4 +634,13 @@ _(date – what was done, what was found, next step)_
     open (needs a levelled save to compare). For LAN: remote riders need only their look (character = slot table
     +8, plus outfit and board – to find); each PC simulates its own rider from its own profile; "everyone level 1"
     can use the game's own Bragging Rights handicap "lvl 1 character".
+- 2026-10-19 – **"Unable to save" on Linux** (user report: overwriting the existing save from Options -> Save/Load ->
+  Save game). Reproduced on a copy of the save folder (`RECOMP_SAVE_DIR`), the user's own save untouched: after
+  `U:\1966902D2EA4\SaveMeta.xbx` the title opened `Data.ssx` **relative to a RootDirectory handle** (XAPI's save
+  code) and the POSIX file backend ignored the handle -> `[FILE] Data.ssx (disp 1) -> 0xC000003A FAILED
+  (ERROR_PATH_NOT_FOUND)`. The Win32 backend joins such names to the handle's path (koen's Windows port never saw
+  it). Fix in the runtime patch (`patches/xboxrecomp/`, `kernel_file.c` `posix_obj_path`, used by NtCreateFile,
+  NtDeleteFile and NtQueryFullAttributesFile). Test on a fresh copy: overwrite BRK -> "Save complete.", the save's
+  three files rewritten (Data.ssx byte-identical, no progress since the last save), no failed open in the log.
+  Not tested: a save into a new slot with a new name (the scripted on-screen keyboard was too fiddly).
 

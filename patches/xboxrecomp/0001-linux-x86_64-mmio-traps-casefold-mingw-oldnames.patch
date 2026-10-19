@@ -116,6 +116,85 @@ index 965dd08..3176c4b 100644
  
      {
          static unsigned n;
+diff --git a/src/kernel/kernel_file.c b/src/kernel/kernel_file.c
+index eb33a61..2651871 100644
+--- a/src/kernel/kernel_file.c
++++ b/src/kernel/kernel_file.c
+@@ -1075,6 +1075,44 @@ static NTSTATUS errno_to_status(int e)
+     }
+ }
+ 
++/* Translate an Xbox OBJECT_ATTRIBUTES path to a host path.
++ *
++ * A name relative to a RootDirectory handle is joined to that handle's host
++ * path, as the Win32 backend does (translate_obj_path). XAPI opens a save
++ * game's files that way: XCreateSaveGame / XDeleteSaveGame open the save
++ * directory and then "Data.ssx" relative to it. Through the path table alone
++ * the bare name matched no rule and the open failed with
++ * STATUS_OBJECT_PATH_NOT_FOUND -- SSX 3 reported "Unable to save" when it
++ * overwrote an existing save. */
++static int posix_obj_path(PXBOX_OBJECT_ATTRIBUTES oa, char* host_path, size_t n)
++{
++    const char* xbox_path = get_xbox_path(oa);
++
++    if (!xbox_path)
++        return 0;
++    if (oa->RootDirectory && xbox_path[0] != '\\'
++            && !(xbox_path[0] && xbox_path[1] == ':')) {
++        const char* base = w32_handle_path(oa->RootDirectory);
++        size_t dir;
++        char* p;
++
++        if (!base)
++            return 0;
++        dir = strlen(base);
++        while (dir > 1 && base[dir - 1] == '/')
++            dir--;
++        if (dir + 1 + strlen(xbox_path) >= n)
++            return 0;
++        memcpy(host_path, base, dir);
++        host_path[dir] = '/';
++        strcpy(host_path + dir + 1, xbox_path);
++        for (p = host_path + dir + 1; *p; p++)
++            if (*p == '\\') *p = '/';
++        return 1;
++    }
++    return xbox_translate_path(xbox_path, host_path, (DWORD)n) ? 1 : 0;
++}
++
+ NTSTATUS __stdcall xbox_NtCreateFile(
+     PHANDLE FileHandle, ACCESS_MASK DesiredAccess,
+     PXBOX_OBJECT_ATTRIBUTES ObjectAttributes, PXBOX_IO_STATUS_BLOCK IoStatusBlock,
+@@ -1087,8 +1125,7 @@ NTSTATUS __stdcall xbox_NtCreateFile(
+     if (!FileHandle || !ObjectAttributes)
+         return STATUS_INVALID_PARAMETER;
+ 
+-    const char* xbox_path = get_xbox_path(ObjectAttributes);
+-    if (!xbox_path || !xbox_translate_path(xbox_path, host_path, MAX_PATH)) {
++    if (!posix_obj_path(ObjectAttributes, host_path, MAX_PATH)) {
+         xbox_log(XBOX_LOG_ERROR, XBOX_LOG_FILE, "NtCreateFile: path translation failed");
+         return STATUS_OBJECT_PATH_NOT_FOUND;
+     }
+@@ -1248,8 +1285,7 @@ NTSTATUS __stdcall xbox_NtClose(HANDLE Handle)
+ NTSTATUS __stdcall xbox_NtDeleteFile(PXBOX_OBJECT_ATTRIBUTES ObjectAttributes)
+ {
+     char host_path[MAX_PATH];
+-    const char* xbox_path = get_xbox_path(ObjectAttributes);
+-    if (!xbox_path || !xbox_translate_path(xbox_path, host_path, MAX_PATH))
++    if (!posix_obj_path(ObjectAttributes, host_path, MAX_PATH))
+         return STATUS_OBJECT_PATH_NOT_FOUND;
+     XBOX_TRACE(XBOX_LOG_FILE, "NtDeleteFile: %s", host_path);
+     if (unlink(host_path) == 0) return STATUS_SUCCESS;
+@@ -1536,8 +1572,7 @@ NTSTATUS __stdcall xbox_NtQueryFullAttributesFile(
+ 
+     if (!FileInformation)
+         return STATUS_INVALID_PARAMETER;
+-    const char* xbox_path = get_xbox_path(ObjectAttributes);
+-    if (!xbox_path || !xbox_translate_path(xbox_path, host_path, MAX_PATH))
++    if (!posix_obj_path(ObjectAttributes, host_path, MAX_PATH))
+         return STATUS_OBJECT_PATH_NOT_FOUND;
+     if (stat(host_path, &st) != 0)
+         return STATUS_OBJECT_NAME_NOT_FOUND;
 diff --git a/src/kernel/kernel_path.c b/src/kernel/kernel_path.c
 index 37c3621..f4683ec 100644
 --- a/src/kernel/kernel_path.c

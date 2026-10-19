@@ -190,7 +190,8 @@ compatibility with older distributions, Windows with the host's MinGW) – witho
 
 ## Run options
 
-Started from a terminal, `run.sh` first asks for the internal resolution (1x–5x), the frame rate (display
+Started from a terminal, `run.sh` first asks for the internal resolution (1x–5x), the aspect ratio (4:3, 16:9,
+16:10, 21:9, auto), the frame rate (display
 refresh, 60 without interpolation, 120/144/165/240, uncapped) and v-sync. The choice is saved in
 `~/.config/ssx3-recomp/run.conf` (Windows: `%APPDATA%\ssx3-recomp\run.conf`) and reused, also for starts
 without a terminal (e.g. a Steam shortcut). Variables set in the environment win and are not asked for.
@@ -199,6 +200,7 @@ without a terminal (e.g. a Steam shortcut). Variables set in the environment win
 |---|---|---|
 | `SSX3_RENDERER` | `vulkan` (Windows: `cpu`) | `cpu` = the software renderer (reference, slow) |
 | `SSX3_RES_SCALE` | `1` | internal resolution `1`–`5` × 640x480; **F10** cycles it in game |
+| `SSX3_ASPECT` | `4:3` | widescreen in races: `16:9`, `16:10`, `21:9`, any `W:H`, `auto` (desktop); menus stay 4:3 |
 | `SSX3_FPS_LIMIT` | display refresh | interpolated frame cap in fps, `0` = uncapped |
 | `SSX3_INTERP` | `1` | `0` = no interpolation, show the game's own 60 fps |
 | `SSX3_VSYNC` | `0` | `1` = v-sync (FIFO); `0` = mailbox, lower latency |

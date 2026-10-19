@@ -32,12 +32,23 @@
  *                           <prefix><flip>_<t*100>.bmp, every SSX3_VK_DUMP_EVERY flips
  *   SSX3_RES_SCALE=<1..5>   internal resolution as a multiple of the title's
  *                           (default 1 = 640x480); F10 cycles it at run time
+ *   SSX3_ASPECT=<shape>     widescreen in game: 16:9, 16:10, 21:9, any W:H or
+ *                           decimal, or auto (the desktop's shape); default 4:3
+ *                           (off). Menus, loading screens and movies stay 4:3,
+ *                           pillarboxed.
  *
  * Internal resolution: every guest surface is a GPU image of its guest size
  * times the scale (surface_extent). Vertices stay in guest pixels -- the
  * shaders divide by the guest size -- so only image sizes, viewports, scissors
- * and blits see the scale. The horizontal factor is kept separate (R.wide) for
- * a widescreen view later: the image grows wider, the display aspect with it.
+ * and blits see the scale.
+ *
+ * Widescreen (SSX3_ASPECT): in game the title projects a view R.wide times
+ * wider than 4:3 into its 640x480 target (recomp_manual.c, camera hook).
+ * Screen-sized surfaces then get images R.wide times wider and a display
+ * aspect to match, so the squeezed picture is stretched back; 2D vertices
+ * (rhw 1, the HUD) are narrowed to the 4:3 middle in the vertex shader, except
+ * on the screen edges (full-screen passes). Outside the game R.wide is 1 and
+ * the 4:3 frame is pillarboxed in the window like any other.
  */
 #include "volk.h"
 #include <SDL.h>
@@ -81,6 +92,7 @@ typedef struct {
     uint32_t       img_w, img_h;           /* GPU image: guest size x scale */
     float          aspect;                 /* display aspect of the whole image */
     int            scale;                  /* R.scale it was made at */
+    float          wide;                   /* widescreen factor it was made at (1 = 4:3) */
     VkImage        image;
     VkDeviceMemory memory;
     VkImageView    view;
@@ -128,6 +140,7 @@ typedef struct {
     float    z_scale;
     uint32_t flags;          /* 1 textured | 2 combiners | func<<8 | ref<<16
                               * | 1<<31 alpha test */
+    float    squeeze;        /* x of 2D vertices times this (1 / surface's wide) */
 } VkbPush;
 
 /* One batch's register-combiner state, std140, as nv2a.frag's RC block. */
@@ -231,13 +244,19 @@ static struct {
     volatile int want;
     int          scale;
     int          purge;     /* scale changed: free the old images */
-    /* Horizontal factor on top of the scale for a widescreen view (image
-     * wider, display aspect wider by the same factor); 1 = the title's 4:3.
-     * Nothing sets it yet: a widescreen patch would also have to widen the
-     * camera projection, and pick which surfaces get it (the screen-sized
-     * ones, not offscreen targets) in surface_extent. */
+    /* Widescreen: horizontal factor on top of the scale for screen-sized
+     * surfaces (image wider, display aspect wider by the same factor); 1 =
+     * the title's 4:3. `wide` is what this frame renders at, taken over at
+     * a flip: g_ssx3_wide while the title is in game, else 1. */
     float        wide;
-} R = { 1, 1, 0, 1.0f };
+    int          wide_auto;            /* SSX3_ASPECT=auto: resolve from the desktop */
+    uint32_t     screen_w, screen_h;   /* guest size of the shown surface */
+} R = { 1, 1, 0, 1.0f, 0, 640, 480 };
+
+extern volatile float g_ssx3_wide;     /* recomp_manual.c: requested factor */
+extern int ssx3_in_game(void);         /* recomp_manual.c */
+static void wide_auto(void);
+static void window_size(int *w, int *h);
 
 /* ---- frame interpolation: declarations ------------------------------------
  *
@@ -998,9 +1017,12 @@ static int init_vulkan(void)
             fprintf(stderr, "  [VK] SDL video: %s\n", SDL_GetError());
             return 0;
         }
+        int ww, wh;
+        wide_auto();
+        window_size(&ww, &wh);
         V.window = SDL_CreateWindow("SSX 3 (Recomp, Vulkan)",
                                     SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                                    1280, 960,
+                                    ww, wh,
                                     SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_SHOWN);
         if (!V.window) {
             fprintf(stderr, "  [VK] SDL_CreateWindow: %s\n", SDL_GetError());
@@ -1132,9 +1154,14 @@ static void surface_free(VkbSurface *s)
  * a full cache of in-use images fails the request (logged once). */
 /* The GPU image size for a guest surface at the current scale, clamped to
  * what the device can create. */
-static void surface_extent(const Nv2aSurface *g, uint32_t *w, uint32_t *h)
+static void surface_extent(const Nv2aSurface *g, uint32_t *w, uint32_t *h, float *wide)
 {
-    double sx = R.scale * R.wide, sy = R.scale;
+    double sx, sy = R.scale;
+
+    /* Only the screen-sized targets are widened, never shadow maps or other
+     * offscreen surfaces: the title's 2D passes into those must stay as drawn. */
+    *wide = (g->width == R.screen_w && g->height == R.screen_h) ? R.wide : 1.0f;
+    sx = R.scale * *wide;
     double mw = V.max_dim ? V.max_dim : 4096;
 
     if (g->width * sx > mw)  sx = mw / g->width;
@@ -1149,9 +1176,10 @@ static VkbSurface *surface_get(const Nv2aSurface *g)
 {
     VkbSurface *s, *victim = NULL;
     uint32_t iw, ih;
+    float wide;
     int i;
 
-    surface_extent(g, &iw, &ih);
+    surface_extent(g, &iw, &ih, &wide);
     for (i = 0; i < VKB_MAX_SURFACES; i++) {
         s = &V.surfaces[i];
         if (s->image && s->va == g->color_va
@@ -1193,8 +1221,9 @@ static VkbSurface *surface_get(const Nv2aSurface *g)
     s->logical_h = g->height / (g->aa_sy ? g->aa_sy : 1);
     s->img_w = iw;
     s->img_h = ih;
-    s->aspect = (float)s->logical_w / (float)s->logical_h * R.wide;
+    s->aspect = (float)s->logical_w / (float)s->logical_h * wide;
     s->scale = R.scale;
+    s->wide = wide;
     s->layout = VK_IMAGE_LAYOUT_UNDEFINED;
     s->last_used = V.flips;
     fprintf(stderr, "  [VK] surface 0x%08X %ux%u (logical %ux%u, image %ux%u)\n",
@@ -1267,25 +1296,29 @@ static void depth_to(VkbDepth *d, VkImageLayout to)
     }
 }
 
-/* After a scale change, at the start of the next frame (no command buffer
- * being recorded references the images; device_idle retires the ones in
- * flight): free the colour and depth images of the old scale at once rather
- * than leave them for eviction -- at 5x one surface is ~30 MB. The presenter
- * samples only its own snapshots and textures, never these. */
+/* After a scale or widescreen change, at the start of the next frame (no
+ * command buffer being recorded references the images; device_idle retires
+ * the ones in flight): free the colour and depth images of the old shape at
+ * once rather than leave them for eviction -- at 5x one surface is ~30 MB.
+ * The presenter samples only its own snapshots and textures, never these.
+ * Depth images do not record which colour surface they belong to, so a
+ * widescreen change (R.purge 2) frees them all; the next draw remakes them. */
 static void purge_scaled(void)
 {
-    int i, idle = 0;
+    int i, idle = 0, all_depths = R.purge == 2;
 
     R.purge = 0;
     for (i = 0; i < VKB_MAX_SURFACES; i++) {
         VkbSurface *s = &V.surfaces[i];
         VkbDepth *d = &V.depths[i];
-        if (s->image && s->scale != R.scale) {
+        float wide = s->image && s->width == R.screen_w && s->height == R.screen_h
+                     ? R.wide : 1.0f;
+        if (s->image && (s->scale != R.scale || s->wide != wide)) {
             if (!idle++) device_idle();
             if (V.last == s) V.last = NULL;
             surface_free(s);
         }
-        if (d->image && d->scale != R.scale) {
+        if (d->image && (d->scale != R.scale || all_depths)) {
             if (!idle++) device_idle();
             depth_free(d);
         }
@@ -3203,6 +3236,7 @@ static void vkb_draw(const Nv2aSurface *g, const Nv2aBatch *b)
     pc.tex_size[0] = (!use_rc && views[0]) ? (float)b->texture->width : 1.0f;
     pc.tex_size[1] = (!use_rc && views[0]) ? (float)b->texture->height : 1.0f;
     pc.z_scale = 1.0f / 16777215.0f;
+    pc.squeeze = 1.0f / s->wide;
     pc.flags = ((!use_rc && views[0]) ? 1u : 0u)
              | (use_rc ? 2u : 0u)
              | ((rs->alpha_func >= 0x200 && rs->alpha_func <= 0x207
@@ -3329,8 +3363,89 @@ static void scale_update(void)
     if (want == R.scale)
         return;
     R.scale = want;
-    R.purge = 1;
+    if (!R.purge)
+        R.purge = 1;
     fprintf(stderr, "  [VK] internal resolution %dx\n", R.scale);
+}
+
+/* At a flip: widescreen for the next frame -- the requested factor while the
+ * title is in game (its camera hook widens the projection then), else 4:3.
+ * The shown surface's guest size says which surfaces are screen-sized. */
+static void wide_update(void)
+{
+    float want = g_ssx3_wide > 1.001f && ssx3_in_game() ? g_ssx3_wide : 1.0f;
+
+    if (V.last) {
+        R.screen_w = V.last->width;
+        R.screen_h = V.last->height;
+    }
+    if (want == R.wide)
+        return;
+    R.wide = want;
+    R.purge = 2;
+    fprintf(stderr, "  [VK] %s (frame aspect %.3f)\n",
+            want > 1.0f ? "widescreen on: in game" : "widescreen off: 4:3, pillarboxed",
+            4.0 / 3.0 * want);
+}
+
+/* SSX3_ASPECT: the requested frame shape, as g_ssx3_wide = shape / (4/3).
+ * "auto" is resolved by wide_auto once SDL video is up. */
+static void wide_init(void)
+{
+    const char *e = getenv("SSX3_ASPECT");
+    double a = 4.0 / 3.0, w, h;
+
+    if (!e || !*e)
+        return;
+    if (!strcmp(e, "auto")) {
+        R.wide_auto = 1;
+        return;
+    }
+    if (sscanf(e, "%lf:%lf", &w, &h) == 2 && w > 0 && h > 0)
+        a = w / h;
+    else if (sscanf(e, "%lf", &w) == 1 && w > 0)
+        a = w;
+    else
+        fprintf(stderr, "  [VK] SSX3_ASPECT=%s not understood (16:9, 21:9, 1.78, auto)\n", e);
+    if (a < 4.0 / 3.0 + 0.001) {
+        if (a < 4.0 / 3.0 - 0.001)
+            fprintf(stderr, "  [VK] SSX3_ASPECT=%s is narrower than 4:3, using 4:3\n", e);
+        return;
+    }
+    g_ssx3_wide = (float)(a * 0.75);
+    fprintf(stderr, "  [VK] widescreen: %.3f:1 in game (x%.3f)\n", a, a * 0.75);
+}
+
+/* SSX3_ASPECT=auto: the desktop's shape (needs SDL video). */
+static void wide_auto(void)
+{
+    SDL_DisplayMode m;
+
+    if (!R.wide_auto)
+        return;
+    R.wide_auto = 0;
+    if (SDL_GetDesktopDisplayMode(0, &m) != 0 || m.w <= 0 || m.h <= 0) {
+        fprintf(stderr, "  [VK] SSX3_ASPECT=auto: no desktop mode (%s), using 4:3\n",
+                SDL_GetError());
+        return;
+    }
+    if ((double)m.w / m.h > 4.0 / 3.0 + 0.001)
+        g_ssx3_wide = (float)((double)m.w / m.h * 0.75);
+    fprintf(stderr, "  [VK] widescreen auto: desktop %dx%d -> x%.3f\n", m.w, m.h,
+            (double)g_ssx3_wide);
+}
+
+/* The window's first size: 960 high for 4:3, 720 high and as wide as the
+ * frame shape otherwise (1280x720 at 16:9, 1680x720 at 21:9). */
+static void window_size(int *w, int *h)
+{
+    if (g_ssx3_wide > 1.001f) {
+        *h = 720;
+        *w = (int)(720.0 * 4.0 / 3.0 * g_ssx3_wide + 0.5);
+    } else {
+        *w = 1280;
+        *h = 960;
+    }
 }
 
 /* SSX3_RES_SCALE at start-up; F10 cycles 1x .. VKB_MAX_SCALE x (any thread
@@ -3387,6 +3502,7 @@ static void vkb_flip(void)
     V.last_frame_draws = V.frame_draws;
     V.frame_draws = 0;
     scale_update();
+    wide_update();
     if (I.on) {
         flip_interp();
         return;
@@ -3551,9 +3667,13 @@ int ssx3_vk_host_main(int (*guest_main)(void))
                 SDL_GetError());
         return guest_main();
     }
+    int ww, wh;
+
+    wide_auto();
+    window_size(&ww, &wh);
     V.window = SDL_CreateWindow("SSX 3 (Recomp, Vulkan) | loading",
                                 SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                                1280, 960,
+                                ww, wh,
                                 SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_SHOWN);
     s_guest_done_event = SDL_RegisterEvents(1);
     if (!V.window || s_guest_done_event == (Uint32)-1) {
@@ -3609,6 +3729,7 @@ int ssx3_vk_host_main(int (*guest_main)(void))
 int ssx3_vk_register(void)
 {
     scale_init();
+    wide_init();
     nv2a_backend_register(&s_vk_backend);
     fprintf(stderr, "  [VK] Vulkan back end registered (starts on the first frame)\n");
     return 0;

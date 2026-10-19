@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stddef.h>   /* ptrdiff_t */
+#include <string.h>   /* memcpy */
 
 /* ── ICALL trace ring buffer ───────────────────────────────── */
 
@@ -76,6 +77,61 @@ static void present_with_clock(void)
     if (app)
         g_ssx3_present_steps = *(volatile uint32_t *)((uintptr_t)(app + 0x20) + g_xbox_mem_offset);
     sub_001F3020();
+}
+
+/* ── Widescreen ─────────────────────────────────────────────── */
+
+/*
+ * SSX 3 renders 4:3 only. The main camera's projection is D3DX
+ * PerspectiveFovLH (0x0024EA13, stdcall: out, fovy, aspect, zn, zf), called
+ * only by the renderer's camera setup sub_001EAB40 (return address 0x001EACA5)
+ * with aspect = 640/480. Multiplying that aspect by g_ssx3_wide makes the game
+ * render -- and cull -- a wider view squeezed into its 640x480 target; the
+ * Vulkan back end stretches screen-sized targets by the same factor and
+ * narrows 2D vertices (HUD) back to 4:3. Finding from koenhendriks/SSX3-recomp
+ * (CLAUDE.md, "WIDESCREEN"); see docs/notes.md.
+ *
+ * Only in game (races, free-roam: the app object's current state has vtable
+ * 0x00299D7C). Frontend art, loading screens and movies are made for 4:3 and
+ * stay 4:3; the back end shows them pillarboxed.
+ */
+/* Guest registers are thread-local (recomp_types.h, RECOMP_TLS). */
+#if defined(_MSC_VER)
+extern __declspec(thread) uint32_t g_esp;
+#else
+extern __thread uint32_t g_esp;
+#endif
+
+/* Requested target shape / (4/3): 1 = off. Set by the Vulkan back end from
+ * SSX3_ASPECT before the guest starts; other renderers leave it at 1. */
+volatile float g_ssx3_wide = 1.0f;
+
+#define SSX3_MEM32(va) (*(volatile uint32_t *)((uintptr_t)(va) + g_xbox_mem_offset))
+
+int ssx3_in_game(void)
+{
+    uint32_t app = SSX3_MEM32(0x003A930Cu), cur;
+
+    if (app < 0x10000u)
+        return 0;
+    cur = SSX3_MEM32(app + 4);
+    return cur >= 0x10000u && SSX3_MEM32(cur) == 0x00299D7Cu;
+}
+
+/* Entry hook (the recompiler calls it at the top of the generated
+ * sub_0024EA13; scripts/run_pipeline.sh passes --exclude-manual). */
+void sub_0024EA13_enter(void)
+{
+    float wide = g_ssx3_wide, aspect;
+    uint32_t bits;
+
+    if (wide <= 1.001f || SSX3_MEM32(g_esp) != 0x001EACA5u || !ssx3_in_game())
+        return;
+    bits = SSX3_MEM32(g_esp + 12);
+    memcpy(&aspect, &bits, 4);
+    aspect *= wide;
+    memcpy(&bits, &aspect, 4);
+    SSX3_MEM32(g_esp + 12) = bits;
 }
 
 /* ── Manual function overrides ─────────────────────────────── */

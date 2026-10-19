@@ -48,6 +48,8 @@ available as the reference (`SSX3_RENDERER=cpu`) for comparison dumps; the Vulka
    pre-decoded vertex programs in the runtime patch).
 4. ✅ Internal resolution 1x–5x (`SSX3_RES_SCALE`, F10 at run time) and two frames in flight (2026-10-19).
    Open: render-to-texture checks, AA, per-triangle culling, Windows (Win32 surface instead of SDL).
+5. ✅ Widescreen in game (`SSX3_ASPECT`, 2026-10-19): camera hook in `recomp_manual.c`, screen-sized surfaces
+   `R.wide` times wider, 2D vertices narrowed to the 4:3 middle (`squeeze`); details in docs/notes.md.
 
 ## Internal resolution
 - Every guest surface is a GPU image of guest size × scale (`surface_extent`); depth images, the presenter's
@@ -58,10 +60,10 @@ available as the reference (`SSX3_RENDERER=cpu`) for comparison dumps; the Vulka
   textures use normalised coordinates and simply give more texels.
 - Surfaces are keyed by guest address + guest size + image size. A new scale (F10) is applied at a flip; the next
   frame frees the old-scale images (`purge_scaled`) and recreates them on first use.
-- Widescreen later: `R.wide` is a horizontal factor on top of the scale (image wider, display aspect `aspect`
-  wider by the same factor). Nothing sets it yet: it also needs the camera projection widened (koen's port:
-  D3DX `PerspectiveFovLH` 0x0024EA13, called by `sub_001EAB40`) and a choice of which surfaces get it (the
-  screen-sized ones, not offscreen targets), plus HUD/menu handling.
+- Widescreen (`SSX3_ASPECT`): `R.wide` is a horizontal factor on top of the scale (image wider, display aspect
+  wider by the same factor), set at a flip while the title is in game (`wide_update`). Only screen-sized
+  surfaces get it; the camera projection is widened by `sub_0024EA13_enter` in `recomp_manual.c`, and the
+  `squeeze` push constant narrows 2D vertices (rhw 1) to the 4:3 middle except on the screen edges.
 - Frames in flight: without them the NV2A thread waited for the GPU at every frame start (`vkWaitForFences`
   6–8 ms per frame at 3x vs ~2 ms at 1x, game fps 46 → 34 in a heavy scene). Now two command buffers / fences /
   acquire semaphores / vertex and staging rings alternate; images are shared (ALL_COMMANDS barriers order them on

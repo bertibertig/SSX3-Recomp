@@ -15,7 +15,8 @@
 #   SSX3_FPS_LIMIT=<n>      interpolated frame cap (default: fastest display's refresh, 0 = uncapped)
 #   SSX3_VSYNC=1            vsync (FIFO) instead of mailbox presentation
 #   SSX3_RES_SCALE=<1..5>   internal resolution (Vulkan), multiple of 640x480; F10 cycles it in game
-#   SSX3_MENU=0 / 1         start-up menu for resolution, frame rate, v-sync: never / always (default: when in a
+#   SSX3_ASPECT=<shape>     widescreen in game (Vulkan): 16:9, 16:10, 21:9, any W:H, auto (desktop); default 4:3
+#   SSX3_MENU=0 / 1         start-up menu for resolution, aspect ratio, frame rate, v-sync: never / always (default: when in a
 #                           terminal and not set above). The choice is saved and reused (scripts/_launch_menu.sh)
 #   RECOMP_PB_SCAN=1 / RECOMP_PB_EXEC=1   analyse / execute the NV2A pushbuffer
 #   SSX3_PAD_TRACE=1        log every controller button change (pads: README "Controllers")

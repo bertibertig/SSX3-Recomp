@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Start-up menu for scripts/run.sh: internal resolution, frame rate and v-sync (Vulkan renderer).
+# Start-up menu for scripts/run.sh: internal resolution, aspect ratio, frame rate and v-sync (Vulkan renderer).
 # Loaded with `source`; call launch_menu. Uses whiptail or dialog when installed, otherwise a built-in
 # arrow-key menu. The last choice is saved and reused – also when there is no terminal (e.g. a Steam shortcut).
 #   SSX3_MENU=0   never show the menu (saved choice / defaults only)
-#   SSX3_MENU=1   show it even if SSX3_RES_SCALE / SSX3_FPS_LIMIT / SSX3_INTERP / SSX3_VSYNC are already set
+#   SSX3_MENU=1   show it even if SSX3_RES_SCALE / SSX3_ASPECT / SSX3_FPS_LIMIT / SSX3_INTERP / SSX3_VSYNC are already set
 # Variables set in the environment win over the saved choice and are not asked for.
 
 LAUNCH_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/ssx3-recomp/run.conf"
@@ -14,6 +14,13 @@ RES_ITEMS=(
   3 "3x  1920x1440"
   4 "4x  2560x1920"
   5 "5x  3200x2400  sharpest, heaviest"
+)
+ASPECT_ITEMS=(
+  4:3   "4:3    original, no widescreen"
+  16:9  "16:9   widescreen (most monitors, TVs, Steam Deck docked)"
+  16:10 "16:10  widescreen (Steam Deck screen, many laptops)"
+  21:9  "21:9   ultrawide"
+  auto  "Auto   the desktop's shape"
 )
 FPS_ITEMS=(
   display  "Display refresh  interpolated up to the monitor's rate"
@@ -96,7 +103,7 @@ _menu() {
 
 _conf_get() {  # _conf_get KEY -> value from the saved choice (no `source`: the file is only data)
   [ -f "$LAUNCH_CONF" ] || return 0
-  sed -n "s/^$1=\([A-Za-z0-9]*\)$/\1/p" "$LAUNCH_CONF" | tail -n1
+  sed -n "s/^$1=\([A-Za-z0-9:]*\)$/\1/p" "$LAUNCH_CONF" | tail -n1
 }
 
 _apply_fps() {
@@ -112,20 +119,22 @@ _apply_fps() {
 launch_menu() {
   [ "${SSX3_RENDERER:-vulkan}" = vulkan ] || return 0  # both settings only exist in the Vulkan back end
 
-  local ask_res=1 ask_fps=1 ask_vsync=1
+  local ask_res=1 ask_aspect=1 ask_fps=1 ask_vsync=1
   [ -n "${SSX3_RES_SCALE:-}" ] && ask_res=0
+  [ -n "${SSX3_ASPECT:-}" ] && ask_aspect=0
   [ -n "${SSX3_FPS_LIMIT:-}${SSX3_INTERP:-}" ] && ask_fps=0
   [ -n "${SSX3_VSYNC:-}" ] && ask_vsync=0
-  if [ "${SSX3_MENU:-}" = 1 ]; then ask_res=1; ask_fps=1; ask_vsync=1; fi
+  if [ "${SSX3_MENU:-}" = 1 ]; then ask_res=1; ask_aspect=1; ask_fps=1; ask_vsync=1; fi
 
-  local res fps vsync
+  local res aspect fps vsync
   res="$(_conf_get RES_SCALE)"; res="${res:-${SSX3_RES_SCALE:-1}}"
+  aspect="$(_conf_get ASPECT)"; aspect="${aspect:-${SSX3_ASPECT:-16:9}}"
   fps="$(_conf_get FPS)"; fps="${fps:-display}"
   vsync="$(_conf_get VSYNC)"; vsync="${vsync:-${SSX3_VSYNC:-0}}"
 
   local interactive=1
   { [ "${SSX3_MENU:-}" = 0 ] || [ ! -t 0 ] || [ ! -t 1 ]; } && interactive=0
-  if [ "$interactive" = 1 ] && [ $((ask_res + ask_fps + ask_vsync)) -gt 0 ]; then
+  if [ "$interactive" = 1 ] && [ $((ask_res + ask_aspect + ask_fps + ask_vsync)) -gt 0 ]; then
     if [ -z "${SSX3_MENU_TOOL:-}" ]; then           # SSX3_MENU_TOOL=builtin|whiptail|dialog forces one
       SSX3_MENU_TOOL=builtin
       command -v dialog   >/dev/null 2>&1 && SSX3_MENU_TOOL=dialog
@@ -133,6 +142,10 @@ launch_menu() {
     fi
     if [ "$ask_res" = 1 ]; then
       res="$(_menu "Internal resolution" "Rendering resolution (F10 cycles it in game):" "$res" "${RES_ITEMS[@]}")" \
+        || { echo "Cancelled." >&2; exit 0; }
+    fi
+    if [ "$ask_aspect" = 1 ]; then
+      aspect="$(_menu "Aspect ratio" "Widescreen in races; menus and movies stay 4:3:" "$aspect" "${ASPECT_ITEMS[@]}")" \
         || { echo "Cancelled." >&2; exit 0; }
     fi
     if [ "$ask_fps" = 1 ]; then
@@ -145,10 +158,17 @@ launch_menu() {
     fi
     [ "$SSX3_MENU_TOOL" = builtin ] || clear
     mkdir -p "$(dirname "$LAUNCH_CONF")"
-    printf '# scripts/run.sh – last start-up choice\nRES_SCALE=%s\nFPS=%s\nVSYNC=%s\n' "$res" "$fps" "$vsync" >"$LAUNCH_CONF"
+    printf '# scripts/run.sh – last start-up choice\nRES_SCALE=%s\nASPECT=%s\nFPS=%s\nVSYNC=%s\n' \
+      "$res" "$aspect" "$fps" "$vsync" >"$LAUNCH_CONF"
   fi
 
   if [ "$ask_res" = 1 ]; then export SSX3_RES_SCALE="$res"; fi
+  if [ "$ask_aspect" = 1 ]; then
+    case "$aspect" in
+      auto|[0-9]*:[0-9]*) export SSX3_ASPECT="$aspect" ;;
+      *) echo "run.sh: ignoring saved aspect ratio '$aspect'" >&2; unset SSX3_ASPECT ;;
+    esac
+  fi
   if [ "$ask_fps" = 1 ]; then unset SSX3_FPS_LIMIT SSX3_INTERP; _apply_fps "$fps"; fi
   if [ "$ask_vsync" = 1 ]; then
     case "$vsync" in
@@ -162,5 +182,5 @@ launch_menu() {
   elif [ -n "${SSX3_FPS_LIMIT:-}" ]; then fps_text="$SSX3_FPS_LIMIT"
   fi
   local vsync_text=off; [ "${SSX3_VSYNC:-0}" = 1 ] && vsync_text=on
-  echo "run.sh: internal resolution ${SSX3_RES_SCALE:-1}x, frame rate $fps_text, v-sync $vsync_text" >&2
+  echo "run.sh: internal resolution ${SSX3_RES_SCALE:-1}x, aspect ${SSX3_ASPECT:-4:3}, frame rate $fps_text, v-sync $vsync_text" >&2
 }

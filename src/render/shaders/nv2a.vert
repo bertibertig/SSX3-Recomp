@@ -21,6 +21,7 @@ layout(push_constant) uniform PC {
     vec2  tex_size;       // texels of stage 0; (1,1) when untextured
     float z_scale;        // 1 / depth-buffer maximum (Z24: 1/16777215)
     uint  flags;          // see nv2a.frag
+    float squeeze;        // widescreen: x of 2D vertices times this (1 = off)
 } pc;
 
 layout(location = 0) out vec4 v_diffuse;
@@ -36,6 +37,12 @@ void main()
 {
     // Surface pixels have y down, as Vulkan's framebuffer does.
     vec2 ndc = in_pos.xy / pc.surface_size * 2.0 - 1.0;
+    // Widescreen: the title draws its HUD and other 2D (pre-transformed,
+    // rhw 1) for 4:3, so it goes back to the 4:3 middle of the wider target.
+    // Vertices on the left/right edge stay: full-screen passes keep covering
+    // the whole frame.
+    if (pc.squeeze != 1.0 && in_pos.w == 1.0 && abs(ndc.x) < 0.999)
+        ndc.x *= pc.squeeze;
     // w = 1/rhw restores the clip-space w the title projected with, so
     // colour and UVs interpolate perspective-correctly; pre-transformed
     // vertices carry rhw = 1.

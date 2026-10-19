@@ -346,3 +346,28 @@ _(date – what was done, what was found, next step)_
   and starts the exe; the default flow (CPU renderer, no menu) under plain Wine reaches intro → attract → title →
   menus → "Loading…" and crashes like under Proton (exit 139). PowerShell needs the terminal to answer `ESC[6n`
   (cursor position) – a pty driver has to reply, or the menu waits forever.
+- 2026-10-19 – **Widescreen: 16:9, 16:10, 21:9, any W:H, auto** (`SSX3_ASPECT`, default 4:3 = off; branch
+  `widescreen`). Mechanism from koenhendriks/SSX3-recomp (CLAUDE.md "WIDESCREEN", findings only, own code):
+  - Camera: D3DX `PerspectiveFovLH` 0x0024EA13 (stdcall out, fovy, aspect, zn, zf) is called by the renderer's
+    camera setup sub_001EAB40 (only via vtable – no direct callers in our gen code; return address 0x001EACA5) with
+    aspect 640/480. `recomp_manual.c` `sub_0024EA13_enter` multiplies the aspect at `[esp+12]` by
+    `g_ssx3_wide` = shape / (4/3) – the game renders and culls a wider view squeezed into 640x480. Verified: the
+    constructor sub_000CB800 installs vtable 0x00299D7C (= the in-game app state, app object at 0x003A930C, current
+    state at +4) – `ssx3_in_game()`; widescreen only applies there.
+  - Entry hooks need the recompiler's `--exclude-manual` (`run_pipeline.sh` passes `src/recomp_manual.c` now; it
+    emits `sub_X_enter()` at the top of generated `sub_X`, and keeps `sub_X_gen` wrappers possible). **Regenerate
+    (`scripts/run_pipeline.sh recomp`) before building this branch.**
+  - `vk_backend.c`: at a flip `wide_update` sets `R.wide` = requested factor while in game, else 1. Screen-sized
+    surfaces (guest size of the shown surface, 640x480) get images `R.wide` times wider and a display aspect to
+    match; offscreen targets (shadow maps 128/124, a 640x476 pass) stay as they are. A change frees the old
+    screen images and all depth images at the next frame start (`purge_scaled`, `R.purge = 2`). Push constant
+    `squeeze` = 1/wide: `nv2a.vert` narrows 2D vertices (rhw 1, the HUD) to the 4:3 middle unless they are on the
+    left/right edge (full-screen passes). Menus, loading screens and movies stay 4:3 and are pillarboxed in the
+    window by the existing `fit_rect`. The window opens 720 high at the chosen shape (1280x720 at 16:9).
+  - Start-up menu (`_launch_menu.sh`, `run.ps1`): new "Aspect ratio" question (4:3 / 16:9 / 16:10 / 21:9 / auto,
+    default 16:9) → `SSX3_ASPECT`, saved as `ASPECT=`; the saved-value parser now accepts `:`.
+  - Tested (Linux, virtual pad, default flow with the intro skipped by Start): 16:9 at 1x → 853x480 race frames,
+    HUD in proportion in the middle, menus 640x480; 21:9 at 2x → 2240x960, full-screen tint passes reach the edges;
+    a saved `ASPECT=16:10` reaches the back end (x1.200). Not tested: Windows build (the Vulkan back end is not
+    built there yet; `g_ssx3_wide` stays 1 with the CPU renderer), split screen, replays/cut-scenes in game, HUD
+    elements anchored to the screen edge (a quad with one vertex on the edge would be stretched).

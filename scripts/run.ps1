@@ -9,8 +9,9 @@
 #   RECOMP_TITLE_KEVENTS / RECOMP_VBLANK / RECOMP_AC97_READY / RECOMP_PB_EXEC   on by default, as in run.sh
 #   SSX3_RENDERER=cpu       default on Windows: the Vulkan back end has no Win32 surface yet (docs/TODO.md, M4)
 #   SSX3_RENDERER=vulkan    GPU renderer, once a build includes it; enables the start-up menu below
-#   SSX3_INTERP=0 / SSX3_FPS_LIMIT=<n> / SSX3_VSYNC=1 / SSX3_RES_SCALE=<1..5>   Vulkan settings, as in run.sh
-#   SSX3_MENU=0 / 1         start-up menu for resolution, frame rate, v-sync: never / always (default: when in a
+#   SSX3_INTERP=0 / SSX3_FPS_LIMIT=<n> / SSX3_VSYNC=1 / SSX3_RES_SCALE=<1..5> / SSX3_ASPECT=<16:9|16:10|21:9|auto>
+#                           Vulkan settings, as in run.sh
+#   SSX3_MENU=0 / 1         start-up menu for resolution, aspect ratio, frame rate, v-sync: never / always (default: when in a
 #                           console and not set above). The choice is saved in %APPDATA%\ssx3-recomp\run.conf
 #   SSX3_PAD_TRACE=1        log every controller button change
 #   RECOMP_USB_PADS=2       more emulated pads on the USB bus (split screen), default 1
@@ -66,6 +67,13 @@ $ResItems = @(
     @('3', '3x  1920x1440'),
     @('4', '4x  2560x1920'),
     @('5', '5x  3200x2400  sharpest, heaviest')
+)
+$AspectItems = @(
+    @('4:3',   '4:3    original, no widescreen'),
+    @('16:9',  '16:9   widescreen (most monitors and TVs)'),
+    @('16:10', '16:10  widescreen (many laptops)'),
+    @('21:9',  '21:9   ultrawide'),
+    @('auto',  'Auto   the desktop''s shape')
 )
 $FpsItems = @(
     @('display',  "Display refresh  interpolated up to the monitor's rate"),
@@ -137,7 +145,7 @@ function Get-ConfValue([string]$Key) {  # value from the saved choice (parsed as
     if (-not (Test-Path -LiteralPath $LaunchConf)) { return $null }
     $v = $null
     foreach ($line in Get-Content -LiteralPath $LaunchConf) {
-        if ($line -match "^$Key=([A-Za-z0-9]*)$") { $v = $Matches[1] }
+        if ($line -match "^$Key=([A-Za-z0-9:]*)$") { $v = $Matches[1] }
     }
     return $v
 }
@@ -156,19 +164,25 @@ function Invoke-LaunchMenu {
     if ((Get-EnvValue SSX3_RENDERER) -ne 'vulkan') { return }   # these settings only exist in the Vulkan back end
 
     $askRes = -not (Get-EnvValue SSX3_RES_SCALE)
+    $askAspect = -not (Get-EnvValue SSX3_ASPECT)
     $askFps = -not ((Get-EnvValue SSX3_FPS_LIMIT) -or (Get-EnvValue SSX3_INTERP))
     $askVsync = -not (Get-EnvValue SSX3_VSYNC)
-    if ($env:SSX3_MENU -eq '1') { $askRes = $true; $askFps = $true; $askVsync = $true }
+    if ($env:SSX3_MENU -eq '1') { $askRes = $true; $askAspect = $true; $askFps = $true; $askVsync = $true }
 
     $res = Get-ConfValue RES_SCALE;   if (-not $res)   { $res = if ($env:SSX3_RES_SCALE) { $env:SSX3_RES_SCALE } else { '1' } }
+    $aspect = Get-ConfValue ASPECT;   if (-not $aspect) { $aspect = if ($env:SSX3_ASPECT) { $env:SSX3_ASPECT } else { '16:9' } }
     $fps = Get-ConfValue FPS;         if (-not $fps)   { $fps = 'display' }
     $vsync = Get-ConfValue VSYNC;     if (-not $vsync) { $vsync = if ($env:SSX3_VSYNC) { $env:SSX3_VSYNC } else { '0' } }
 
     $interactive = ($env:SSX3_MENU -ne '0') -and -not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected
-    if ($interactive -and ($askRes -or $askFps -or $askVsync)) {
+    if ($interactive -and ($askRes -or $askAspect -or $askFps -or $askVsync)) {
         if ($askRes) {
             $res = Show-Menu 'Internal resolution (F10 cycles it in game)' $res $ResItems
             if ($null -eq $res) { [Console]::Error.WriteLine('Cancelled.'); exit 0 }
+        }
+        if ($askAspect) {
+            $aspect = Show-Menu 'Aspect ratio (widescreen in races; menus and movies stay 4:3)' $aspect $AspectItems
+            if ($null -eq $aspect) { [Console]::Error.WriteLine('Cancelled.'); exit 0 }
         }
         if ($askFps) {
             $fps = Show-Menu 'Frame rate (the game runs at 60; higher rates are interpolated)' $fps $FpsItems
@@ -180,10 +194,14 @@ function Invoke-LaunchMenu {
         }
         New-Item -ItemType Directory -Force -Path $ConfDir | Out-Null
         Set-Content -LiteralPath $LaunchConf -Encoding ASCII -Value @(
-            '# scripts/run.ps1 - last start-up choice', "RES_SCALE=$res", "FPS=$fps", "VSYNC=$vsync")
+            '# scripts/run.ps1 - last start-up choice', "RES_SCALE=$res", "ASPECT=$aspect", "FPS=$fps", "VSYNC=$vsync")
     }
 
     if ($askRes) { $env:SSX3_RES_SCALE = $res }
+    if ($askAspect) {
+        if ($aspect -match '^(auto|[0-9]+:[0-9]+)$') { $env:SSX3_ASPECT = $aspect }
+        else { [Console]::Error.WriteLine("run.ps1: ignoring saved aspect ratio '$aspect'"); $env:SSX3_ASPECT = $null }
+    }
     if ($askFps) { $env:SSX3_FPS_LIMIT = $null; $env:SSX3_INTERP = $null; Set-FpsEnv $fps }
     if ($askVsync) {
         if ($vsync -eq '0' -or $vsync -eq '1') { $env:SSX3_VSYNC = $vsync }
@@ -195,7 +213,8 @@ function Invoke-LaunchMenu {
     elseif ($env:SSX3_FPS_LIMIT) { $fpsText = $env:SSX3_FPS_LIMIT }
     $vsyncText = if ($env:SSX3_VSYNC -eq '1') { 'on' } else { 'off' }
     $scale = if ($env:SSX3_RES_SCALE) { $env:SSX3_RES_SCALE } else { '1' }
-    [Console]::Error.WriteLine("run.ps1: internal resolution ${scale}x, frame rate $fpsText, v-sync $vsyncText")
+    $aspectText = if ($env:SSX3_ASPECT) { $env:SSX3_ASPECT } else { '4:3' }
+    [Console]::Error.WriteLine("run.ps1: internal resolution ${scale}x, aspect $aspectText, frame rate $fpsText, v-sync $vsyncText")
 }
 
 Invoke-LaunchMenu

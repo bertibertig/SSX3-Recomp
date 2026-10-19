@@ -31,6 +31,8 @@ fi
 [[ "$STEP" =~ ^(all|abi)$    ]] && run python -m tools.abi_analysis "$XBE" -v   # do NOT skip!
 if [[ "$STEP" =~ ^(all|recomp)$ ]]; then
   mkdir -p "$GEN_DIR"
-  run python -m tools.recomp "$XBE" --all --split 250 --gen-dir "$GEN_DIR"
+  # --exclude-manual: functions src/recomp_manual.c defines, wraps (sub_X_gen) or hooks on entry
+  # (sub_X_enter, e.g. the widescreen camera hook) – the generated code must leave them to it.
+  run python -m tools.recomp "$XBE" --all --split 250 --gen-dir "$GEN_DIR" --exclude-manual "$ROOT/src/recomp_manual.c"
 fi
 echo; echo "Done. Health report: scripts/doctor.sh"

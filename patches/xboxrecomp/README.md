@@ -81,3 +81,9 @@ All of them are candidates for an upstream PR to sp00nznet/xboxrecomp.
 Verified: Linux build + Windows cross build (MinGW) compile; own decoder test (8 cases, ucontext) green;
 `tools.recomp.test_reserved_idents` green; SSX 3 on Linux reaches the same state as under Proton
 (APU/AC'97/DSP doorbell/APU interrupts, intro videos are opened).
+- `src/kernel/kernel_file.c` (POSIX `xbox_NtCreateFile`, `xbox_NtDeleteFile`, `xbox_NtQueryFullAttributesFile`,
+  new `posix_obj_path`): **names relative to a RootDirectory handle** are joined to that handle's host path, as the
+  Win32 backend already did (`translate_obj_path`). XAPI opens a save game's files relative to the save directory;
+  through the path table alone the bare `Data.ssx` failed with STATUS_OBJECT_PATH_NOT_FOUND and SSX 3 showed
+  "Unable to save" when overwriting an existing save (Linux only; the Windows build was not affected).
+

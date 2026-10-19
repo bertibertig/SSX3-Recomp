@@ -21,6 +21,8 @@
  *   SSX3_VK_VALIDATE=1      enable VK_LAYER_KHRONOS_validation (if installed)
  *   SSX3_VK_DUMP=<prefix>   write the presented surface as <prefix><flip number>.bmp
  *   SSX3_VK_DUMP_EVERY=<n>  ... every n-th flip (default 60)
+ *   SSX3_VK_DRAWLOG=<f,...> log every draw of those flips (target, vertex
+ *                           ranges, textures, state) -- for comparing frames
  *   SSX3_VK_GPU=<substr>    pick the physical device whose name contains it
  *   SSX3_VK_TEXLOG=1        log the first 60 re-decodes of cached textures
  *   SSX3_VK_NO_RC=1         ignore the combiner extension (milestone-2 look)
@@ -206,6 +208,8 @@ static struct {
 
     VkbSurface        surfaces[VKB_MAX_SURFACES];
     VkbSurface       *last;                /* last surface cleared/drawn */
+    uint32_t          clip[4];             /* x, y, w, h of the current clear/draw,
+                                            * guest pixels (Nv2aSurface) */
     uint32_t          flips;
 
     VkFormat          depth_format;
@@ -300,6 +304,7 @@ typedef struct {
     uint64_t        key;             /* identity for matching across frames */
     uint64_t        sig;             /* texture-coordinate hash (presenter) */
     uint32_t        flags, argb, zstencil;   /* clear */
+    uint32_t        clip[4];         /* scissor, guest pixels (V.clip) */
 } VkiCmd;
 
 typedef struct {
@@ -374,6 +379,7 @@ static void rec_draw(VkbSurface *s, const Nv2aBatch *b, const Nv2aBatchExt *e,
                      const int surf[4], const VkbPush *pc, const Nv2aRenderState *rs);
 static void rec_clear(VkbSurface *s, uint32_t flags, uint32_t argb, uint32_t zstencil);
 static int view_surface(VkImageView v);
+static void unpack_argb(uint32_t c, float o[4]);
 
 /* ---- helpers --------------------------------------------------------- */
 
@@ -1157,41 +1163,75 @@ static void surface_free(VkbSurface *s)
  * a full cache of in-use images fails the request (logged once). */
 /* The GPU image size for a guest surface at the current scale, clamped to
  * what the device can create. */
-static void surface_extent(const Nv2aSurface *g, uint32_t *w, uint32_t *h, float *wide)
+static void surface_extent(uint32_t gw, uint32_t gh, uint32_t *w, uint32_t *h, float *wide)
 {
     double sx, sy = R.scale;
 
     /* Only the screen-sized targets are widened, never shadow maps or other
      * offscreen surfaces: the title's 2D passes into those must stay as drawn. */
-    *wide = (g->width == R.screen_w && g->height == R.screen_h) ? R.wide : 1.0f;
+    *wide = (gw == R.screen_w && gh == R.screen_h) ? R.wide : 1.0f;
     sx = R.scale * *wide;
     double mw = V.max_dim ? V.max_dim : 4096;
 
-    if (g->width * sx > mw)  sx = mw / g->width;
-    if (g->height * sy > mw) sy = mw / g->height;
-    *w = (uint32_t)(g->width * sx + 0.5);
-    *h = (uint32_t)(g->height * sy + 0.5);
+    if (gw * sx > mw)  sx = mw / gw;
+    if (gh * sy > mw) sy = mw / gh;
+    *w = (uint32_t)(gw * sx + 0.5);
+    *h = (uint32_t)(gh * sy + 0.5);
     if (!*w) *w = 1;
     if (!*h) *h = 1;
+}
+
+/* One image per guest surface address. The clip rectangle is only a scissor:
+ * vertex x/y are absolute surface pixels, so the surface spans at least
+ * clip_x + width by clip_y + height. An image of the same width that already
+ * covers that is reused -- the race-start letterbox narrows the clip of the
+ * 640x480 back buffers to 640x360 in steps, and SSX 3 clears its rider shadow
+ * maps with a 128x128 clip but draws them with 124x124 at 2,2. Keying by the
+ * clip size made a second image per size: the shadow draws went to one that
+ * was never cleared (dark squares on the snow), the texture lookup found the
+ * other one, and the 16 slots overflowed. */
+static void surface_size(const Nv2aSurface *g, uint32_t *w, uint32_t *h)
+{
+    *w = g->clip_x + g->width;
+    *h = g->clip_y + g->height;
 }
 
 static VkbSurface *surface_get(const Nv2aSurface *g)
 {
     VkbSurface *s, *victim = NULL;
-    uint32_t iw, ih;
+    uint32_t gw, gh, iw, ih;
     float wide;
     int i;
 
-    surface_extent(g, &iw, &ih, &wide);
+    surface_size(g, &gw, &gh);
     for (i = 0; i < VKB_MAX_SURFACES; i++) {
         s = &V.surfaces[i];
-        if (s->image && s->va == g->color_va
-                && s->width == g->width && s->height == g->height
-                && s->img_w == iw && s->img_h == ih) {
-            s->last_used = V.flips;
-            return s;
+        if (s->image && s->va == g->color_va && s->width >= gw && s->height >= gh
+                && (!victim || s->width * s->height > victim->width * victim->height)) {
+            surface_extent(s->width, s->height, &iw, &ih, &wide);
+            if (s->img_w == iw && s->img_h == ih)  /* else old scale/shape: purged */
+                victim = s;
         }
     }
+    if (victim) {
+        victim->last_used = V.flips;
+        return victim;
+    }
+    /* A smaller image at this address is outgrown: drop it, so the address
+     * keeps exactly one image (texture_view finds render targets by address). */
+    for (i = 0; i < VKB_MAX_SURFACES; i++) {
+        s = &V.surfaces[i];
+        if (s->image && s->va == g->color_va) {
+            if (gw < s->width) gw = s->width;
+            if (gh < s->height) gh = s->height;
+            if (s->last_used != V.flips) {
+                device_idle();
+                if (V.last == s) V.last = NULL;
+                surface_free(s);
+            }
+        }
+    }
+    surface_extent(gw, gh, &iw, &ih, &wide);
     for (i = 0; i < VKB_MAX_SURFACES; i++) {
         s = &V.surfaces[i];
         if (!s->image) { victim = s; break; }
@@ -1218,10 +1258,10 @@ static VkbSurface *surface_get(const Nv2aSurface *g)
         return NULL;
     }
     s->va = g->color_va;
-    s->width = g->width;
-    s->height = g->height;
-    s->logical_w = g->width / (g->aa_sx ? g->aa_sx : 1);
-    s->logical_h = g->height / (g->aa_sy ? g->aa_sy : 1);
+    s->width = gw;
+    s->height = gh;
+    s->logical_w = gw / (g->aa_sx ? g->aa_sx : 1);
+    s->logical_h = gh / (g->aa_sy ? g->aa_sy : 1);
     s->img_w = iw;
     s->img_h = ih;
     s->aspect = (float)s->logical_w / (float)s->logical_h * wide;
@@ -1375,6 +1415,32 @@ static void begin_rendering(VkbSurface *c, VkbDepth *d)
     vkCmdSetScissor(V.cmd, 0, 1, &sc);
 }
 
+/* A guest clip rectangle (x, y, w, h in guest pixels) in the pixels of an
+ * image of img_w x img_h made for a guest surface of gw x gh, clamped to it. */
+static VkRect2D clip_rect(const uint32_t clip[4], uint32_t gw, uint32_t gh,
+                          uint32_t img_w, uint32_t img_h)
+{
+    double sx = gw ? (double)img_w / gw : 1.0, sy = gh ? (double)img_h / gh : 1.0;
+    uint32_t x0 = (uint32_t)(clip[0] * sx + 0.5), y0 = (uint32_t)(clip[1] * sy + 0.5);
+    uint32_t x1 = (uint32_t)((clip[0] + clip[2]) * sx + 0.5);
+    uint32_t y1 = (uint32_t)((clip[1] + clip[3]) * sy + 0.5);
+    VkRect2D r;
+
+    if (x1 > img_w) x1 = img_w;
+    if (y1 > img_h) y1 = img_h;
+    if (x0 > x1) x0 = x1;
+    if (y0 > y1) y0 = y1;
+    r.offset.x = (int32_t)x0; r.offset.y = (int32_t)y0;
+    r.extent.width = x1 - x0; r.extent.height = y1 - y0;
+    return r;
+}
+
+static void set_clip(const Nv2aSurface *g)
+{
+    V.clip[0] = g->clip_x; V.clip[1] = g->clip_y;
+    V.clip[2] = g->width;  V.clip[3] = g->height;
+}
+
 /* ---- textures ------------------------------------------------------------ */
 
 extern ptrdiff_t xbox_GetMemoryOffset(void);   /* xbox_memory_layout.h */
@@ -1511,8 +1577,17 @@ static VkImageView texture_view(const Nv2aTexture *g)
     int i;
 
     for (i = 0; i < VKB_MAX_SURFACES; i++) {
-        VkbSurface *s = &V.surfaces[i];
+        VkbSurface *s = &V.surfaces[i], *o;
+        int k;
         if (s->image && s->va == g->offset && s->layout != VK_IMAGE_LAYOUT_UNDEFINED) {
+            /* An outgrown image may linger until the end of its frame: take
+             * the address's most recently used one. */
+            for (k = i + 1; k < VKB_MAX_SURFACES; k++) {
+                o = &V.surfaces[k];
+                if (o->image && o->va == g->offset && o->layout != VK_IMAGE_LAYOUT_UNDEFINED
+                        && o->last_used > s->last_used)
+                    s = o;
+            }
             if (s == V.rt_color && V.rendering)
                 return NULL;               /* sampling the target being drawn */
             end_rendering();
@@ -1973,6 +2048,7 @@ static void rec_draw(VkbSurface *s, const Nv2aBatch *b, const Nv2aBatchExt *e,
     memset(c, 0, sizeof *c);
     c->target = s;
     c->type = 0;
+    memcpy(c->clip, V.clip, sizeof c->clip);
     c->count = b->count;
     c->vofs = p->nvtx;
     memcpy(p->vtx + p->nvtx, b->vertices, b->count * sizeof *p->vtx);
@@ -2010,6 +2086,7 @@ static void rec_clear(VkbSurface *s, uint32_t flags, uint32_t argb, uint32_t zst
     memset(c, 0, sizeof *c);
     c->target = s;
     c->type = 1;
+    memcpy(c->clip, V.clip, sizeof c->clip);
     c->rc = -1;
     c->flags = flags;
     c->argb = argb;
@@ -2526,6 +2603,12 @@ static void vki_replay(VkCommandBuffer cmd, VkbRing *ring, const VkiPacket *prev
         void *edst;
         int k;
 
+        {
+            VkRect2D csc = clip_rect(c->clip, cur->width, cur->height,
+                                     cur->img_w, cur->img_h);
+            vkCmdSetScissor(cmd, 0, 1, &csc);
+            sc = csc;
+        }
         if (c->type == 1) {
             VkClearAttachment at[2];
             VkClearRect rect;
@@ -3044,8 +3127,39 @@ static void vkb_clear(const Nv2aSurface *g, const Nv2aRenderState *rs,
     if (!(s = surface_get(g)))
         return;
     V.last = s;
+    set_clip(g);
     if (I.on)
         rec_clear(s, flags, argb, zstencil);
+    if (g->clip_x || g->clip_y || g->width < s->width || g->height < s->height) {
+        /* Part of the surface: clear just the clip, inside a rendering scope
+         * (vkCmdClearColorImage only does whole images). */
+        VkbDepth *d = depth_get(rs ? rs->zeta_va : 0, s->img_w, s->img_h);
+        VkClearAttachment at[2];
+        VkClearRect rect;
+        uint32_t n = 0;
+
+        if (!d)
+            return;
+        begin_rendering(s, d);
+        memset(at, 0, sizeof at);
+        if (flags & 0xF0) {
+            at[n].aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            unpack_argb(argb, at[n].clearValue.color.float32);
+            n++;
+        }
+        if (flags & 0x3) {
+            at[n].aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+            at[n].clearValue.depthStencil.depth = (float)((double)(zstencil >> 8) / 16777215.0);
+            at[n].clearValue.depthStencil.stencil = zstencil & 0xFF;
+            n++;
+        }
+        memset(&rect, 0, sizeof rect);
+        rect.rect = clip_rect(V.clip, s->width, s->height, s->img_w, s->img_h);
+        rect.layerCount = 1;
+        if (n && rect.rect.extent.width && rect.rect.extent.height)
+            vkCmdClearAttachments(V.cmd, n, at, 1, &rect);
+        return;
+    }
     end_rendering();
     memset(&range, 0, sizeof range);
     range.levelCount = 1;
@@ -3141,6 +3255,7 @@ static void vkb_draw(const Nv2aSurface *g, const Nv2aBatch *b)
 {
     const Nv2aRenderState *rs = b->state;
     static int no_rc = -1;
+    static const char *drawlog;
     const Nv2aBatchExt *e;
     int use_rc;
     VkbSurface *s;
@@ -3160,8 +3275,10 @@ static void vkb_draw(const Nv2aSurface *g, const Nv2aBatch *b)
     void *dst, *edst;
     int i;
 
-    if (no_rc < 0)
+    if (no_rc < 0) {
         no_rc = getenv("SSX3_VK_NO_RC") != NULL;
+        drawlog = getenv("SSX3_VK_DRAWLOG");
+    }
     e = no_rc ? NULL : b->ext;
     use_rc = e && e->rc;
     ebytes = e ? (VkDeviceSize)b->count * sizeof(Nv2aVertexExt) : sizeof(Nv2aVertexExt);
@@ -3171,6 +3288,40 @@ static void vkb_draw(const Nv2aSurface *g, const Nv2aBatch *b)
         return;
     V.last = s;
     V.frame_draws++;
+    set_clip(g);
+    if (drawlog) {
+        /* SSX3_VK_DRAWLOG=<flip>[,<flip>...]: every draw of those flips. */
+        char buf[16];
+        snprintf(buf, sizeof buf, "%u", V.flips);
+        const char *l = drawlog, *f = strstr(l, buf);
+        size_t bl = strlen(buf);
+        if (f && (f == l || f[-1] == ',') && (f[bl] == ',' || !f[bl])) {
+            float x0 = 1e9f, x1 = -1e9f, y0 = 1e9f, y1 = -1e9f, z0 = 1e9f, z1 = -1e9f;
+            float w0 = 1e9f, w1 = -1e9f;
+            uint32_t a0 = 255, a1 = 0, k;
+            for (k = 0; k < b->count; k++) {
+                const Nv2aVertex *v = &b->vertices[k];
+                uint32_t al = v->diffuse >> 24;
+                if (v->x < x0) x0 = v->x; if (v->x > x1) x1 = v->x;
+                if (v->y < y0) y0 = v->y; if (v->y > y1) y1 = v->y;
+                if (v->z < z0) z0 = v->z; if (v->z > z1) z1 = v->z;
+                if (v->rhw < w0) w0 = v->rhw; if (v->rhw > w1) w1 = v->rhw;
+                if (al < a0) a0 = al; if (al > a1) a1 = al;
+            }
+            fprintf(stderr, "  [DRAW] f%u #%u sv %08X n %u x %.0f..%.0f y %.0f..%.0f z %.0f..%.0f"
+                    " rhw %.3g..%.3g a %u..%u tex %08X/%08X/%08X/%08X at %d/%03X/%02X bl %d %X/%X"
+                    " dt %d/%03X dw %d cull %d/%X st %d rc %d\n",
+                    V.flips, V.frame_draws, s->va, b->count, x0, x1, y0, y1, z0, z1, w0, w1, a0, a1,
+                    b->ext && b->ext->textures[0] ? b->ext->textures[0]->offset : (b->texture ? b->texture->offset : 0),
+                    b->ext && b->ext->textures[1] ? b->ext->textures[1]->offset : 0,
+                    b->ext && b->ext->textures[2] ? b->ext->textures[2]->offset : 0,
+                    b->ext && b->ext->textures[3] ? b->ext->textures[3]->offset : 0,
+                    rs->alpha_test_enable, rs->alpha_func, rs->alpha_ref & 0xFF,
+                    rs->blend_enable, rs->blend_src, rs->blend_dst,
+                    rs->depth_test_enable, rs->depth_func, rs->depth_write,
+                    rs->cull_enable, rs->cull_face, rs->stencil_enable, b->ext && b->ext->rc);
+        }
+    }
     d = depth_get(rs->zeta_va, s->img_w, s->img_h);
     if (!d)
         return;
@@ -3208,6 +3359,10 @@ static void vkb_draw(const Nv2aSurface *g, const Nv2aBatch *b)
 
     begin_rendering(s, d);
     apply_state(V.cmd, rs);
+    {
+        VkRect2D sc = clip_rect(V.clip, s->width, s->height, s->img_w, s->img_h);
+        vkCmdSetScissor(V.cmd, 0, 1, &sc);
+    }
 
     memset(w, 0, sizeof w);
     for (i = 0; i < 4; i++) {

@@ -134,6 +134,60 @@ void sub_0024EA13_enter(void)
     SSX3_MEM32(g_esp + 12) = bits;
 }
 
+/* ── CRT math through the x87 transcendental dispatcher ─────── */
+
+/*
+ * sub_00213850 is exp(double), sub_00212C18 fmod(double, double): cdecl,
+ * arguments on the guest stack, result in st(0). Both tail-jump into the
+ * CRT's hand-written dispatchers (ctrandisp1/ctrandisp2 -> trandisp1/2, a
+ * computed `jmp [ebx]` into shared tails), and the lifted path returns with
+ * the caller's ebx replaced by stale stack data. Finding and addresses from
+ * koenhendriks/SSX3-recomp (CLAUDE.md, "Stuck on Loading...": exp() from the
+ * loading draw sub_001AD7B0 broke the state machine sub_001AD880's ebx);
+ * our implementation. Our callers: sub_001FE340 (exp, 12 sites),
+ * sub_001B3C80, sub_00148040/60, sub_001489F0, sub_0020FB80, sub_001AD7B0;
+ * fmod: sub_00102F10, sub_00103260. Generated bodies are left out by
+ * --exclude-manual (scripts/run_pipeline.sh), so regenerate after changing
+ * this list.
+ */
+#include <math.h>
+
+#if defined(_MSC_VER)
+extern __declspec(thread) double g_fp_stack[8];
+extern __declspec(thread) int g_fp_top;
+#else
+extern __thread double g_fp_stack[8];
+extern __thread int g_fp_top;
+#endif
+
+static double guest_double(uint32_t va)
+{
+    double d;
+    uint32_t u[2];
+    u[0] = SSX3_MEM32(va);
+    u[1] = SSX3_MEM32(va + 4);
+    memcpy(&d, u, sizeof d);
+    return d;
+}
+
+static void fp_push_result(double v)
+{
+    g_fp_top = (g_fp_top + 7) & 7;
+    g_fp_stack[g_fp_top] = v;
+}
+
+void sub_00213850(void)
+{
+    fp_push_result(exp(guest_double(g_esp + 4)));
+    g_esp += 4;                            /* ret (cdecl: the caller pops the args) */
+}
+
+void sub_00212C18(void)
+{
+    fp_push_result(fmod(guest_double(g_esp + 4), guest_double(g_esp + 12)));
+    g_esp += 4;
+}
+
 /* ── Manual function overrides ─────────────────────────────── */
 
 /*

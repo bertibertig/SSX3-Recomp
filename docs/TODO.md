@@ -49,7 +49,14 @@ Order follows `CLAUDE.md` / `xboxrecomp/docs/GETTING_STARTED.md`. Details and fi
       rider model solid again. Exact texture hash sizes, vertex cache, pre-decoded vertex programs
 - [x] Race started and in-game graphics checked (Vulkan matches the CPU reference): race **55–60 fps**, pre-race
       screen ~40 fps
-- [ ] Pre-race screen / busy race scenes below 60: NV2A thread is CPU-bound in the vertex program interpreter →
+- [x] Rider vanishing at the Snow Jam lift station (stride-0 vertex attribute), dark squares on the snow / missing
+      rider shadow (one GPU image per surface, clip as scissor) – see notes.md 2026-10-19
+- [ ] Occasional rider-shadow glitches (user report) and a lighter rectangle under the rider at ~0:21 on Snow Jam –
+      compare with xemu (Xbox reference) before changing anything
+- [ ] **Pad recorder skill** (its own Claude skill, like `.claude/skills/release`): record a real pad while the user
+      plays, replay it in test runs (by the game's step counter, app+0x20) – for sections the no-input scripted run
+      cannot reach
+- [ ] Pre-race screen / busy race scenes below 60 (race dips to 37–46 fps at 700–840 draws): NV2A thread is CPU-bound in the vertex program interpreter →
       parallelise transforms over the raster pool, or (long term, needed for >60 fps) vertex programs on the GPU
 - [x] Random 1–70 s boot (lost vblanks) and empty title screen after the intro fixed (runtime patch)
 - [ ] Crash right after the intro/attract video opens (`sub_00177F80`, VA 0xE0220705), intermittent.
@@ -105,7 +112,7 @@ Order follows `CLAUDE.md` / `xboxrecomp/docs/GETTING_STARTED.md`. Details and fi
 - [ ] Milestones: EA logo → title screen → menu → race
 - [ ] Compare OpenTricky/SSX-Tricky-PC changes to xboxrecomp (their NV2A→D3D11 renderer as a reference for M3)
 - [ ] Go through `reference/SSX3-recomp-koen` (same game, same XBE) for fixes we still lack: unresolved stubs into
-      function middles (Options-menu crash, Equip Gear), media check `sub_00183EBB`, x87 `exp`/`fmod` ebx bug,
+      function middles (Options-menu crash, Equip Gear), media check `sub_00183EBB`, (x87 `exp`/`fmod` ebx bug: done),
       30 Hz flag app+0x38, vertex-colour clamping, stencil, point-size clamp, GPU vertex programs, widescreen camera
 - [ ] xemu reference tooling for Linux (xemu 0.8.136 flatpak is installed): boot/snapshot/press/capture over QMP,
       plus a Claude skill – modelled on their Windows-only `tools\xemu.ps1` skill, our own code

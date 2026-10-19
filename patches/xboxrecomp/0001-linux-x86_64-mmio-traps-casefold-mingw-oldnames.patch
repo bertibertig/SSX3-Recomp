@@ -204,7 +204,7 @@ index 37c3621..f4683ec 100644
          /* As the Win32 backend does: the bridge reads back the host path
           * the call it just made translated (the missing-file report, the
 diff --git a/src/kernel/nv2a_backend.h b/src/kernel/nv2a_backend.h
-index 327f01d..caeb766 100644
+index 327f01d..e634a8d 100644
 --- a/src/kernel/nv2a_backend.h
 +++ b/src/kernel/nv2a_backend.h
 @@ -20,15 +20,21 @@
@@ -232,7 +232,18 @@ index 327f01d..caeb766 100644
  /* The colour surface being drawn into, in real (anti-aliased) pixels.
   * aa_sx/aa_sy give the anti-aliasing factor, so width/aa_sx is the logical
   * size the title thinks it renders at (e.g. 640x480). */
-@@ -44,7 +50,7 @@ typedef struct {
+@@ -38,13 +44,18 @@ typedef struct {
+     uint32_t pitch;             /* bytes per row */
+     uint32_t bytes_per_pixel;   /* 2 or 4 */
+     uint32_t aa_sx, aa_sy;      /* 1 or 2 each */
++    /* Top-left of the clip rectangle, real pixels. Vertex x/y are absolute
++     * surface pixels, so the surface spans at least clip_x + width by
++     * clip_y + height; the clip is a scissor (SSX 3 draws its 128x128 shadow
++     * maps with a 124x124 clip at 2,2 and clears them with a 128x128 one). */
++    uint32_t clip_x, clip_y;
+ } Nv2aSurface;
+ 
+ /* A texture as the title programmed it. uv in Nv2aVertex are in texels. */
  typedef struct {
      uint32_t offset;            /* guest address of texel (0,0) */
      uint32_t width, height;
@@ -241,7 +252,7 @@ index 327f01d..caeb766 100644
      uint32_t color;             /* NV097 colour-format code */
      uint32_t addr_u, addr_v;    /* NV097 wrap mode per axis (1 wrap, 3 clamp) */
      /* Mip levels stored after level 0 (the format word's MIPMAP_LEVELS; 1 for
-@@ -82,11 +88,35 @@ typedef struct {
+@@ -82,11 +93,35 @@ typedef struct {
      uint32_t stencil_write_mask, stencil_fail, stencil_zfail, stencil_zpass;
  } Nv2aRenderState;
  
@@ -278,10 +289,50 @@ index 327f01d..caeb766 100644
  
  typedef struct {
 diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
-index 1280565..71b340d 100644
+index 1280565..71445b4 100644
 --- a/src/kernel/nv2a_pb_exec.c
 +++ b/src/kernel/nv2a_pb_exec.c
-@@ -1894,12 +1894,21 @@ static int s_xf_no_tex;
+@@ -533,6 +533,21 @@ static uint32_t attr_elem_bytes(const VertexAttr *a)
+     }
+ }
+ 
++/* Whether a vertex program reads attribute `a` from its immediate register
++ * (the last SET_VERTEX_DATA* value) rather than from memory. SIZE 0 is what
++ * disables an array; stride 0 with a size is an ordinary array whose one
++ * element every vertex shares -- the address is offset + index * stride on
++ * the hardware too. SSX 3's rider program adds v4 (size 3, stride 0, pointing
++ * at 0,0,0) to every position before skinning; taken as disabled, it read
++ * the world offset other draws set through SET_VERTEX_DATA4F(4) instead, and
++ * from the Snow Jam lift station on the rider's body was drawn ~300000 units
++ * away -- only the (unskinned) board was left. Offset 0 has no array to
++ * read, so it stays immediate. */
++static int attr_inline(const VertexAttr *a)
++{
++    return !a->size || (!a->stride && !a->offset);
++}
++
+ /* Read attribute `a` of vertex `index` as floats. Only the float and the
+  * normalised-byte types appear in practice; anything else returns 0 so a
+  * caller sees a degenerate vertex rather than reading past the array. */
+@@ -544,7 +559,7 @@ static int fetch_attr(const VertexAttr *a, uint32_t index, float out[4])
+ 
+     out[0] = out[1] = out[2] = 0.0f;
+     out[3] = 1.0f;
+-    if (!a->size || !a->stride)
++    if (!a->size)
+         return 0;
+     if (s_gpu.inline_active) {
+         /* The batch arrived as INLINE_ARRAY, so `offset` is a byte offset into
+@@ -781,6 +796,8 @@ static void current_surface(Nv2aSurface *out)
+     out->bytes_per_pixel = surface_bpp();
+     out->aa_sx           = s_gpu.aa_sx > 1.5f ? 2 : 1;
+     out->aa_sy           = s_gpu.aa_sy > 1.5f ? 2 : 1;
++    out->clip_x          = s_gpu.clip_x;
++    out->clip_y          = s_gpu.clip_y;
+ }
+ 
+ /* Render state in the NV2A's own values, gathered from what the executor
+@@ -1894,12 +1911,21 @@ static int s_xf_no_tex;
  #define NV_BACKEND_MAX_VERTS (NV_MAX_INDICES * 3)
  static Nv2aVertex *s_bverts;     /* about 5.5 MB: allocated by the first vertex */
  static uint32_t   s_bcount;
@@ -303,7 +354,7 @@ index 1280565..71b340d 100644
      if (s_bcount + 3 > NV_BACKEND_MAX_VERTS)
          return NULL;
      return &s_bverts[s_bcount];
-@@ -1920,6 +1929,13 @@ static void backend_from_xf(const Nv2aVshOutput *v, Nv2aVertex *o)
+@@ -1920,6 +1946,13 @@ static void backend_from_xf(const Nv2aVshOutput *v, Nv2aVertex *o)
      o->diffuse = pack_color(v->d0);
      o->u = v->tex[0][0] * su;
      o->v = v->tex[0][1] * sv;
@@ -317,7 +368,7 @@ index 1280565..71b340d 100644
  }
  
  /* `textured`: the batch carried texture coordinates, so the bound texture is
-@@ -1928,8 +1944,10 @@ static void backend_flush(int textured)
+@@ -1928,8 +1961,10 @@ static void backend_flush(int textured)
  {
      Nv2aSurface surf;
      Nv2aRenderState rs;
@@ -329,7 +380,7 @@ index 1280565..71b340d 100644
  
      if (!s_bcount)
          return;
-@@ -1939,15 +1957,55 @@ static void backend_flush(int textured)
+@@ -1939,15 +1974,55 @@ static void backend_flush(int textured)
      batch.count = s_bcount;
      batch.texture = NULL;
      batch.state = &rs;
@@ -387,7 +438,7 @@ index 1280565..71b340d 100644
          tex.filter = s_gpu.texs[0].filter;
          batch.texture = &tex;
      }
-@@ -2463,9 +2521,111 @@ static void xf_rows_parallel(const XfTri *T, XfCount *total)
+@@ -2463,9 +2538,111 @@ static void xf_rows_parallel(const XfTri *T, XfCount *total)
      }
  }
  #else
@@ -500,7 +551,7 @@ index 1280565..71b340d 100644
  }
  #endif
  
-@@ -2684,8 +2844,21 @@ static int transform_vertex(uint32_t index, Nv2aVshOutput *out)
+@@ -2684,8 +2861,21 @@ static int transform_vertex(uint32_t index, Nv2aVshOutput *out)
  
      if (!batch_uses_program())
          return ffp_vertex(index, out);
@@ -508,7 +559,7 @@ index 1280565..71b340d 100644
 -        fetch_attr(&s_gpu.attr[a], index, in[a]);   /* absent: 0,0,0,1 */
 +    for (a = 0; a < NV2A_VSH_INPUTS; a++) {
 +        const VertexAttr *at = &s_gpu.attr[a];
-+        /* A disabled attribute (no size or no stride) is not 0,0,0,1 on the
++        /* A disabled attribute (attr_inline) is not 0,0,0,1 on the
 +         * NV2A: it holds the last value written through SET_VERTEX_DATA*,
 +         * the same register state immediate mode builds vertices from (xemu
 +         * feeds it as the "inline" value of every disabled input). A program
@@ -516,7 +567,7 @@ index 1280565..71b340d 100644
 +         * its matrix from v8..v15, set with SET_VERTEX_DATA4F_M before each
 +         * draw; with 0,0,0,1 every vertex transformed to the same point and
 +         * the whole intro video drew as degenerate triangles. */
-+        if (!at->size || !at->stride)
++        if (attr_inline(at))
 +            memcpy(in[a], s_gpu.imm_attr[a], sizeof in[a]);
 +        else
 +            fetch_attr(at, index, in[a]);
@@ -524,7 +575,7 @@ index 1280565..71b340d 100644
      if (!nv2a_vsh_run((const float (*)[4])in, out))
          return 0;
      /* oPos.w == 0 comes from a program that never divided by w: x, y and z
-@@ -2721,15 +2894,40 @@ static void xf_set_viewport(void)
+@@ -2721,15 +2911,40 @@ static void xf_set_viewport(void)
      s_xf_o[2] = of[2];
  }
  
@@ -567,7 +618,7 @@ index 1280565..71b340d 100644
      xf_set_viewport();
      {
          const VertexAttr *tc = texcoord_attr();
-@@ -2781,13 +2979,20 @@ static void raster_batch_program(void)
+@@ -2781,13 +2996,20 @@ static void raster_batch_program(void)
          /* RECOMP_VSH_TRACE=<n>: print n program batches -- attribute setup,
           * raw inputs, key constants, and what came out. */
          static int left = -1;
@@ -591,7 +642,7 @@ index 1280565..71b340d 100644
              float in[4];
              left--;
              fprintf(stderr, "[VTRACE] prim %u n %u idx %u %u %u\n", s_gpu.prim,
-@@ -4087,10 +4292,15 @@ void nv2a_pb_exec_report(void)
+@@ -4087,10 +4309,15 @@ void nv2a_pb_exec_report(void)
      int i, j;
  
      {

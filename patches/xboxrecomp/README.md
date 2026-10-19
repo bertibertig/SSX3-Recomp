@@ -70,6 +70,13 @@ All of them are candidates for an upstream PR to sp00nznet/xboxrecomp.
   counted and dropped. Output reports (`00 06 <left u16> <right u16>`) now go to `xbox_InputSetState()`, both on
   interrupt endpoint 2 and as the data stage of a HID SET_REPORT (`21 09`) on the control pipe -- SSX 3 uses the
   latter only (`out0` grows, `outN` stays 0 in `RECOMP_USB_STATS`).
+- `src/kernel/nv2a_backend.h`, `nv2a_pb_exec.c` (`current_surface`): `Nv2aSurface` carries **`clip_x`/`clip_y`**.
+  Width/height were the clip size only, so a back end could not tell a 124x124 clip at 2,2 (SSX 3's shadow-map
+  draws) from a separate 124x124 surface; the Vulkan back end now sizes surfaces by clip offset + size.
+- `src/kernel/nv2a_pb_exec.c` (`attr_inline`, `fetch_attr`, `transform_vertex`): a vertex-program input with a
+  size but **stride 0** is an array whose one element every vertex shares, not a disabled attribute. SSX 3's rider
+  program adds v4 (size 3, stride 0, pointing at 0,0,0) before skinning; read as the immediate SET_VERTEX_DATA
+  value, it took a world offset other draws had set, and from the Snow Jam lift station on the rider's body vanished.
 
 Verified: Linux build + Windows cross build (MinGW) compile; own decoder test (8 cases, ucontext) green;
 `tools.recomp.test_reserved_idents` green; SSX 3 on Linux reaches the same state as under Proton

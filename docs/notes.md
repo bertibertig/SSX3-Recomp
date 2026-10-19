@@ -420,3 +420,35 @@ _(date – what was done, what was found, next step)_
     `SSX3_RENDERER=cpu` → no menu; back to Vulkan → all 7 questions), both renderers boot from `run.sh`, titles read
     with xprop (SDL_VIDEODRIVER=x11); MinGW build: `--renderers` = `cpu`, `run.ps1` under Wine with a saved
     `RENDERER=vulkan` → software. Not tested: whiptail/dialog front ends (same `_menu` call), native Windows.
+- 2026-10-19 – **Rider vanishing, dark squares on the snow, shadow maps** (user report: textures glitch, the rider
+  disappears in the first level and the picture shifts colour at the same moment). Reproduced with the scripted
+  race (virtual pad, no input in the race): on Snow Jam the rider's body vanished at the lift station (~0:48–0:58)
+  for the rest of the race, only the board stayed. Three fixes:
+  - **Vertex attributes with stride 0** (runtime patch, `attr_inline` in `nv2a_pb_exec.c`). Found with a
+    temporary constant/attribute dump of the rider's shadow-map batch before and after the vanish: the program is
+    `arl a0 = v3.x; R11 = v0 + v4; pos = c[a0+58..61] · R11; oPos = v12..v15 · pos`. v4 is an array with size 3 and
+    **stride 0** at 0x81001D00 (holding 0,0,0); the executor took stride 0 for "disabled" and fed the last
+    SET_VERTEX_DATA value of attribute 4 – a world offset (~200000, −40000, 300000) that other draws near the lift
+    station set. Every rider vertex moved ~300000 units away (shadow-map x −215736..109403 instead of 41..96).
+    Only SIZE 0 disables an array; stride 0 is one element shared by every vertex. The colour shift was the rider's
+    lighting/shadow passes going with it.
+  - **One GPU image per guest surface** (`vk_backend.c` `surface_get`, runtime patch: `Nv2aSurface.clip_x/clip_y`).
+    The back end got the clip size as the surface size: SSX 3 clears each 128x128 rider shadow map with a 128x128
+    clip and draws it with a 124x124 clip at 2,2, so every map existed twice – the draws went into one image that was
+    never cleared (dark squares on the snow, also over the jumps), the receiver sampled the other one (no rider
+    shadow at all), and with the race-start letterbox sizes (640x476 … 640x360) 22 images fought over 16 slots.
+    Now a surface spans clip offset + size, an image of the address that covers it is reused, and the clip is a
+    scissor (live draws, clip-limited clears via `vkCmdClearAttachments`, and the interpolation presenter's replay).
+    Race: 10 images, created once. Rider shadow visible again.
+  - **Native `exp`/`fmod`** (`recomp_manual.c`, `sub_00213850`/`sub_00212C18`): koenhendriks/SSX3-recomp found the
+    lifted CRT x87 dispatcher (ctrandisp1/2) returns with a corrupted ebx. Adopted as our own override (it was on the
+    TODO); it did not change the rider bug. Needs `scripts/run_pipeline.sh recomp` (`--exclude-manual`).
+  - Tools: `SSX3_VK_DRAWLOG=<flip>,…` logs every draw of those flips (target, vertex ranges, textures, state).
+    Test runs: hide a real pad from the game with `SDL_GAMECONTROLLER_IGNORE_DEVICES=0x2dc8/0x310a` (on the test
+    command only), otherwise it takes port 1 and the virtual pad's presses go nowhere. Profiling/capture at 1x
+    (`SSX3_RES_SCALE=1`, `SSX3_INTERP=0`); frame dumps stall the GPU (game ~45–50 fps with a dump every 15–30 flips).
+  - Result (user-confirmed: shadows right, gameplay fluid): rider visible to the end of the race, 16:9 + interpolation
+    at 144 Hz fine. Race game fps without dumps: 59–60 most of the time, 37–46 in the heaviest scenes (700–840 draws)
+    – the known CPU-bound vertex interpreter, slightly more work now that the rider is really drawn (screen + six
+    shadow maps). Still open: occasional shadow glitches (user), the lighter rectangle under the rider at ~0:21 –
+    compare with xemu.

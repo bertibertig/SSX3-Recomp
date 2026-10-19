@@ -288,3 +288,21 @@ _(date – what was done, what was found, next step)_
   resolution) → measured step length; schedule latency must be pulled back towards the cushion or it sticks at the
   maximum. Debug: `SSX3_VKI_DUMP`, `[VKI]` log lines every 5 s.
 
+- 2026-10-19 – **Internal resolution 1x–5x** (`SSX3_RES_SCALE=1..5`, default 1; **F10** cycles it in game).
+  `vk_backend.c`: every guest surface is a GPU image of guest size × scale (`surface_extent`); depth, the
+  presenter's target and the render-target snapshots follow. Vertices stay in guest pixels (the shaders divide by
+  the guest size), so only image sizes, viewports, scissors and blits change; clears cover the whole image and the
+  executor delivers triangles only (no point sizes/line widths to scale). A new scale is applied at a flip, and the
+  old images are freed at the start of the next frame (`purge_scaled`). Widescreen hook: `R.wide` (horizontal factor,
+  widens image + display aspect; unset – needs the camera projection too, see koen's `PerspectiveFovLH` 0x0024EA13).
+  Same approach as koen's `RECOMP_RES` (findings only).
+  - **Frames in flight (2).** Scaling exposed a CPU/GPU serialisation: `ensure_recording` waited for the previous
+    frame's fence – 6–8 ms per frame at 3x vs ~2 ms at 1x (probe), game 46 → 34 fps in a heavy scene. Now two command
+    buffers/fences/acquire semaphores/vertex+staging rings alternate. After: `SSX3_INTERP=0` game fps 1x 56–60,
+    3x 59–60, 5x 53–60 (RTX 2080 Ti, same route). Default (interpolation, 2x): 270 presented / game 60.
+  - Open: at 5x with interpolation at the display's refresh (270 Hz) the presenter saturates the GPU and the game
+    drops to ~25 fps; `SSX3_FPS_LIMIT=120` keeps it at 60 → the presenter needs a GPU budget. Downscaling 4x/5x
+    into a small window is a single linear blit (aliasing, not true SSAA). Not checked: Vulkan validation layer
+    (not installed here). The strips at the left/right edge of the title screen look the same at 1x (pre-existing).
+  - Tests now use a virtual uinput Xbox 360 pad (python-evdev) + `SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS=1`
+    instead of xdotool, so runs don't take the desktop's focus.

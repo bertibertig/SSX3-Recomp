@@ -37,7 +37,8 @@ Our base is the PAL/EU build (title ID 0x4541003C, 2003-09-19; English, French, 
 | Split screen (2 pads) | ⬜ untested |
 | Frame interpolation above 60 fps: menus and races shown at the display's refresh (tested 120 and 270 Hz) while the game simulates at 60 | ✅ (Vulkan, default; `SSX3_INTERP=0` off) |
 | Steady 60 game fps everywhere (pre-race screen ~40 fps) | ⬜ in progress |
-| Higher resolution, AA, widescreen, HD textures | ⬜ planned |
+| Higher internal resolution: 2x–5x (`SSX3_RES_SCALE`, F10) | ✅ (Vulkan) |
+| AA, widescreen, HD textures | ⬜ planned |
 | Steam Deck test, Windows native build, macOS | ⬜ planned |
 
 Known issues: an intermittent crash right after the intro/attract movie starts (`sub_00177F80`);
@@ -82,6 +83,7 @@ scripts/run_win.sh
 | `SSX3_RENDERER` | `vulkan` | `cpu` = the software rasteriser (reference, slow) |
 | `SSX3_SKIP_LOGOS` | `1` | skip the EA BIG and THX logos |
 | `SSX3_SKIP_INTRO` | `0` | `1` = skip the intro movie too |
+| `SSX3_RES_SCALE` | `1` | internal resolution `1`–`5` × 640x480 (2 = 1280x960 … 5 = 3200x2400); **F10** cycles it in game |
 | `RECOMP_KEYBOARD` | `1` | keyboard as controller 1 (Enter = Start, Z = A, X = B, arrows = D-pad …) |
 | `RECOMP_USB_PADS` | `1` | emulated pads on the USB bus (up to 4, for split screen) |
 

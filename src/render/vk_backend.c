@@ -30,6 +30,14 @@
  *   SSX3_VSYNC=1            FIFO presentation (default mailbox / immediate)
  *   SSX3_VKI_DUMP=<prefix>  write interpolated frames at blend 0, 1/2, 1 as
  *                           <prefix><flip>_<t*100>.bmp, every SSX3_VK_DUMP_EVERY flips
+ *   SSX3_RES_SCALE=<1..5>   internal resolution as a multiple of the title's
+ *                           (default 1 = 640x480); F10 cycles it at run time
+ *
+ * Internal resolution: every guest surface is a GPU image of its guest size
+ * times the scale (surface_extent). Vertices stay in guest pixels -- the
+ * shaders divide by the guest size -- so only image sizes, viewports, scissors
+ * and blits see the scale. The horizontal factor is kept separate (R.wide) for
+ * a widescreen view later: the image grows wider, the display aspect with it.
  */
 #include "volk.h"
 #include <SDL.h>
@@ -63,12 +71,16 @@ static const uint32_t k_frag_spv[] =
 #define VKB_MAX_SAMPLERS    32
 #define VKB_VERTEX_RING     (32u << 20)    /* vertex bytes per frame */
 #define VKB_STAGING_RING    (64u << 20)    /* texture upload bytes per frame */
+#define VKB_FRAMES          2              /* frames in flight (NV2A thread) */
 
 /* A guest colour surface, as a GPU image. Keyed by guest address and size:
  * a title that reuses an address at another size gets a fresh image. */
 typedef struct {
-    uint32_t       va, width, height;
+    uint32_t       va, width, height;      /* guest size: the key, and vertex space */
     uint32_t       logical_w, logical_h;   /* width/aa_sx, height/aa_sy */
+    uint32_t       img_w, img_h;           /* GPU image: guest size x scale */
+    float          aspect;                 /* display aspect of the whole image */
+    int            scale;                  /* R.scale it was made at */
     VkImage        image;
     VkDeviceMemory memory;
     VkImageView    view;
@@ -77,7 +89,7 @@ typedef struct {
 } VkbSurface;
 
 /* A guest depth/stencil surface (Nv2aRenderState.zeta_va), same size as the
- * colour surface it is drawn with. */
+ * colour surface's image it is drawn with (width/height: image pixels). */
 typedef struct {
     uint32_t       va, width, height;
     VkImage        image;
@@ -85,6 +97,7 @@ typedef struct {
     VkImageView    view;
     VkImageLayout  layout;
     uint32_t       last_used;
+    int            scale;                  /* R.scale it was made at */
 } VkbDepth;
 
 /* A decoded guest texture. Re-validated once per frame by hashing the
@@ -152,7 +165,18 @@ static struct {
     int               host_main;           /* window owned by ssx3_vk_host_main */
     volatile int      display_hz;          /* refresh of the window's display, 0 unknown */
 
+    /* Frames in flight: the title records frame n+1 while the GPU still draws
+     * frame n. Each has its own command buffer, fence, acquire semaphore and
+     * rings; cmd/frame_fence/sem_acquire/vring/staging name the current one
+     * (ensure_recording advances). Images are shared: barriers are
+     * ALL_COMMANDS, so a frame's commands wait for the frame before on the
+     * queue, and every image free goes through device_idle. */
     VkCommandPool     cmd_pool;
+    VkCommandBuffer   cmds[VKB_FRAMES];
+    VkFence           fences[VKB_FRAMES];
+    VkSemaphore       acquires[VKB_FRAMES];
+    VkbRing           vrings[VKB_FRAMES], stagings[VKB_FRAMES];
+    uint32_t          frame;               /* current index into the above */
     VkCommandBuffer   cmd;
     VkFence           frame_fence;
     VkSemaphore       sem_acquire;
@@ -169,7 +193,7 @@ static struct {
     VkSampler         samplers[VKB_MAX_SAMPLERS];
     uint32_t          sampler_keys[VKB_MAX_SAMPLERS];
     uint32_t          nsamplers;
-    VkbRing           vring, staging;
+    VkbRing          *vring, *staging;
     VkDeviceSize      ubo_align;           /* minUniformBufferOffsetAlignment */
     VkbCombiners      last_rc;             /* last UBO written this frame ... */
     VkDeviceSize      last_rc_off;         /* ... and where (~0: none yet) */
@@ -195,7 +219,25 @@ static struct {
 
     const char       *dump_prefix;
     uint32_t          dump_every;
+    uint32_t          max_dim;             /* maxImageDimension2D */
 } V;
+
+/* Internal resolution. `want` is set from the environment and by the window
+ * thread (F10); the NV2A thread takes it over at a flip, so all of one frame
+ * renders at one scale. Surfaces are found by image size, so images of the old
+ * scale simply stop matching and are evicted like any unused surface. */
+#define VKB_MAX_SCALE 5
+static struct {
+    volatile int want;
+    int          scale;
+    int          purge;     /* scale changed: free the old images */
+    /* Horizontal factor on top of the scale for a widescreen view (image
+     * wider, display aspect wider by the same factor); 1 = the title's 4:3.
+     * Nothing sets it yet: a widescreen patch would also have to widen the
+     * camera projection, and pick which surfaces get it (the screen-sized
+     * ones, not offscreen targets) in surface_extent. */
+    float        wide;
+} R = { 1, 1, 0, 1.0f };
 
 /* ---- frame interpolation: declarations ------------------------------------
  *
@@ -250,7 +292,9 @@ typedef struct {
                                              * none, -2 motion borrowed (synth_motion) */
     float         (*ppos)[4]; size_t pcap;  /* per vertex: x, y, z, rhw a frame earlier */
     VkiImage        snap[VKI_SNAPS];        /* copies of sampled render targets */
-    uint32_t        width, height, logical_w, logical_h;
+    uint32_t        width, height, logical_w, logical_h;   /* guest size */
+    uint32_t        img_w, img_h;           /* the shown surface's image */
+    float           aspect;                 /* ... and its display aspect */
     uint32_t        flip;
     uint32_t        steps;                  /* the title's world steps at its present */
     double          arrival, t_show, dur;   /* host seconds; the blend from the frame
@@ -476,6 +520,7 @@ static int pick_gpu(void)
         V.ubo_align = p.limits.minUniformBufferOffsetAlignment;
         if (V.ubo_align < 16)
             V.ubo_align = 16;
+        V.max_dim = p.limits.maxImageDimension2D;
     }
     vkGetPhysicalDeviceMemoryProperties(V.gpu, &V.memprops);
     return 1;
@@ -940,6 +985,7 @@ static int init_vulkan(void)
     VkFenceCreateInfo fci;
     VkSemaphoreCreateInfo sci;
     const char *e;
+    int i;
 
     if (volkInitialize() != VK_SUCCESS) {
         fprintf(stderr, "  [VK] no Vulkan loader (libvulkan / vulkan-1.dll)\n");
@@ -970,10 +1016,12 @@ static int init_vulkan(void)
     }
     if (!pick_gpu() || !create_device() || !create_swapchain() || !create_pipeline())
         return 0;
-    if (!ring_create(&V.vring, VKB_VERTEX_RING,
-                     VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT)
-            || !ring_create(&V.staging, VKB_STAGING_RING, VK_BUFFER_USAGE_TRANSFER_SRC_BIT))
-        return 0;
+    for (i = 0; i < VKB_FRAMES; i++)
+        if (!ring_create(&V.vrings[i], VKB_VERTEX_RING,
+                         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT)
+                || !ring_create(&V.stagings[i], VKB_STAGING_RING,
+                                VK_BUFFER_USAGE_TRANSFER_SRC_BIT))
+            return 0;
 
     memset(&pci, 0, sizeof pci);
     pci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
@@ -984,15 +1032,23 @@ static int init_vulkan(void)
     ai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     ai.commandPool = V.cmd_pool;
     ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    ai.commandBufferCount = 1;
-    VK_CHECK(vkAllocateCommandBuffers(V.device, &ai, &V.cmd));
+    ai.commandBufferCount = VKB_FRAMES;
+    VK_CHECK(vkAllocateCommandBuffers(V.device, &ai, V.cmds));
     memset(&fci, 0, sizeof fci);
     fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     fci.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-    VK_CHECK(vkCreateFence(V.device, &fci, NULL, &V.frame_fence));
     memset(&sci, 0, sizeof sci);
     sci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-    VK_CHECK(vkCreateSemaphore(V.device, &sci, NULL, &V.sem_acquire));
+    for (i = 0; i < VKB_FRAMES; i++) {
+        VK_CHECK(vkCreateFence(V.device, &fci, NULL, &V.fences[i]));
+        VK_CHECK(vkCreateSemaphore(V.device, &sci, NULL, &V.acquires[i]));
+    }
+    V.frame = VKB_FRAMES - 1;      /* the first ensure_recording takes slot 0 */
+    V.cmd = V.cmds[V.frame];
+    V.frame_fence = V.fences[V.frame];
+    V.sem_acquire = V.acquires[V.frame];
+    V.vring = &V.vrings[V.frame];
+    V.staging = &V.stagings[V.frame];
 
     V.dump_prefix = getenv("SSX3_VK_DUMP");
     e = getenv("SSX3_VK_DUMP_EVERY");
@@ -1001,6 +1057,7 @@ static int init_vulkan(void)
 }
 
 static void interp_start(void);
+static void purge_scaled(void);
 
 /* First call from the executor brings everything up; a failure leaves the
  * back end inert (the title keeps running, nothing is drawn). */
@@ -1026,6 +1083,13 @@ static int ensure_recording(void)
 
     if (V.recording)
         return 1;
+    V.frame = (V.frame + 1) % VKB_FRAMES;
+    V.cmd = V.cmds[V.frame];
+    V.frame_fence = V.fences[V.frame];
+    V.sem_acquire = V.acquires[V.frame];
+    V.vring = &V.vrings[V.frame];
+    V.staging = &V.stagings[V.frame];
+    /* The frame that last used this slot has retired: its rings are free. */
     vkWaitForFences(V.device, 1, &V.frame_fence, VK_TRUE, UINT64_MAX);
     vkResetFences(V.device, 1, &V.frame_fence);
     vkResetCommandBuffer(V.cmd, 0);
@@ -1034,10 +1098,11 @@ static int ensure_recording(void)
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     VK_CHECK(vkBeginCommandBuffer(V.cmd, &bi));
     V.recording = 1;
-    /* The previous frame has retired (fence above): its ring slices are free. */
-    V.vring.used = 0;
-    V.staging.used = 0;
+    V.vring->used = 0;
+    V.staging->used = 0;
     V.last_rc_off = ~(VkDeviceSize)0;
+    if (R.purge)
+        purge_scaled();
     return 1;
 }
 
@@ -1065,15 +1130,33 @@ static void surface_free(VkbSurface *s)
 /* Evicting an image the frame being recorded still references would free it
  * under the command buffer, so only images unused this frame are candidates;
  * a full cache of in-use images fails the request (logged once). */
+/* The GPU image size for a guest surface at the current scale, clamped to
+ * what the device can create. */
+static void surface_extent(const Nv2aSurface *g, uint32_t *w, uint32_t *h)
+{
+    double sx = R.scale * R.wide, sy = R.scale;
+    double mw = V.max_dim ? V.max_dim : 4096;
+
+    if (g->width * sx > mw)  sx = mw / g->width;
+    if (g->height * sy > mw) sy = mw / g->height;
+    *w = (uint32_t)(g->width * sx + 0.5);
+    *h = (uint32_t)(g->height * sy + 0.5);
+    if (!*w) *w = 1;
+    if (!*h) *h = 1;
+}
+
 static VkbSurface *surface_get(const Nv2aSurface *g)
 {
     VkbSurface *s, *victim = NULL;
+    uint32_t iw, ih;
     int i;
 
+    surface_extent(g, &iw, &ih);
     for (i = 0; i < VKB_MAX_SURFACES; i++) {
         s = &V.surfaces[i];
         if (s->image && s->va == g->color_va
-                && s->width == g->width && s->height == g->height) {
+                && s->width == g->width && s->height == g->height
+                && s->img_w == iw && s->img_h == ih) {
             s->last_used = V.flips;
             return s;
         }
@@ -1096,7 +1179,7 @@ static VkbSurface *surface_get(const Nv2aSurface *g)
         surface_free(victim);
     }
     s = victim;
-    if (!image_create(g->width, g->height, VK_FORMAT_B8G8R8A8_UNORM,
+    if (!image_create(iw, ih, VK_FORMAT_B8G8R8A8_UNORM,
                       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
                       | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                       VK_IMAGE_ASPECT_COLOR_BIT, &s->image, &s->memory, &s->view)) {
@@ -1108,10 +1191,14 @@ static VkbSurface *surface_get(const Nv2aSurface *g)
     s->height = g->height;
     s->logical_w = g->width / (g->aa_sx ? g->aa_sx : 1);
     s->logical_h = g->height / (g->aa_sy ? g->aa_sy : 1);
+    s->img_w = iw;
+    s->img_h = ih;
+    s->aspect = (float)s->logical_w / (float)s->logical_h * R.wide;
+    s->scale = R.scale;
     s->layout = VK_IMAGE_LAYOUT_UNDEFINED;
     s->last_used = V.flips;
-    fprintf(stderr, "  [VK] surface 0x%08X %ux%u (logical %ux%u)\n",
-            s->va, s->width, s->height, s->logical_w, s->logical_h);
+    fprintf(stderr, "  [VK] surface 0x%08X %ux%u (logical %ux%u, image %ux%u)\n",
+            s->va, s->width, s->height, s->logical_w, s->logical_h, iw, ih);
     return s;
 }
 
@@ -1165,6 +1252,7 @@ static VkbDepth *depth_get(uint32_t va, uint32_t w, uint32_t h)
     d->va = va;
     d->width = w;
     d->height = h;
+    d->scale = R.scale;
     d->layout = VK_IMAGE_LAYOUT_UNDEFINED;
     d->last_used = V.flips;
     return d;
@@ -1176,6 +1264,31 @@ static void depth_to(VkbDepth *d, VkImageLayout to)
         transition(d->image, VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
                    d->layout, to);
         d->layout = to;
+    }
+}
+
+/* After a scale change, at the start of the next frame (no command buffer
+ * being recorded references the images; device_idle retires the ones in
+ * flight): free the colour and depth images of the old scale at once rather
+ * than leave them for eviction -- at 5x one surface is ~30 MB. The presenter
+ * samples only its own snapshots and textures, never these. */
+static void purge_scaled(void)
+{
+    int i, idle = 0;
+
+    R.purge = 0;
+    for (i = 0; i < VKB_MAX_SURFACES; i++) {
+        VkbSurface *s = &V.surfaces[i];
+        VkbDepth *d = &V.depths[i];
+        if (s->image && s->scale != R.scale) {
+            if (!idle++) device_idle();
+            if (V.last == s) V.last = NULL;
+            surface_free(s);
+        }
+        if (d->image && d->scale != R.scale) {
+            if (!idle++) device_idle();
+            depth_free(d);
+        }
     }
 }
 
@@ -1204,8 +1317,8 @@ static void begin_rendering(VkbSurface *c, VkbDepth *d)
     da.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     memset(&ri, 0, sizeof ri);
     ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-    ri.renderArea.extent.width = c->width;
-    ri.renderArea.extent.height = c->height;
+    ri.renderArea.extent.width = c->img_w;
+    ri.renderArea.extent.height = c->img_h;
     ri.layerCount = 1;
     ri.colorAttachmentCount = 1;
     ri.pColorAttachments = &ca;
@@ -1218,11 +1331,11 @@ static void begin_rendering(VkbSurface *c, VkbDepth *d)
 
     vkCmdBindPipeline(V.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, V.pipeline);
     vp.x = 0; vp.y = 0;
-    vp.width = (float)c->width; vp.height = (float)c->height;
+    vp.width = (float)c->img_w; vp.height = (float)c->img_h;
     vp.minDepth = 0.0f; vp.maxDepth = 1.0f;
     vkCmdSetViewport(V.cmd, 0, 1, &vp);
     sc.offset.x = 0; sc.offset.y = 0;
-    sc.extent.width = c->width; sc.extent.height = c->height;
+    sc.extent.width = c->img_w; sc.extent.height = c->img_h;
     vkCmdSetScissor(V.cmd, 0, 1, &sc);
 }
 
@@ -1304,7 +1417,7 @@ static void texture_free(VkbTexture *t)
 static int texture_upload(VkbTexture *t, const uint32_t *argb)
 {
     VkDeviceSize off, bytes = (VkDeviceSize)t->width * t->height * 4;
-    void *dst = ring_alloc(&V.staging, bytes, 16, &off);
+    void *dst = ring_alloc(V.staging, bytes, 16, &off);
     VkBufferImageCopy region;
 
     if (!dst) {
@@ -1325,7 +1438,7 @@ static int texture_upload(VkbTexture *t, const uint32_t *argb)
     region.imageExtent.width = t->width;
     region.imageExtent.height = t->height;
     region.imageExtent.depth = 1;
-    vkCmdCopyBufferToImage(V.cmd, V.staging.buffer, t->image,
+    vkCmdCopyBufferToImage(V.cmd, V.staging->buffer, t->image,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
     transition(t->image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -1503,7 +1616,7 @@ static void dump_surface(VkbSurface *s)
     VkCommandBufferBeginInfo bi;
     VkBufferImageCopy region;
     VkSubmitInfo si;
-    VkDeviceSize size = (VkDeviceSize)s->width * s->height * 4;
+    VkDeviceSize size = (VkDeviceSize)s->img_w * s->img_h * 4;
     uint8_t *px;
     char path[512];
     FILE *f;
@@ -1539,8 +1652,8 @@ static void dump_surface(VkbSurface *s)
     memset(&region, 0, sizeof region);
     region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     region.imageSubresource.layerCount = 1;
-    region.imageExtent.width = s->width;
-    region.imageExtent.height = s->height;
+    region.imageExtent.width = s->img_w;
+    region.imageExtent.height = s->img_h;
     region.imageExtent.depth = 1;
     vkCmdCopyImageToBuffer(V.cmd, s->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                            buf, 1, &region);
@@ -1557,20 +1670,20 @@ static void dump_surface(VkbSurface *s)
     snprintf(path, sizeof path, "%s%06u.bmp", V.dump_prefix, V.flips);
     f = fopen(path, "wb");
     if (f) {
-        row_bytes = s->width * 3;
+        row_bytes = s->img_w * 3;
         pad = (4 - (row_bytes & 3)) & 3;
-        filesz = 54 + (row_bytes + pad) * s->height;
+        filesz = 54 + (row_bytes + pad) * s->img_h;
         memset(hdr, 0, sizeof hdr);
         hdr[0] = 'B'; hdr[1] = 'M';
         memcpy(hdr + 2, &filesz, 4);
         hdr[10] = 54; hdr[14] = 40;
-        memcpy(hdr + 18, &s->width, 4);
-        memcpy(hdr + 22, &s->height, 4);
+        memcpy(hdr + 18, &s->img_w, 4);
+        memcpy(hdr + 22, &s->img_h, 4);
         hdr[26] = 1; hdr[28] = 24;
         fwrite(hdr, 1, sizeof hdr, f);
-        for (y = s->height; y-- > 0;) {
-            const uint8_t *row = px + (size_t)y * s->width * 4;   /* B,G,R,A */
-            for (x = 0; x < s->width; x++)
+        for (y = s->img_h; y-- > 0;) {
+            const uint8_t *row = px + (size_t)y * s->img_w * 4;   /* B,G,R,A */
+            for (x = 0; x < s->img_w; x++)
                 fwrite(row + x * 4, 1, 3, f);
             fwrite("\0\0\0", 1, pad, f);
         }
@@ -1925,18 +2038,18 @@ static VkiPacket *rec_finish(VkbSurface *disp)
                 continue;
             }
             m = &p->snap[nsnap];
-            if (m->image && (m->w != rt->width || m->h != rt->height))
+            if (m->image && (m->w != rt->img_w || m->h != rt->img_h))
                 vki_image_free(m);       /* earlier V.cmd retired, presenter released it */
             if (!m->image) {
-                if (!image_create(rt->width, rt->height, VK_FORMAT_B8G8R8A8_UNORM,
+                if (!image_create(rt->img_w, rt->img_h, VK_FORMAT_B8G8R8A8_UNORM,
                                   VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                                   VK_IMAGE_ASPECT_COLOR_BIT, &m->image, &m->memory, &m->view)) {
                     vki_image_free(m);
                     c->views[k] = V.white.view;
                     continue;
                 }
-                m->w = rt->width;
-                m->h = rt->height;
+                m->w = rt->img_w;
+                m->h = rt->img_h;
             }
             surface_to(rt, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
             transition(m->image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
@@ -1945,8 +2058,8 @@ static VkiPacket *rec_finish(VkbSurface *disp)
             cp.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
             cp.srcSubresource.layerCount = 1;
             cp.dstSubresource = cp.srcSubresource;
-            cp.extent.width = rt->width;
-            cp.extent.height = rt->height;
+            cp.extent.width = rt->img_w;
+            cp.extent.height = rt->img_h;
             cp.extent.depth = 1;
             vkCmdCopyImage(V.cmd, rt->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                            m->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cp);
@@ -1960,6 +2073,9 @@ static VkiPacket *rec_finish(VkbSurface *disp)
     p->height = disp->height;
     p->logical_w = disp->logical_w;
     p->logical_h = disp->logical_h;
+    p->img_w = disp->img_w;
+    p->img_h = disp->img_h;
+    p->aspect = disp->aspect;
     p->flip = V.flips;
     p->steps = g_ssx3_present_steps;
     return p;
@@ -2346,8 +2462,8 @@ static void vki_replay(VkCommandBuffer cmd, VkbRing *ring, const VkiPacket *prev
     da.clearValue.depthStencil.depth = 1.0f;
     memset(&ri, 0, sizeof ri);
     ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-    ri.renderArea.extent.width = cur->width;
-    ri.renderArea.extent.height = cur->height;
+    ri.renderArea.extent.width = cur->img_w;
+    ri.renderArea.extent.height = cur->img_h;
     ri.layerCount = 1;
     ri.colorAttachmentCount = 1;
     ri.pColorAttachments = &ca;
@@ -2356,11 +2472,11 @@ static void vki_replay(VkCommandBuffer cmd, VkbRing *ring, const VkiPacket *prev
     vkCmdBeginRendering(cmd, &ri);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, V.pipeline);
     vp.x = 0; vp.y = 0;
-    vp.width = (float)cur->width; vp.height = (float)cur->height;
+    vp.width = (float)cur->img_w; vp.height = (float)cur->img_h;
     vp.minDepth = 0.0f; vp.maxDepth = 1.0f;
     vkCmdSetViewport(cmd, 0, 1, &vp);
     sc.offset.x = 0; sc.offset.y = 0;
-    sc.extent.width = cur->width; sc.extent.height = cur->height;
+    sc.extent.width = cur->img_w; sc.extent.height = cur->img_h;
     vkCmdSetScissor(cmd, 0, 1, &sc);
 
     for (i = 0; i < cur->ncmds; i++) {
@@ -2504,7 +2620,7 @@ static int vki_present(float t)
         if (!create_swapchain())
             return 0;
     }
-    if (!vki_target(I.cur->width, I.cur->height))
+    if (!vki_target(I.cur->img_w, I.cur->img_h))
         return 0;
     r = vkAcquireNextImageKHR(V.device, V.swapchain, 100000000ull, I.acquire[slot],
                               VK_NULL_HANDLE, &idx);
@@ -2544,13 +2660,13 @@ static int vki_present(float t)
     memset(&blit, 0, sizeof blit);
     blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     blit.srcSubresource.layerCount = 1;
-    blit.srcOffsets[1].x = (int32_t)I.cur->width;
-    blit.srcOffsets[1].y = (int32_t)I.cur->height;
+    blit.srcOffsets[1].x = (int32_t)I.cur->img_w;
+    blit.srcOffsets[1].y = (int32_t)I.cur->img_h;
     blit.srcOffsets[1].z = 1;
     blit.dstSubresource = blit.srcSubresource;
     sw = (double)V.swap_extent.width;
     sh = (double)V.swap_extent.height;
-    aspect = (double)I.cur->logical_w / (double)I.cur->logical_h;
+    aspect = I.cur->aspect;
     fw = sw; fh = sw / aspect;
     if (fh > sh) { fh = sh; fw = sh * aspect; }
     blit.dstOffsets[0].x = (int32_t)((sw - fw) / 2);
@@ -2911,7 +3027,7 @@ static void vkb_clear(const Nv2aSurface *g, const Nv2aRenderState *rs,
     }
     if (flags & 0x3) {
         /* Z24S8 clear value: depth in the top 24 bits, stencil in the low 8. */
-        VkbDepth *d = depth_get(rs ? rs->zeta_va : 0, s->width, s->height);
+        VkbDepth *d = depth_get(rs ? rs->zeta_va : 0, s->img_w, s->img_h);
         VkClearDepthStencilValue dv;
         if (d) {
             dv.depth = (float)((double)(zstencil >> 8) / 16777215.0);
@@ -2977,7 +3093,7 @@ static int combiners_upload(const VkbCombiners *pu, VkDeviceSize *off)
         *off = V.last_rc_off;
         return 1;
     }
-    if (!(dst = ring_alloc(&V.vring, sizeof u, V.ubo_align, off)))
+    if (!(dst = ring_alloc(V.vring, sizeof u, V.ubo_align, off)))
         return 0;
     memcpy(dst, &u, sizeof u);
     V.last_rc = u;
@@ -3019,7 +3135,7 @@ static void vkb_draw(const Nv2aSurface *g, const Nv2aBatch *b)
         return;
     V.last = s;
     V.frame_draws++;
-    d = depth_get(rs->zeta_va, s->width, s->height);
+    d = depth_get(rs->zeta_va, s->img_w, s->img_h);
     if (!d)
         return;
 
@@ -3040,8 +3156,8 @@ static void vkb_draw(const Nv2aSurface *g, const Nv2aBatch *b)
     if (use_rc)
         combiners_build(e, &rcu);
 
-    if (!(dst = ring_alloc(&V.vring, bytes, 16, &voff[0]))
-            || !(edst = ring_alloc(&V.vring, ebytes, 16, &voff[1]))
+    if (!(dst = ring_alloc(V.vring, bytes, 16, &voff[0]))
+            || !(edst = ring_alloc(V.vring, ebytes, 16, &voff[1]))
             || (use_rc && !combiners_upload(&rcu, &rc_off))) {
         static int warned;
         if (!warned++)
@@ -3071,7 +3187,7 @@ static void vkb_draw(const Nv2aSurface *g, const Nv2aBatch *b)
     }
     /* The UBO binding must be valid even when the shader skips it: without
      * combiners rc_off stays 0, an in-range block it never reads. */
-    dbi.buffer = V.vring.buffer;
+    dbi.buffer = V.vring->buffer;
     dbi.offset = rc_off;
     dbi.range = sizeof(VkbCombiners);
     w[VKB_BIND_RC].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -3096,7 +3212,7 @@ static void vkb_draw(const Nv2aSurface *g, const Nv2aBatch *b)
     vkCmdPushConstants(V.cmd, V.pipe_layout,
                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                        0, sizeof pc, &pc);
-    vbufs[0] = vbufs[1] = V.vring.buffer;
+    vbufs[0] = vbufs[1] = V.vring->buffer;
     vstride[0] = sizeof(Nv2aVertex);
     vstride[1] = e ? sizeof(Nv2aVertexExt) : 0;
     vkCmdBindVertexBuffers2(V.cmd, 0, 2, vbufs, voff, NULL, vstride);
@@ -3109,6 +3225,8 @@ static void vkb_draw(const Nv2aSurface *g, const Nv2aBatch *b)
         rec_draw(s, b, e, use_rc ? &rcu : NULL, stex, views, smp, surf, &pc, rs);
     }
 }
+
+static void scale_key(const SDL_Event *ev);
 
 static void pump_events(void)
 {
@@ -3124,16 +3242,17 @@ static void pump_events(void)
                 && (ev.window.event == SDL_WINDOWEVENT_SIZE_CHANGED
                     || ev.window.event == SDL_WINDOWEVENT_RESIZED))
             V.swap_dirty = 1;
+        scale_key(&ev);
         xbox_InputSdlEvent(&ev);
     }
 }
 
-/* The logical (title-visible) size of the surface, scaled to fit the window
- * with its aspect kept; the rest of the window stays black. */
+/* The surface scaled to fit the window with its display aspect kept; the
+ * rest of the window stays black. */
 static void fit_rect(const VkbSurface *s, VkOffset3D out[2])
 {
     double sw = (double)V.swap_extent.width, sh = (double)V.swap_extent.height;
-    double aspect = (double)s->logical_w / (double)s->logical_h;
+    double aspect = s->aspect;
     double w = sw, h = sw / aspect;
 
     if (h > sh) { h = sh; w = sh * aspect; }
@@ -3199,6 +3318,45 @@ static void update_title(void)
     V.title_presents = I.presents;
 }
 
+/* At a flip: take over a new requested scale for the next frame. This
+ * frame's shown surface keeps its image until it goes unused. */
+static void scale_update(void)
+{
+    int want = R.want;
+
+    if (want < 1) want = 1;
+    if (want > VKB_MAX_SCALE) want = VKB_MAX_SCALE;
+    if (want == R.scale)
+        return;
+    R.scale = want;
+    R.purge = 1;
+    fprintf(stderr, "  [VK] internal resolution %dx\n", R.scale);
+}
+
+/* SSX3_RES_SCALE at start-up; F10 cycles 1x .. VKB_MAX_SCALE x (any thread
+ * that pumps window events). */
+static void scale_init(void)
+{
+    const char *e = getenv("SSX3_RES_SCALE");
+
+    if (e && *e)
+        R.want = atoi(e);
+    if (R.want < 1 || R.want > VKB_MAX_SCALE) {
+        if (e && *e)
+            fprintf(stderr, "  [VK] SSX3_RES_SCALE=%s out of range (1..%d), using 1\n",
+                    e, VKB_MAX_SCALE);
+        R.want = 1;
+    }
+    R.scale = R.want;
+}
+
+static void scale_key(const SDL_Event *ev)
+{
+    if (ev->type == SDL_KEYDOWN && !ev->key.repeat
+            && ev->key.keysym.scancode == SDL_SCANCODE_F10)
+        R.want = R.want % VKB_MAX_SCALE + 1;
+}
+
 static void vkb_flip(void)
 {
     uint32_t idx;
@@ -3228,6 +3386,7 @@ static void vkb_flip(void)
     }
     V.last_frame_draws = V.frame_draws;
     V.frame_draws = 0;
+    scale_update();
     if (I.on) {
         flip_interp();
         return;
@@ -3277,8 +3436,8 @@ static void vkb_flip(void)
         memset(&blit, 0, sizeof blit);
         blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         blit.srcSubresource.layerCount = 1;
-        blit.srcOffsets[1].x = (int32_t)s->width;
-        blit.srcOffsets[1].y = (int32_t)s->height;
+        blit.srcOffsets[1].x = (int32_t)s->img_w;
+        blit.srcOffsets[1].y = (int32_t)s->img_h;
         blit.srcOffsets[1].z = 1;
         blit.dstSubresource = blit.srcSubresource;
         fit_rect(s, blit.dstOffsets);
@@ -3438,6 +3597,7 @@ int ssx3_vk_host_main(int (*guest_main)(void))
                     V.swap_dirty = 1;
                 if (ev.type == SDL_DISPLAYEVENT)
                     read_display_hz();
+                scale_key(&ev);
                 xbox_InputSdlEvent(&ev);
             } while (SDL_PollEvent(&ev));
         }
@@ -3448,6 +3608,7 @@ int ssx3_vk_host_main(int (*guest_main)(void))
 
 int ssx3_vk_register(void)
 {
+    scale_init();
     nv2a_backend_register(&s_vk_backend);
     fprintf(stderr, "  [VK] Vulkan back end registered (starts on the first frame)\n");
     return 0;

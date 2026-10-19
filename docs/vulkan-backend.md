@@ -46,4 +46,23 @@ available as the reference (`SSX3_RENDERER=cpu`) for comparison dumps; the Vulka
 2. ✅ Triangles with vertex colour + texture stage 0, blend/depth/stencil/alpha test. 60 fps title/menu.
 3. ✅ Interface extension + combiner uber-shader + multitexturing. Race 55–60 fps (with the vertex cache and
    pre-decoded vertex programs in the runtime patch).
-4. Render-to-texture checks, AA/resolution, per-triangle culling, frames in flight, Windows (Win32 surface instead of SDL).
+4. ✅ Internal resolution 1x–5x (`SSX3_RES_SCALE`, F10 at run time) and two frames in flight (2026-10-19).
+   Open: render-to-texture checks, AA, per-triangle culling, Windows (Win32 surface instead of SDL).
+
+## Internal resolution
+- Every guest surface is a GPU image of guest size × scale (`surface_extent`); depth images, the presenter's
+  target and its render-target snapshots follow the colour image. Vertices stay in guest pixels: the shaders
+  divide by the guest size (`surface_size` push constant), so only image sizes, viewports, scissors and blits
+  change. Clears always cover the whole image; the executor hands over triangles only (points/lines already
+  expanded in guest pixels), so there are no point sizes or line widths to scale. Render targets sampled as
+  textures use normalised coordinates and simply give more texels.
+- Surfaces are keyed by guest address + guest size + image size. A new scale (F10) is applied at a flip; the next
+  frame frees the old-scale images (`purge_scaled`) and recreates them on first use.
+- Widescreen later: `R.wide` is a horizontal factor on top of the scale (image wider, display aspect `aspect`
+  wider by the same factor). Nothing sets it yet: it also needs the camera projection widened (koen's port:
+  D3DX `PerspectiveFovLH` 0x0024EA13, called by `sub_001EAB40`) and a choice of which surfaces get it (the
+  screen-sized ones, not offscreen targets), plus HUD/menu handling.
+- Frames in flight: without them the NV2A thread waited for the GPU at every frame start (`vkWaitForFences`
+  6–8 ms per frame at 3x vs ~2 ms at 1x, game fps 46 → 34 in a heavy scene). Now two command buffers / fences /
+  acquire semaphores / vertex and staging rings alternate; images are shared (ALL_COMMANDS barriers order them on
+  the queue, every free goes through `device_idle`).

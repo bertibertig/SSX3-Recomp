@@ -62,7 +62,12 @@ Order follows `CLAUDE.md` / `xboxrecomp/docs/GETTING_STARTED.md`. Details and fi
 - [ ] VBlank rate: the runtime ticks ~50 Hz by accident; derive it from the display mode (PAL 50 / PAL-60 / NTSC),
       check which mode SSX 3 (PAL) sets (the game's frame pacing uses its own 60 Hz XAPI timer, not vblank)
 - [ ] Vulkan M3 leftovers: cube maps (face 0 only), bump-env/dot-product stage modes, palettised textures
-- [ ] Vulkan M4: verify render-to-texture, AA/resolution, per-triangle culling, frames in flight, Windows (Win32 surface)
+- [x] Vulkan internal resolution 1x–5x (`SSX3_RES_SCALE`, F10) + two frames in flight
+- [ ] Vulkan M4: verify render-to-texture, AA, per-triangle culling, Windows (Win32 surface)
+- [ ] Interpolation at high internal resolution: the presenter re-renders at the display's refresh and can take
+      the GPU from the game (5x, 270 Hz: game ~25 fps; `SSX3_FPS_LIMIT=120` keeps 60) – budget the presenter
+- [ ] Downscaling 4x/5x to a small window is one linear blit (aliasing); a box/mip downsample would give real SSAA
+- [ ] Widescreen: set `R.wide` (vk_backend.c) + widen the camera projection; HUD/menus pillarboxed
 - [ ] Fence: replace the mirror with `nv2a_pb_set_semaphore_target` once desyncs/graphics glitches show up
 - [ ] `t:\$u\contentmeta.xbx` is missing at boot – check whether it matters
 - [ ] Offer xboxrecomp patch 0001 as an upstream PR (sp00nznet/xboxrecomp)

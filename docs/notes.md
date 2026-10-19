@@ -481,4 +481,35 @@ _(date – what was done, what was found, next step)_
   - PS2 decomp: SSX 3 PS2 has `dirtysock`, `beintnetwork.cpp`, `main/inputsync.cpp` (online play), all still
     unmatched stubs; the Xbox XBE links no XNet/XOnline library (only leftover strings `BENetworkInt`,
     `kT_CMNQuitToOnline`). A LAN mode needs its own netcode on the host side.
+- 2026-10-19 – **LAN multiplayer, phase 0 (branch `feature/lan-multiplayer`, plan: `docs/lan-multiplayer.md`)**.
+  Tools: `scripts/ghidra.sh decomp/xrefs` against the analysed project, new `scripts/probe/guest_probe.py`
+  (starts the game as its child so `/proc/<pid>/mem` is readable/writable under Yama scope 1, virtual pads,
+  FIFO commands: read/dump/write/lock guest memory). Flat image `xbe_flat.bin` offset = VA − 0x10000.
+  - **Spike 1 – rider manager: done.** Manager = `[[[0x369534]+0x74]+0x0C]` (vtable 0x28216C; game object
+    0x369550). Layout: +0x28 rider slots [6] (pointers to the rider part, humans first), +0x40 Player [2],
+    +0x48 ComputerRider [5], +0x5C ComputerActorRider [5], +0x70 MissionRider [2], +0x78 slots used,
+    +0x7C humans, +0x80 AI, +0x84 actors, +0x88 mission riders; +0x15 / +0x8C enable AI / actor updates.
+    Constructors: Player 0x139C0 (alloc 0x1980, "Player"), ComputerRider 0x13C60 (0x1AB0), ComputerActorRider
+    0x12910, MissionRider 0x127E0. Rider part = object + `[[obj+0x28]+4]` + 0x28 (Player +0xEA0, AI +0xFD0);
+    rider+0x83C = slot, +0x840 = human index (−1 AI).
+    Race setup globals: 0x367F78 total riders, 0x367F7C humans (setter 0x4FC40), 0x367F80 actors (0x4FCC0),
+    0x367F84 AI (0x4FEB0, clamped to 5; per mode/player-count table 0x302168), 0x367F90 byte0 mode / byte1 players /
+    byte2 event, per-slot table 0x367FDC + slot·0x20 (6 entries: +0 pad/owner −1 = AI, +4 flags, +8 character),
+    slot remap 0x346400. Live single race: 6 / 1 / 0 / 5, slots 1–5 owner −1, characters 5, 8, 4, 6, 0.
+    → Race = 6 slots, hard-wired in the manager layout and the slot table: 12-player races need those arrays
+    moved (as planned, last phase).
+  - **Spike 2 – puppet hook: in progress.** Manager update = vtable[2] 0x11E90: collects the active riders, then
+    runs fixed stages over all of them: 0x24C30, 0x1F3F0, 0x221D0, 0x222D0, 0x1F420, 0x1F430, 0x24D50, 0x1F450,
+    0x1F4C0, 0x24D60, 0x22550, 0x26080, the rider-model components (rider+0x74C object: +0x3D0 … +0xDA0), 0x1F3C0;
+    paused (`0x3693A8 & 1`): only 0x24C00. Physics step = 0x1F140 (from 0x1F430, dt at rider+0x36C) and 0x246C0
+    (from 0x24D50); both are skipped while byte **rider+0xA84** is set, and 0x24C30 then places the rider with
+    0x23860 from **rider+0x180 = position (x, y, z, 1) + orientation quaternion** (or a path point if +0xAAC).
+    z is up. Rider vtable [1]/[2] (Player 0x30B00 / 0x30D60) = serialize / deserialize of all components.
+    Live test (AI 1, +0xA84 = 1, +0x180 driven from the player's pose): the AI's own position follows, but only
+    its board and light trail show up near the player, the body does not – the skeleton/model is posed
+    elsewhere. Next: hook in the build (override of a stage for puppet slots) instead of external memory pokes.
+    Earlier external pokes of object+0x4A0 (a derived copy) were overwritten by the AI's own update.
+    (The player's wipe-outs in those runs were obstacles – no steering input – not rider collisions.)
+  - Seen: single-player *My Rules* screen (Super AI, AI headstart, full/unlimited/no boost, KO boost only, no uber
+    tricks / rails, no knockdowns, leaky adrenaline) – candidates for lobby rules; results menu has Replay.
 

@@ -47,6 +47,10 @@ objects whose state is written from the network instead of from a pad or the AI.
 
 ## Risks to settle first (phase 0 spikes)
 
+Status (2026-10-19): spike 1 done (6 slots hard-wired, addresses in notes.md), spike 2 in progress (on-rails
+flag rider+0xA84 + pose at rider+0x180 found; body not yet following), spikes 3–7 open.
+
+
 Each one is a short reverse-engineering spike with a yes/no result recorded in notes.md, before building on it:
 
 1. **Rider manager:** where the 6 race slots live (arrays, counts, HUD "x/6", start grid), how AI and human

@@ -6,6 +6,7 @@ source "$(dirname "$0")/_common.sh"
 command -v x86_64-w64-mingw32-gcc >/dev/null || { echo "x86_64-w64-mingw32-gcc missing: sudo pacman -S --needed mingw-w64-gcc" >&2; exit 1; }
 [ -f "$GEN_DIR/recomp_funcs.h" ] || { echo "No generated code. First run: scripts/run_pipeline.sh" >&2; exit 1; }
 apply_runtime_patches
-cmake -S "$ROOT" -B "$ROOT/build-win" -DCMAKE_BUILD_TYPE=Release \
+WIN_BUILD_DIR="${WIN_BUILD_DIR:-$ROOT/build-win}"           # scripts/docker.sh: build-docker-win/
+cmake -S "$ROOT" -B "$WIN_BUILD_DIR" -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_TOOLCHAIN_FILE="$TOOLKIT/cmake/mingw-w64-x86_64.cmake"
-cmake --build "$ROOT/build-win" --parallel "${JOBS:-$(nproc)}"
+cmake --build "$WIN_BUILD_DIR" --parallel "${JOBS:-$(nproc)}"

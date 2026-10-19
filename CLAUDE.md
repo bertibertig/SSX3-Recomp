@@ -65,8 +65,8 @@ The guides for this: `xboxrecomp/docs/GETTING_STARTED.md`, debugging: `xboxrecom
   `docs/LINUX.md` (aarch64), `patches/xboxrecomp-local.patch` (toolkit fixes, base v0.13.1), `src/vk/` (Vulkan renderer).
   Check it **before** debugging anything – many of our open items are solved there.
   **License: GPL-2.0-or-later** (the patch file: MIT/LGPL-2.1 like the toolkit). Findings, addresses and mechanisms may be
-  used freely (cite it in `docs/notes.md`); do **not** copy its code or text into this repo unless the user has decided on
-  a GPL-compatible license for ours – ask first. Its `.claude/skills/xemu` drives xemu through a Windows-only
+  used freely (cite it in `docs/notes.md`). Our own license is **GPL-3.0-or-later** (decided 2026-10-19), which is
+  compatible, so its code may be adopted – keep its copyright notice in the file header and cite it in `docs/notes.md`. Its `.claude/skills/xemu` drives xemu through a Windows-only
   `tools\xemu.ps1`; a Linux equivalent would be our own tool.
 
 ## Rules

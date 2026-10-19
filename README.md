@@ -1,164 +1,256 @@
 # SSX3-Recomp
 
-Experimental **static recompilation of SSX 3 (original Xbox, 2003)** into a native x86-64 PC program,
-based on [xboxrecomp](https://github.com/sp00nznet/xboxrecomp) (Git submodule under `xboxrecomp/`).
-The game's own code is translated to C once and compiled natively; the xboxrecomp runtime and our own
-code replace the Xbox kernel, GPU, audio and input. No emulator.
+A native PC port of **SSX 3 (original Xbox, 2003)**, made by **static recompilation**: the game's own x86
+code is translated to C once with [xboxrecomp](https://github.com/sp00nznet/xboxrecomp) and compiled as a
+normal x86-64 program. The Xbox kernel, GPU, audio and input are replaced by the xboxrecomp runtime and this
+project's own code (a Vulkan renderer, controller support, frame interpolation). No emulator.
 
-> This repo contains **no game code and no game data**. You need your own, legally obtained
-> SSX 3 Xbox disc image. The C code is generated locally from your `default.xbe` and never committed.
+**Goal:** SSX 3 running natively and well on today's PCs – first on **Linux and the Steam Deck**, then Windows,
+later macOS – with modern extras on top: high frame rates, higher resolutions, anti-aliasing, widescreen and
+HD textures.
 
-## Platforms: Linux first
-
-This is a **Linux-first port**, mainly with the **Steam Deck** in mind: native Linux build, Vulkan
-renderer, SDL2 window and controllers.
-
-| Platform | State |
-|---|---|
-| **Linux** (x86-64, Steam Deck target) | Main platform. Builds with GCC/Clang, Vulkan renderer, SDL2 input. Not yet tested on a Deck itself. |
-| **Windows** | Planned as the next platform. xboxrecomp itself is Windows-first (D3D11, XInput, XAudio2), so most of the runtime is already there. Today: MinGW cross build from Linux, tested under Proton; native MSVC build and the Vulkan back end's Win32 surface are still open. |
-| **macOS** | Planned, later. Not started (Vulkan via MoltenVK; Apple Silicon needs extra MMIO work). |
+> **No game data is included – not in this repository and not in the releases.** You need your own, legally
+> obtained copy of SSX 3 for the Xbox (see [Game files](#game-files)).
 
 ## Status
 
-Our base is the PAL/EU build (title ID 0x4541003C, 2003-09-19; English, French, German, Spanish).
+Early and experimental, but you can boot the game and race. Base version: **PAL/EU** (title ID 0x4541003C,
+build 2003-09-19; English, French, German, Spanish). Other versions are not supported.
 
-| Milestone | |
+| | |
 |---|---|
-| Pipeline: 17,017 functions lifted, 0 translation errors, 1.37 M lines of C | ✅ |
-| Linux build (GCC 16, ~1:40 min) and Windows cross build (MinGW, runs under Proton) | ✅ |
-| Boot: EA BIG / THX logos, intro movie (skippable), boot in ~0.5 s | ✅ |
-| Audio through the emulated APU (DirectSound) | ✅ |
-| Title screen, main menu, character select | ✅ |
-| **Race starts and plays**, in-game graphics match the CPU reference renderer | ✅ |
-| Vulkan renderer: **60 fps** title/menus, **55–60 fps** in races (CPU renderer: ~15 fps) | ✅ |
-| Controllers: XInput/SDL pads with hotplug, keyboard as player 1 | ✅ |
-| Full game run-through (all peaks, Freestyle, Conquer the Mountain, saving) | ⬜ not verified yet |
-| Split screen (2 pads) | ⬜ untested |
-| Frame interpolation above 60 fps: menus and races shown at the display's refresh (tested 120 and 270 Hz) while the game simulates at 60 | ✅ (Vulkan, default; `SSX3_INTERP=0` off) |
-| Steady 60 game fps everywhere (pre-race screen ~40 fps) | ⬜ in progress |
-| Higher internal resolution: 2x–5x (`SSX3_RES_SCALE`, F10) | ✅ (Vulkan) |
-| AA, widescreen, HD textures | ⬜ planned |
-| Steam Deck test, Windows native build, macOS | ⬜ planned |
+| Boot: EA / THX logos, intro movie (skippable) | ✅ |
+| Audio (emulated Xbox APU) | ✅ |
+| Title screen, menus, character select | ✅ |
+| Races start and play, graphics match the reference renderer | ✅ |
+| Vulkan renderer: 60 fps in menus, 55–60 fps in races | ✅ Linux |
+| Frame interpolation above 60 fps (120, 144, … display refresh) | ✅ Linux |
+| Internal resolution 1x–5x (up to 3200x2400) | ✅ Linux |
+| Controllers (XInput/SDL pads, hotplug, rumble), keyboard as player 1 | ✅ |
+| Start-up menu for resolution, frame rate, v-sync | ✅ |
+| Windows build | ⚠️ experimental: software renderer only, slow |
+| Full run through the game (all peaks, Conquer the Mountain, saving) | ⬜ not verified |
+| Split screen | ⬜ untested |
+| Steady 60 fps everywhere (the pre-race screen drops to ~40) | ⬜ in progress |
+| Widescreen, anti-aliasing, HD textures | ⬜ planned |
+| Steam Deck test, Vulkan on Windows, macOS | ⬜ planned |
 
-Known issues: an intermittent crash right after the intro/attract movie starts (`sub_00177F80`);
-the vblank clock runs at ~50 Hz by accident; some Vulkan features are missing (cube maps beyond face 0,
-bump-env modes, palettised textures). Details and the full list: [docs/TODO.md](docs/TODO.md),
-the running log: [docs/notes.md](docs/notes.md), the renderer: [docs/vulkan-backend.md](docs/vulkan-backend.md).
+Known issues: an occasional crash right after the intro movie starts (start again); some rare graphics
+effects are not implemented in the Vulkan renderer yet (cube maps beyond face 0, bump-env modes, palettised
+textures). Full list: [docs/TODO.md](docs/TODO.md).
 
-## Quick start (Linux)
+## Platforms
+
+| Platform | State |
+|---|---|
+| **Linux** x86-64 | Main platform. Vulkan renderer, SDL2 window and controllers. |
+| **Steam Deck** | The main target; should work like any Linux PC, not tested on a Deck yet. |
+| **Windows** 10/11 x86-64 | Experimental. Runs, but only with the software (CPU) renderer until the Vulkan renderer gets a Windows surface. |
+| **macOS** | Not started. |
+
+## Playing a release
+
+1. Download the package for your system from the [releases page](https://github.com/bertibertig/SSX3-Recomp/releases)
+   and unpack it.
+2. Put your game files into its `game_files/` folder (see [Game files](#game-files)).
+3. Start the game with the launcher script:
+   - **Linux:** `./run.sh`
+   - **Windows:** double-click `run.bat` (it runs `run.ps1`)
+
+Linux packages need glibc 2.39 or newer (Ubuntu 24.04+, Fedora 40+, Arch, SteamOS 3.6+) and these libraries:
+SDL2, OpenSSL 3, libepoxy and a Vulkan driver.
 
 ```bash
-git clone --recurse-submodules <this-repo>       # or locally: git submodule update --init --recursive
-cd SSX3-Recomp
-
-scripts/setup.sh                                  # Python venv + capstone, tool check
-bash xboxrecomp/tools/linux/install_deps.sh       # SDL2, libepoxy, OpenSSL, ffmpeg (sudo); Vulkan driver + glslc needed too
-
-scripts/extract_iso.sh "/path/to/SSX 3 (Xbox).iso"   # -> game_files/default.xbe + data
-scripts/run_pipeline.sh                           # parse, disasm, func_id, abi, recomp -> src/recomp/gen/ (~15 min)
-scripts/doctor.sh                                 # bring-up report
-scripts/build.sh                                  # CMake build (applies the xboxrecomp runtime patch) -> build/ssx3_recomp
-scripts/run.sh                                    # start the game
+sudo apt install libsdl2-2.0-0 libssl3 libepoxy0 mesa-vulkan-drivers
 ```
 
-Compiling the generated code needs a lot of RAM: lower `JOBS=` if the build runs out of memory.
+## Game files
 
-Windows build (cross compiled on Linux, run under Proton):
+The game data always comes from **your own disc**; nothing of it is ever put into this repository or a release.
+
+1. Dump your SSX 3 Xbox disc (**PAL/EU**) to an `.iso` image.
+2. Extract it into `game_files/` – in the repository root when you build from source, next to the program
+   when you use a release. Use [extract-xiso](https://github.com/XboxDev/extract-xiso) or
+   [xdvdfs](https://github.com/antangelo/xdvdfs):
+
+   ```bash
+   extract-xiso -x "/path/to/SSX 3.iso" -d game_files
+   ```
+
+   In the repository, `scripts/extract_iso.sh "/path/to/SSX 3.iso"` does the same.
+3. Check that the layout is right:
+
+   ```
+   game_files/
+     default.xbe
+     data/
+     ...
+   ```
+
+The launcher stops with a message if `game_files/default.xbe` is missing.
+
+## Building from source
+
+The build needs your own `default.xbe` (see [Game files](#game-files)): the C code is generated locally from
+it (`src/recomp/gen/`) and is never committed or shipped. Two ways to build – directly on your system or in a
+Docker container. Both end with the same scripts and the same `game_files/` folder in the repository root.
+
+Get the source first (with submodules):
+
+```bash
+git clone --recurse-submodules https://github.com/bertibertig/SSX3-Recomp.git
+```
+
+```bash
+cd SSX3-Recomp
+```
+
+Extract your disc image into `game_files/` (needs [extract-xiso](https://github.com/XboxDev/extract-xiso) or
+[xdvdfs](https://github.com/antangelo/xdvdfs) on the host, for both build ways):
+
+```bash
+scripts/extract_iso.sh "/path/to/SSX 3.iso"
+```
+
+### On your system (Linux)
+
+Needs Python 3, CMake, GCC or Clang, SDL2, libepoxy, OpenSSL, `glslc` (shaderc) and a Vulkan driver.
+`install_deps.sh` installs the libraries on Arch, Debian/Ubuntu and Fedora (asks for sudo); install `glslc`
+with your package manager (`shaderc` on Arch, `glslc` on Ubuntu, `glslc` on Fedora).
+
+```bash
+bash xboxrecomp/tools/linux/install_deps.sh
+```
+
+```bash
+scripts/setup.sh
+```
+
+```bash
+scripts/run_pipeline.sh
+```
+
+```bash
+scripts/build.sh
+```
+
+```bash
+scripts/run.sh
+```
+
+`setup.sh` creates the Python venv for the pipeline, `run_pipeline.sh` recompiles the XBE to C (~15 min),
+`build.sh` compiles it to `build/ssx3_recomp` (~2 min with 16 cores) and `run.sh` starts the game with the
+start-up menu. Compiling the 1.4 million lines of generated C needs a lot of RAM: use `JOBS=4 scripts/build.sh`
+(or lower) if the build runs out of memory.
+
+### In a Docker container
+
+Only Docker (or Podman) is needed on the host for the build; the toolchain lives in an Ubuntu 24.04 image
+([docker/Dockerfile](docker/Dockerfile)). `scripts/docker.sh` builds the image on first use and runs a command
+in it with the repository mounted, so all results land in your checkout, owned by your user.
+
+```bash
+scripts/docker.sh scripts/run_pipeline.sh
+```
+
+```bash
+scripts/docker.sh scripts/build.sh
+```
+
+```bash
+scripts/run.sh
+```
+
+The game itself runs on the host (it needs your display, GPU and controllers): `run.sh` picks up the
+container build from `build-docker/ssx3_recomp`; the host needs the runtime libraries from
+[Playing a release](#playing-a-release). `scripts/docker.sh bash` opens a shell in the container,
+`SSX3_ENGINE=podman` selects Podman.
+
+### Windows build
+
+The Windows executable is cross compiled with MinGW-w64, on Linux or in the container:
 
 ```bash
 scripts/build_win.sh
 ```
 
 ```bash
-scripts/run_win.sh
+scripts/docker.sh scripts/build_win.sh
 ```
 
-On Windows itself, start the build with `scripts/run.ps1`, the PowerShell port of `scripts/run.sh` (same
-switches and defaults; it uses the CPU renderer until the Vulkan back end gets a Win32 surface; menu choices are
-saved in `%APPDATA%\ssx3-recomp\run.conf`):
+The result is `build-win/ssx3_recomp.exe` (container: `build-docker-win/`). Copy it with `scripts/run.ps1` and
+your `game_files/` to a Windows PC and start `run.ps1`, or run it under Proton on Linux with `scripts/run_win.sh`.
+A native MSVC build is untested.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\run.ps1
-```
+### Release packages
 
-### Run options
+`scripts/package_release.sh v0.1.0` builds both packages into `dist/` (Linux in the container for
+compatibility with older distributions, Windows with the host's MinGW) – without any game files.
 
-Started from a terminal, `scripts/run.sh` first asks for the internal resolution (1x–5x), the frame rate
-(display refresh, 60 without interpolation, 120/144/165/240, uncapped) and v-sync (off = lowest latency) – with whiptail or dialog when installed,
-otherwise a built-in arrow-key menu. The choice is saved in `~/.config/ssx3-recomp/run.conf` and reused, also
-for starts without a terminal (e.g. a Steam shortcut). `SSX3_MENU=0` skips the menu, `SSX3_MENU=1` always shows
-it; variables set in the environment win and are not asked for.
+## Run options
 
-`scripts/run.sh` sets the defaults the game needs; these are the ones you may want to change:
+Started from a terminal, `run.sh` first asks for the internal resolution (1x–5x), the frame rate (display
+refresh, 60 without interpolation, 120/144/165/240, uncapped) and v-sync. The choice is saved in
+`~/.config/ssx3-recomp/run.conf` (Windows: `%APPDATA%\ssx3-recomp\run.conf`) and reused, also for starts
+without a terminal (e.g. a Steam shortcut). Variables set in the environment win and are not asked for.
 
 | Variable | Default | |
 |---|---|---|
-| `SSX3_RENDERER` | `vulkan` | `cpu` = the software rasteriser (reference, slow) |
-| `SSX3_SKIP_LOGOS` | `1` | skip the EA BIG and THX logos |
-| `SSX3_SKIP_INTRO` | `0` | `1` = skip the intro movie too |
-| `SSX3_RES_SCALE` | `1` | internal resolution `1`–`5` × 640x480 (2 = 1280x960 … 5 = 3200x2400); **F10** cycles it in game |
+| `SSX3_RENDERER` | `vulkan` (Windows: `cpu`) | `cpu` = the software renderer (reference, slow) |
+| `SSX3_RES_SCALE` | `1` | internal resolution `1`–`5` × 640x480; **F10** cycles it in game |
 | `SSX3_FPS_LIMIT` | display refresh | interpolated frame cap in fps, `0` = uncapped |
 | `SSX3_INTERP` | `1` | `0` = no interpolation, show the game's own 60 fps |
-| `SSX3_VSYNC` | `0` | `1` = v-sync (FIFO presentation); `0` = mailbox (immediate if unavailable), lower latency |
+| `SSX3_VSYNC` | `0` | `1` = v-sync (FIFO); `0` = mailbox, lower latency |
+| `SSX3_SKIP_LOGOS` | `1` | skip the EA and THX logos |
+| `SSX3_SKIP_INTRO` | `0` | `1` = skip the intro movie too |
 | `SSX3_MENU` | – | start-up menu: `0` never, `1` always |
-| `RECOMP_KEYBOARD` | `1` | keyboard as controller 1 (Enter = Start, Z = A, X = B, arrows = D-pad …) |
-| `RECOMP_USB_PADS` | `1` | emulated pads on the USB bus (up to 4, for split screen) |
+| `RECOMP_KEYBOARD` | `1` | keyboard as controller 1 |
+| `RECOMP_USB_PADS` | `1` | emulated controllers (up to 4, for split screen) |
+
+The resolution, frame rate and v-sync settings belong to the Vulkan renderer (Linux).
 
 ## Controllers
 
-Any XInput-style pad works on Linux and Windows: Xbox 360 / One / Series controllers, 8BitDo pads in
-X-input mode, the Steam Deck's built-in controls (through Steam Input – not yet tested on a Deck), and anything else SDL2 knows as a
-game controller (on Windows: XInput). Pads can be plugged in or switched on at any time; each takes the
-lowest free Xbox port (`PAD: port 1 <- "…"` in the log). The keyboard keeps working on port 1 alongside a pad.
+Any XInput-style pad works: Xbox 360 / One / Series controllers, 8BitDo pads in X-input mode, the Steam
+Deck's controls (through Steam Input) and anything else SDL2 knows as a game controller (on Windows: XInput).
+Pads can be plugged in at any time; each takes the lowest free Xbox port. Rumble is forwarded to the pad.
 
-| Your pad | Xbox (Controller S) |
-|---|---|
-| A / B / X / Y | A / B / X / Y |
-| LB / RB | White / Black |
-| LT / RT | Left / right trigger (analog) |
-| Start (Menu) / Back (View) | Start / Back |
-| Sticks, stick clicks, D-pad | Same |
+| Your pad | Xbox | Keyboard (player 1) |
+|---|---|---|
+| A / B / X / Y | A / B / X / Y | Z / X / C / V |
+| LB / RB | White / Black | Q / E |
+| LT / RT | Left / right trigger | 1 / 3 |
+| Start / Back | Start / Back | Enter / Backspace |
+| D-pad | D-pad | Arrow keys |
+| Left / right stick | Left / right stick | W A S D / I J K L |
+| Stick clicks | Stick clicks | Shift / Ctrl |
 
-- Rumble: the game's force feedback goes to the pad's motors (SDL rumble / XInput vibration).
-- `SSX3_PAD_TRACE=1` prints every button and rumble change per port – handy to check a new controller.
+- `SSX3_PAD_TRACE=1` prints every button and rumble change – handy to check a new controller.
 - `config/gamecontrollerdb.txt` (or `SSX3_PAD_DB=<file>`) adds SDL mappings for unknown pads
   ([SDL_GameControllerDB](https://github.com/mdqinc/SDL_GameControllerDB) format).
-- `scripts/test_pad.sh` checks hotplug and the map with a virtual pad, no hardware needed.
 
-Code: `src/input/ssx3_pad.c` (replaces the runtime's `xinput_device.c`). Open: PlayStation/Switch
-specifics, rebinding – see [docs/TODO.md](docs/TODO.md).
+## Documentation
 
-## How it works
+- [docs/TODO.md](docs/TODO.md) – open work and plans
+- [docs/notes.md](docs/notes.md) – the running work log (addresses, findings, decisions)
+- [docs/vulkan-backend.md](docs/vulkan-backend.md) – the Vulkan renderer
+- [docs/frame-interpolation.md](docs/frame-interpolation.md) – frame interpolation above 60 fps
 
-1. `scripts/run_pipeline.sh` runs the xboxrecomp tools on your `default.xbe`: XBE parsing, disassembly,
-   function identification, ABI analysis and the lift to C (`src/recomp/gen/`, never committed).
-2. Hand-written code fills the gaps: `src/main.c` (host entry for Windows and POSIX), `src/recomp_manual.c`
-   (overrides), `config/seed_functions.json` (entry points the static analysis misses), `src/render/`
-   (Vulkan back end for the emulated NV2A GPU), `src/input/` (controllers).
-3. Runtime fixes that have to live inside xboxrecomp are kept as patches in `patches/xboxrecomp/` and applied
-   by the build scripts; the submodule itself stays untouched (upstream PRs planned).
+## Credits and references
 
-## Working with Claude Code
+- [xboxrecomp](https://github.com/sp00nznet/xboxrecomp) – the recompilation toolkit and runtime (MIT, parts LGPL-2.1)
+- [SSX3-recomp](https://github.com/koenhendriks/SSX3-recomp) by Koen Hendriks and Corné Dorrestijn – an
+  independent, Windows-first port of the same game; its findings were a big help
+- [SSX Tricky PC](https://github.com/MatiasRiveraC/SSX-Tricky-PC) and [OpenTricky](https://github.com/GiZcesi/OpenTricky) –
+  xboxrecomp ports of the predecessor
+- [ssxdecomp/ssx3](https://github.com/ssxdecomp/ssx3) – the SSX 3 PS2 decompilation
+- [xemu](https://xemu.app) – the behaviour reference
 
-Start `claude` in the repo root: [CLAUDE.md](CLAUDE.md) explains the goal, layout, workflow and rules.
-`scripts/fetch_references.sh` fetches the reference projects into `reference/` (read-only, not committed).
+## License
 
-## References
-
-- xboxrecomp: https://github.com/sp00nznet/xboxrecomp (MIT)
-- SSX3-recomp by Koen Hendriks and Corné Dorrestijn: https://github.com/koenhendriks/SSX3-recomp – an independent,
-  Windows-first xboxrecomp port of the same game (same PAL XBE), much further along. We use its findings as a
-  reference (GPL-2.0-or-later; no code copied).
-- SSX Tricky PC (xboxrecomp port of the predecessor): https://github.com/MatiasRiveraC/SSX-Tricky-PC
-- OpenTricky: https://github.com/GiZcesi/OpenTricky (GPL-3.0-only)
-- SSX3 PS2 decomp: https://github.com/ssxdecomp/ssx3 · GameCube: https://github.com/ssxdecomp/ssx3_gc
-- [xemu](https://xemu.app) as the behaviour reference
-
-## Legal
+This project's own code is licensed under the **GNU General Public License v3.0 or later** – see
+[LICENSE](LICENSE). The xboxrecomp submodule and the other third-party code keep their own licenses.
 
 Unofficial fan project, not affiliated with or endorsed by Electronic Arts or Microsoft. SSX and SSX 3 are
-trademarks of Electronic Arts. The repository holds only original code, tooling and notes.
-
-License of our own files: still to be decided (xboxrecomp: MIT; code taken from OpenTricky or
-koenhendriks/SSX3-recomp would bring GPL obligations, so none is taken until this is decided).
+trademarks of Electronic Arts. This repository contains only original code, tools and notes – no game code
+or data.

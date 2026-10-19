@@ -87,12 +87,22 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 )
 
 if(WIN32)
+    # MinGW's libxinput.a imports xinput1_3.dll, which only the DirectX 2010
+    # redistributable installs; xinput1_4.dll ships with Windows 8 and later.
+    # MSVC's xinput.lib already means xinput1_4.
+    set(SSX3_XINPUT xinput)
+    if(MINGW)
+        set(SSX3_XINPUT xinput1_4)
+        get_target_property(SSX3_INPUT_LINK xbox_input INTERFACE_LINK_LIBRARIES)
+        list(TRANSFORM SSX3_INPUT_LINK REPLACE "^xinput$" xinput1_4)
+        set_property(TARGET xbox_input PROPERTY INTERFACE_LINK_LIBRARIES ${SSX3_INPUT_LINK})
+    endif()
     # Windows SDK libraries needed at link time
     target_link_libraries(${PROJECT_NAME} PRIVATE
         d3d11
         dxgi
         dxguid
-        xinput
+        ${SSX3_XINPUT}
         winmm
         # Lets the fault handler resolve the host RIP back to the generated
         # function's symbol, i.e. to the guest function that faulted.

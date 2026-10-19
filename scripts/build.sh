@@ -3,5 +3,6 @@
 source "$(dirname "$0")/_common.sh"
 [ -f "$GEN_DIR/recomp_funcs.h" ] || { echo "No generated code. First run: scripts/run_pipeline.sh" >&2; exit 1; }
 apply_runtime_patches
-cmake -S "$ROOT" -B "$ROOT/build" -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-cmake --build "$ROOT/build" --parallel "${JOBS:-$(nproc)}"
+BUILD_DIR="${BUILD_DIR:-$ROOT/build}"                 # scripts/docker.sh: build-docker/
+cmake -S "$ROOT" -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+cmake --build "$BUILD_DIR" --parallel "${JOBS:-$(nproc)}"

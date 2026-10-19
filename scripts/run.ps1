@@ -1,4 +1,5 @@
-# Starts the built port on Windows from the repo root (paths in src/main.c are relative to it).
+# Starts the built port on Windows from the repo root or from an unpacked release folder (paths in src/main.c
+# are relative to it).
 # Windows counterpart of scripts/run.sh (same switches and defaults, same start-up menu).
 #   powershell -ExecutionPolicy Bypass -File scripts\run.ps1
 #   powershell -ExecutionPolicy Bypass -File scripts\run.ps1 *> logs\run.log   # for doctor.sh / seed_from_log
@@ -14,17 +15,26 @@
 #   SSX3_PAD_TRACE=1        log every controller button change
 #   RECOMP_USB_PADS=2       more emulated pads on the USB bus (split screen), default 1
 $ErrorActionPreference = 'Stop'
-$Root = Split-Path -Parent $PSScriptRoot
-
 $Exe = $null
-foreach ($p in 'build-win\ssx3_recomp.exe', 'build\ssx3_recomp.exe', 'build\Release\ssx3_recomp.exe') {
-    if (Test-Path -LiteralPath (Join-Path $Root $p)) { $Exe = Join-Path $Root $p; break }
+if (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'ssx3_recomp.exe')) {
+    # Release package: the exe, this script and game_files\ side by side
+    $Root = $PSScriptRoot
+    $Exe = Join-Path $Root 'ssx3_recomp.exe'
+} else {
+    $Root = Split-Path -Parent $PSScriptRoot
+    foreach ($p in 'build-win\ssx3_recomp.exe', 'build\ssx3_recomp.exe', 'build\Release\ssx3_recomp.exe') {
+        if (Test-Path -LiteralPath (Join-Path $Root $p)) { $Exe = Join-Path $Root $p; break }
+    }
 }
 if (-not $Exe) {
     [Console]::Error.WriteLine('No Windows build. First run: scripts/build_win.sh (MinGW cross build)')
     exit 1
 }
 Set-Location -LiteralPath $Root
+if (-not (Test-Path -LiteralPath (Join-Path $Root 'game_files\default.xbe'))) {
+    [Console]::Error.WriteLine("game_files\default.xbe missing: copy the extracted contents of your SSX 3 Xbox disc (PAL) into $(Join-Path $Root 'game_files')")
+    exit 1
+}
 
 function Set-EnvDefault([string]$Name, [string]$Value) {
     if (-not [Environment]::GetEnvironmentVariable($Name)) { [Environment]::SetEnvironmentVariable($Name, $Value) }

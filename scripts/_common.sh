@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TOOLKIT="$ROOT/xboxrecomp"
 GAME_FILES="$ROOT/game_files"
 GEN_DIR="$ROOT/src/recomp/gen"
-VENV="$ROOT/.venv"
+VENV="${SSX3_VENV:-$ROOT/.venv}"          # the build container brings its own (docker/Dockerfile)
 XBE="$GAME_FILES/default.xbe"
 export PYTHONUNBUFFERED=1   # write logs live (otherwise Python buffers when redirected to files)
 

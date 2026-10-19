@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Starts the built port from the repo root (paths in src/main.c are relative to it).
+# Starts the built port from the repo root or from an unpacked release folder (paths in src/main.c are relative
+# to it).
 #   scripts/run.sh                         # output to the console
 #   scripts/run.sh 2>&1 | tee logs/run.log # for doctor.sh / seed_from_log
 # Runtime switches (details: docs/notes.md, xboxrecomp/docs):
@@ -19,9 +20,20 @@
 #   RECOMP_PB_SCAN=1 / RECOMP_PB_EXEC=1   analyse / execute the NV2A pushbuffer
 #   SSX3_PAD_TRACE=1        log every controller button change (pads: README "Controllers")
 #   RECOMP_USB_PADS=2       more emulated pads on the USB bus (split screen), default 1
-source "$(dirname "$0")/_common.sh"
-source "$(dirname "$0")/_launch_menu.sh"
-[ -x "$ROOT/build/ssx3_recomp" ] || { echo "No build. First run: scripts/build.sh" >&2; exit 1; }
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -x "$HERE/ssx3_recomp" ]; then
+  set -euo pipefail                                   # release package: binary, scripts and game_files/ side by side
+  ROOT="$HERE"; EXE="$ROOT/ssx3_recomp"
+else
+  source "$HERE/_common.sh"
+  EXE="$ROOT/build/ssx3_recomp"
+  [ -x "$EXE" ] || [ ! -x "$ROOT/build-docker/ssx3_recomp" ] || EXE="$ROOT/build-docker/ssx3_recomp"   # scripts/docker.sh build
+fi
+source "$HERE/_launch_menu.sh"
+[ -x "$EXE" ] || { echo "No build. First run: scripts/build.sh" >&2; exit 1; }
+[ -f "$ROOT/game_files/default.xbe" ] || {
+  echo "game_files/default.xbe missing: put the extracted contents of your SSX 3 Xbox disc (PAL) into $ROOT/game_files/" >&2
+  exit 1; }
 cd "$ROOT"
 export RECOMP_TITLE_KEVENTS="${RECOMP_TITLE_KEVENTS:-1}"
 export RECOMP_VBLANK="${RECOMP_VBLANK:-1}"
@@ -37,4 +49,4 @@ export RECOMP_USB="${RECOMP_USB:-1}"                  # emulated USB controller 
 export RECOMP_KEYBOARD="${RECOMP_KEYBOARD:-1}"        # keyboard = controller 1 (Enter=Start, Z=A, X=B, arrows=D-pad …)
 export SSX3_SKIP_LOGOS="${SSX3_SKIP_LOGOS:-1}"        # skip the EA BIG and THX logos (SSX3_SKIP_INTRO=1: the intro too)
 launch_menu                                           # internal resolution, frame rate, v-sync (Vulkan)
-exec ./build/ssx3_recomp "$@"
+exec "$EXE" "$@"

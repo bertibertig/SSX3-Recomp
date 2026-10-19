@@ -322,3 +322,14 @@ _(date – what was done, what was found, next step)_
   non-WIN32 (no Win32 surface yet), so the menu only shows with `SSX3_RENDERER=vulkan`. **Not run yet**: no
   PowerShell on this machine. TODO entry added for a true high frame rate in the game logic (instead of interpolation,
   which costs ~24 ms of display latency).
+- 2026-10-19 – **First release v0.1.0 + license.** Our own code is now **GPL-3.0-or-later** (`LICENSE`; koen's
+  GPL-2.0-or-later code may be adopted with its copyright header, see CLAUDE.md). `scripts/package_release.sh <ver>`
+  builds `dist/SSX3-Recomp-<ver>-{linux-x86_64.tar.gz,windows-x86_64.zip}` (binary, launcher scripts, player
+  README, `game_files/README.txt`, licenses – never game data). Linux is built in an Ubuntu 24.04 container
+  (`docker/Dockerfile`, `scripts/docker.sh`): the host build (Arch, GCC 16) needs GLIBC_2.43 (`sqrtf`), too new for
+  SteamOS; the container build needs at most GLIBC_2.38. `scripts/docker.sh <cmd>` runs any repo script in that image
+  (pipeline with its own venv via `SSX3_VENV`, `build.sh` → `build-docker/`, `build_win.sh` → `build-docker-win/`).
+  Windows: MinGW's `libxinput.a` imported `XINPUT1_3.dll` (DirectX 2010 redist only, missing on stock Windows) →
+  CMakeLists links `xinput1_4` for MinGW, also in `xbox_input`'s interface. `run.sh` / `run.ps1` work from the repo
+  and from an unpacked package (binary next to the script) and stop with a message if `game_files/default.xbe`
+  is missing; `run.bat` wraps `run.ps1` for double-clicking. README rewritten for players and builders.

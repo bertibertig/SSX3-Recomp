@@ -313,3 +313,12 @@ _(date – what was done, what was found, next step)_
   `${XDG_CONFIG_HOME:-~/.config}/ssx3-recomp/run.conf`, reused without a terminal; env vars win and are not asked;
   `SSX3_MENU=0/1` never/always. Tested all three menu back ends through a pty (arrow keys, number keys, Esc =
   quit, saved defaults, no-TTY, env override); not yet tried on a Deck.
+- 2026-10-19 – **V-sync in the start-up menu + `scripts/run.ps1`.** `_launch_menu.sh` asks a third question,
+  v-sync off (mailbox, immediate as fallback) / on (FIFO) → `SSX3_VSYNC`, saved as `VSYNC=` in `run.conf`; a set
+  `SSX3_VSYNC` is not asked, an old `run.conf` without the key means off, a bad saved value is ignored. Tested
+  through a pty (built-in menu, whiptail, dialog, reuse without a TTY, env override, quit). `scripts/run.ps1` is the
+  Windows port of `run.sh` + the menu (PowerShell 5.1/7, built-in arrow-key menu, `%APPDATA%\ssx3-recomp\run.conf`).
+  It defaults to `SSX3_RENDERER=cpu` + `RECOMP_FB_WINDOW=1`, because CMake builds the Vulkan back end only for
+  non-WIN32 (no Win32 surface yet), so the menu only shows with `SSX3_RENDERER=vulkan`. **Not run yet**: no
+  PowerShell on this machine. TODO entry added for a true high frame rate in the game logic (instead of interpolation,
+  which costs ~24 ms of display latency).

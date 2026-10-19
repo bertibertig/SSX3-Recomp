@@ -74,10 +74,18 @@ scripts/build_win.sh
 scripts/run_win.sh
 ```
 
+On Windows itself, start the build with `scripts/run.ps1`, the PowerShell port of `scripts/run.sh` (same
+switches and defaults; it uses the CPU renderer until the Vulkan back end gets a Win32 surface; menu choices are
+saved in `%APPDATA%\ssx3-recomp\run.conf`):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\run.ps1
+```
+
 ### Run options
 
-Started from a terminal, `scripts/run.sh` first asks for the internal resolution (1x–5x) and the frame rate
-(display refresh, 60 without interpolation, 120/144/165/240, uncapped) – with whiptail or dialog when installed,
+Started from a terminal, `scripts/run.sh` first asks for the internal resolution (1x–5x), the frame rate
+(display refresh, 60 without interpolation, 120/144/165/240, uncapped) and v-sync (off = lowest latency) – with whiptail or dialog when installed,
 otherwise a built-in arrow-key menu. The choice is saved in `~/.config/ssx3-recomp/run.conf` and reused, also
 for starts without a terminal (e.g. a Steam shortcut). `SSX3_MENU=0` skips the menu, `SSX3_MENU=1` always shows
 it; variables set in the environment win and are not asked for.
@@ -92,6 +100,7 @@ it; variables set in the environment win and are not asked for.
 | `SSX3_RES_SCALE` | `1` | internal resolution `1`–`5` × 640x480 (2 = 1280x960 … 5 = 3200x2400); **F10** cycles it in game |
 | `SSX3_FPS_LIMIT` | display refresh | interpolated frame cap in fps, `0` = uncapped |
 | `SSX3_INTERP` | `1` | `0` = no interpolation, show the game's own 60 fps |
+| `SSX3_VSYNC` | `0` | `1` = v-sync (FIFO presentation); `0` = mailbox (immediate if unavailable), lower latency |
 | `SSX3_MENU` | – | start-up menu: `0` never, `1` always |
 | `RECOMP_KEYBOARD` | `1` | keyboard as controller 1 (Enter = Start, Z = A, X = B, arrows = D-pad …) |
 | `RECOMP_USB_PADS` | `1` | emulated pads on the USB bus (up to 4, for split screen) |

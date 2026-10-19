@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Start-up menu for scripts/run.sh: internal resolution and frame rate (Vulkan renderer).
+# Start-up menu for scripts/run.sh: internal resolution, frame rate and v-sync (Vulkan renderer).
 # Loaded with `source`; call launch_menu. Uses whiptail or dialog when installed, otherwise a built-in
 # arrow-key menu. The last choice is saved and reused – also when there is no terminal (e.g. a Steam shortcut).
 #   SSX3_MENU=0   never show the menu (saved choice / defaults only)
-#   SSX3_MENU=1   show it even if SSX3_RES_SCALE / SSX3_FPS_LIMIT / SSX3_INTERP are already set
+#   SSX3_MENU=1   show it even if SSX3_RES_SCALE / SSX3_FPS_LIMIT / SSX3_INTERP / SSX3_VSYNC are already set
 # Variables set in the environment win over the saved choice and are not asked for.
 
 LAUNCH_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/ssx3-recomp/run.conf"
@@ -23,6 +23,10 @@ FPS_ITEMS=(
   165      "165 fps          interpolated"
   240      "240 fps          interpolated"
   uncapped "Uncapped         interpolated, as fast as the GPU can"
+)
+VSYNC_ITEMS=(
+  0 "Off  lowest latency (mailbox; immediate may tear)"
+  1 "On   FIFO: waits for the display refresh, more latency"
 )
 
 # _menu_builtin <title> <prompt> <default tag> <tag> <text> ... -> chosen tag on stdout, 1 on cancel
@@ -108,18 +112,20 @@ _apply_fps() {
 launch_menu() {
   [ "${SSX3_RENDERER:-vulkan}" = vulkan ] || return 0  # both settings only exist in the Vulkan back end
 
-  local ask_res=1 ask_fps=1
+  local ask_res=1 ask_fps=1 ask_vsync=1
   [ -n "${SSX3_RES_SCALE:-}" ] && ask_res=0
   [ -n "${SSX3_FPS_LIMIT:-}${SSX3_INTERP:-}" ] && ask_fps=0
-  if [ "${SSX3_MENU:-}" = 1 ]; then ask_res=1; ask_fps=1; fi
+  [ -n "${SSX3_VSYNC:-}" ] && ask_vsync=0
+  if [ "${SSX3_MENU:-}" = 1 ]; then ask_res=1; ask_fps=1; ask_vsync=1; fi
 
-  local res fps
+  local res fps vsync
   res="$(_conf_get RES_SCALE)"; res="${res:-${SSX3_RES_SCALE:-1}}"
   fps="$(_conf_get FPS)"; fps="${fps:-display}"
+  vsync="$(_conf_get VSYNC)"; vsync="${vsync:-${SSX3_VSYNC:-0}}"
 
   local interactive=1
   { [ "${SSX3_MENU:-}" = 0 ] || [ ! -t 0 ] || [ ! -t 1 ]; } && interactive=0
-  if [ "$interactive" = 1 ] && [ $((ask_res + ask_fps)) -gt 0 ]; then
+  if [ "$interactive" = 1 ] && [ $((ask_res + ask_fps + ask_vsync)) -gt 0 ]; then
     if [ -z "${SSX3_MENU_TOOL:-}" ]; then           # SSX3_MENU_TOOL=builtin|whiptail|dialog forces one
       SSX3_MENU_TOOL=builtin
       command -v dialog   >/dev/null 2>&1 && SSX3_MENU_TOOL=dialog
@@ -133,17 +139,28 @@ launch_menu() {
       fps="$(_menu "Frame rate" "The game runs at 60; higher rates are interpolated:" "$fps" "${FPS_ITEMS[@]}")" \
         || { echo "Cancelled." >&2; exit 0; }
     fi
+    if [ "$ask_vsync" = 1 ]; then
+      vsync="$(_menu "V-sync" "Sync presentation to the display refresh:" "$vsync" "${VSYNC_ITEMS[@]}")" \
+        || { echo "Cancelled." >&2; exit 0; }
+    fi
     [ "$SSX3_MENU_TOOL" = builtin ] || clear
     mkdir -p "$(dirname "$LAUNCH_CONF")"
-    printf '# scripts/run.sh – last start-up choice\nRES_SCALE=%s\nFPS=%s\n' "$res" "$fps" >"$LAUNCH_CONF"
+    printf '# scripts/run.sh – last start-up choice\nRES_SCALE=%s\nFPS=%s\nVSYNC=%s\n' "$res" "$fps" "$vsync" >"$LAUNCH_CONF"
   fi
 
   if [ "$ask_res" = 1 ]; then export SSX3_RES_SCALE="$res"; fi
   if [ "$ask_fps" = 1 ]; then unset SSX3_FPS_LIMIT SSX3_INTERP; _apply_fps "$fps"; fi
+  if [ "$ask_vsync" = 1 ]; then
+    case "$vsync" in
+      0|1) export SSX3_VSYNC="$vsync" ;;
+      *)   echo "run.sh: ignoring saved v-sync '$vsync'" >&2; unset SSX3_VSYNC ;;
+    esac
+  fi
   local fps_text="display refresh"
   if [ "${SSX3_INTERP:-}" = 0 ]; then fps_text=60
   elif [ "${SSX3_FPS_LIMIT:-}" = 0 ]; then fps_text=uncapped
   elif [ -n "${SSX3_FPS_LIMIT:-}" ]; then fps_text="$SSX3_FPS_LIMIT"
   fi
-  echo "run.sh: internal resolution ${SSX3_RES_SCALE:-1}x, frame rate $fps_text" >&2
+  local vsync_text=off; [ "${SSX3_VSYNC:-0}" = 1 ] && vsync_text=on
+  echo "run.sh: internal resolution ${SSX3_RES_SCALE:-1}x, frame rate $fps_text, v-sync $vsync_text" >&2
 }

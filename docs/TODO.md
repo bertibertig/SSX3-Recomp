@@ -59,6 +59,14 @@ Order follows `CLAUDE.md` / `xboxrecomp/docs/GETTING_STARTED.md`. Details and fi
       120 fps steady with `SSX3_FPS_LIMIT=120`, ~270 at a 270 Hz display (`docs/frame-interpolation.md`)
 - [ ] Interpolation follow-ups: blend animated UVs/colours, cut detection, Win32 path, latency option
       (`SSX3_INTERP=0` today), verify on the Steam Deck (90 Hz OLED / 60 Hz LCD)
+- [ ] **True uncapped frame rate (game logic, not interpolation).** Today the simulation is a fixed 60 Hz step
+      (1/60 is a constant in ~50 code sites), so everything above 60 is interpolated and costs ~1 game frame +
+      cushion (~24 ms) of display latency. Goal: run the game logic itself at the display rate / uncapped, so input
+      is read and answered every shown frame. Steps: find every 1/60 site and the step counter (app+0x20) and the
+      30 Hz flag (app+0x38, koen); decide variable delta vs. a scaled fixed step (N sub-steps per 60 Hz tick) per
+      system (physics, animation, particles, camera, audio timing, replays); check physics stability and trick
+      timing at 120/144/240; the guest's 60 Hz XAPI frame timer and vblank wait must follow the new rate; keep
+      interpolation as the fallback. Prove each site in the disassembly first; check koen's 60 fps work.
 - [ ] VBlank rate: the runtime ticks ~50 Hz by accident; derive it from the display mode (PAL 50 / PAL-60 / NTSC),
       check which mode SSX 3 (PAL) sets (the game's frame pacing uses its own 60 Hz XAPI timer, not vblank)
 - [ ] Vulkan M3 leftovers: cube maps (face 0 only), bump-env/dot-product stage modes, palettised textures

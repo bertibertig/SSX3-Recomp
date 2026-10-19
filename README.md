@@ -190,6 +190,10 @@ A native MSVC build is untested.
 
 `scripts/package_release.sh v0.1.0` builds both packages into `dist/` (Linux in the container for
 compatibility with older distributions, Windows with the host's MinGW) – without any game files.
+`scripts/test_release.sh v0.1.0` then tests them like a player would: unpacked, with your `game_files/`, started
+through `run.sh` and `run.ps1` (under Wine), driven into a race by a virtual controller, with frame dumps and a
+summary in `logs/release-test-v0.1.0/`. The whole release (changelog, build, tests, tag, upload) is the `/release`
+skill in `.claude/skills/release/` for Claude Code.
 
 ## Run options
 

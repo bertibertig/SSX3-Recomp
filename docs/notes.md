@@ -399,3 +399,10 @@ _(date – what was done, what was found, next step)_
     built-in menu through a pty (choice saved and reused), `Get-MonitorItems` under pwsh. Not testable nested: a
     primary other than output 0 (KWin owns Xwayland's primary). Windowed placement on Wayland stays the
     compositor's decision.
+- 2026-10-19 – **Release process as a skill.** `.claude/skills/release/SKILL.md` (`/release [version] [--yes]`):
+  preconditions, version, changelog since the last tag → `docs/release-notes/<version>.md`, `package_release.sh`,
+  `test_release.sh`, notes commit, review (skipped with `--yes`), tag + `gh release create --latest`.
+  `scripts/test_release.sh <version>` (helpers in `tests/release/`: `drive.py` = pty + virtual uinput pad, answers
+  `ESC[6n`; `contact_sheet.py`) automates this session's checks: missing-game-files message, `run.sh` menu
+  (`SSX3_MENU=1`), Linux race with Vulkan dumps; Windows: `run.ps1` menu + default flow under Wine (own prefix in the
+  results folder). Run on v0.1.0: Linux reaches a race (game 35–60 fps), Windows menus then exit 139 as before.

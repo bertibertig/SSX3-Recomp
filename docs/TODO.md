@@ -71,7 +71,25 @@ Order follows `CLAUDE.md` / `xboxrecomp/docs/GETTING_STARTED.md`. Details and fi
       check which mode SSX 3 (PAL) sets (the game's frame pacing uses its own 60 Hz XAPI timer, not vblank)
 - [ ] Vulkan M3 leftovers: cube maps (face 0 only), bump-env/dot-product stage modes, palettised textures
 - [x] Vulkan internal resolution 1x–5x (`SSX3_RES_SCALE`, F10) + two frames in flight
-- [ ] Vulkan M4: verify render-to-texture, AA, per-triangle culling, Windows (Win32 surface)
+- [ ] Vulkan M4: verify render-to-texture, AA, per-triangle culling
+- [ ] **Port the Vulkan renderer to Windows.** Today CMake builds `src/render/` only for non-WIN32 and Windows falls
+      back to the CPU rasteriser (~10–20 fps). Needed: a Win32 surface (`VK_KHR_win32_surface`; window either from
+      SDL2 on Windows too or the runtime's own Win32 window), volk already loads `vulkan-1.dll` at run time, input/
+      F10/resize through the Win32 message loop, frame interpolation's Win32 path, `run.ps1` default
+      `SSX3_RENDERER=vulkan` + the menu. Target order:
+  - [ ] **Windows 10 and 11** (x86-64) – the focus; test on real hardware, not only Proton/Wine.
+  - [ ] **Windows 8 / 8.1** – later. Vulkan drivers exist; check the imports: UCRT (`api-ms-win-crt-*`, needs
+        KB2999226 on 8.x), `XAudio2_8` and `xinput1_4` are fine from 8 on.
+  - [ ] **Windows 7** – later. `XAudio2_8`/`xinput1_4` are Windows 8+ → load XAudio2_7 (DirectX redist) or use
+        WASAPI/DirectSound, `xinput9_1_0`/`xinput1_3` at run time; UCRT via KB2999226 or build against msvcrt; check
+        Media Foundation (`MFPlat`/`MFReadWrite`, movies) and `D3DCOMPILER_47` (CPU path's D3D11); NVIDIA/AMD still
+        ship Vulkan drivers for 7 on older GPU generations.
+  - [ ] **Windows XP** – maybe, a stretch: no Vulkan there (and 64-bit only on XP x64), so it would need a
+        D3D9 or OpenGL back end, a 32-bit or XP-x64 build and an older toolchain/CRT – evaluate after 7 works.
+- [ ] **Windows/Proton: crash when a race loads.** Release v0.1.0 exe under GE-Proton: `tiled aperture at 0xF0000000
+      failed (error 487)` and RAM mirrors 26/27 (0x78000000/0x7C000000) fail to map; menus work, then entering a race
+      writes to Xbox VA 0xF0610000 → access violation (guest stack 0x001F0386 ← 0x000E2688). Check on real Windows;
+      find what Wine has reserved there (koen's port is Windows-first – see how it maps the aperture).
 - [ ] Interpolation at high internal resolution: the presenter re-renders at the display's refresh and can take
       the GPU from the game (5x, 270 Hz: game ~25 fps; `SSX3_FPS_LIMIT=120` keeps 60) – budget the presenter
 - [ ] Downscaling 4x/5x to a small window is one linear blit (aliasing); a box/mip downsample would give real SSAA

@@ -333,3 +333,16 @@ _(date – what was done, what was found, next step)_
   CMakeLists links `xinput1_4` for MinGW, also in `xbox_input`'s interface. `run.sh` / `run.ps1` work from the repo
   and from an unpacked package (binary next to the script) and stop with a message if `game_files/default.xbe`
   is missing; `run.bat` wraps `run.ps1` for double-clicking. README rewritten for players and builders.
+- 2026-10-19 – **Release v0.1.0 test (downloaded from GitHub).** Linux tarball: `run.sh` start-up menu (whiptail,
+  through a pty; choice saved to the given `XDG_CONFIG_HOME`), virtual uinput pad on port 1, intro → title (Start) →
+  character select → Snow Jam race, Vulkan 270 Hz presented / game 59–60 fps (pre-race screen ~33–42). Windows zip
+  under GE-Proton (exe started with `run.ps1`'s defaults – `run.ps1`/`run.bat` themselves not run: no PowerShell
+  here): pad via `XINPUT1_4` works, intro → title → main menu → peak/event select → My Rules at 10–22 fps (CPU
+  renderer), then **crash entering the race**: write to Xbox VA 0xF0610000 – the tiled aperture at 0xF0000000 failed
+  to map (`error 487`, as did RAM mirrors 26/27). Documented as a known issue (README, release notes, TODO).
+  Follow-up the same day with PowerShell 7.6 installed (`pwsh` on Linux; `.exe` runs through binfmt → Wine): the
+  package's `run.ps1` works – missing `game_files\default.xbe` stops with the message; with `SSX3_RENDERER=vulkan`
+  the start-up menu (arrow keys, Enter) saves `RES_SCALE=2 / FPS=120 / VSYNC=0` to `%APPDATA%\ssx3-recomp\run.conf`
+  and starts the exe; the default flow (CPU renderer, no menu) under plain Wine reaches intro → attract → title →
+  menus → "Loading…" and crashes like under Proton (exit 139). PowerShell needs the terminal to answer `ESC[6n`
+  (cursor position) – a pty driver has to reply, or the menu waits forever.

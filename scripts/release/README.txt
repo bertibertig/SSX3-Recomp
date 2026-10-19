@@ -54,8 +54,10 @@ Linux (x86-64, glibc 2.39 or newer: Ubuntu 24.04+, Fedora 40+, Arch, SteamOS 3.6
 
 Windows (10 or 11, x86-64): double-click run.bat (or run
   powershell -ExecutionPolicy Bypass -File run.ps1 in a console).
-  Windows is experimental: it uses the software (CPU) renderer for now, which is
-  slow (well below 60 fps). The fast Vulkan renderer is Linux-only so far.
+  Windows is experimental and not playable yet: it uses the software (CPU)
+  renderer (about 10-20 fps; the fast Vulkan renderer is Linux-only so far), and
+  under Proton it crashes when a race loads. Intro, title and menus work. It has
+  not been tested on a real Windows PC yet - reports are welcome.
 
 
 3. Controls

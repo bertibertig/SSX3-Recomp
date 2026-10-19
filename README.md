@@ -28,12 +28,13 @@ build 2003-09-19; English, French, German, Spanish). Other versions are not supp
 | Internal resolution 1x–5x (up to 3200x2400) | ✅ Linux |
 | Controllers (XInput/SDL pads, hotplug, rumble), keyboard as player 1 | ✅ |
 | Start-up menu for resolution, frame rate, v-sync | ✅ |
-| Windows build | ⚠️ experimental: software renderer only, slow |
+| Windows build | ⚠️ experimental: menus work, software renderer only (slow); under Proton it crashes when a race loads |
 | Full run through the game (all peaks, Conquer the Mountain, saving) | ⬜ not verified |
 | Split screen | ⬜ untested |
 | Steady 60 fps everywhere (the pre-race screen drops to ~40) | ⬜ in progress |
 | Widescreen, anti-aliasing, HD textures | ⬜ planned |
-| Steam Deck test, Vulkan on Windows, macOS | ⬜ planned |
+| Steam Deck test, macOS | ⬜ planned |
+| Vulkan renderer on Windows (10/11 first, later 8/8.1/7) | ⬜ planned |
 
 Known issues: an occasional crash right after the intro movie starts (start again); some rare graphics
 effects are not implemented in the Vulkan renderer yet (cube maps beyond face 0, bump-env modes, palettised
@@ -45,7 +46,7 @@ textures). Full list: [docs/TODO.md](docs/TODO.md).
 |---|---|
 | **Linux** x86-64 | Main platform. Vulkan renderer, SDL2 window and controllers. |
 | **Steam Deck** | The main target; should work like any Linux PC, not tested on a Deck yet. |
-| **Windows** 10/11 x86-64 | Experimental. Runs, but only with the software (CPU) renderer until the Vulkan renderer gets a Windows surface. |
+| **Windows** 10/11 x86-64 | Experimental, not playable yet: intro and menus run with the software (CPU) renderer; under Proton it crashes when a race loads. Not tested on real Windows yet. |
 | **macOS** | Not started. |
 
 ## Playing a release

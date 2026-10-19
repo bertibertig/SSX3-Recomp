@@ -10,8 +10,9 @@
 #   SSX3_RENDERER=cpu       default on Windows: the Vulkan back end has no Win32 surface yet (docs/TODO.md, M4)
 #   SSX3_RENDERER=vulkan    GPU renderer, once a build includes it; enables the start-up menu below
 #   SSX3_INTERP=0 / SSX3_FPS_LIMIT=<n> / SSX3_VSYNC=1 / SSX3_RES_SCALE=<1..5> / SSX3_ASPECT=<16:9|16:10|21:9|auto>
+#                           / SSX3_WINDOW=<windowed|borderless|fullscreen>
 #                           Vulkan settings, as in run.sh
-#   SSX3_MENU=0 / 1         start-up menu for resolution, aspect ratio, frame rate, v-sync: never / always (default: when in a
+#   SSX3_MENU=0 / 1         start-up menu for display mode, resolution, aspect ratio, frame rate, v-sync: never / always (default: when in a
 #                           console and not set above). The choice is saved in %APPDATA%\ssx3-recomp\run.conf
 #   SSX3_PAD_TRACE=1        log every controller button change
 #   RECOMP_USB_PADS=2       more emulated pads on the USB bus (split screen), default 1
@@ -61,6 +62,11 @@ Set-EnvDefault SSX3_SKIP_LOGOS 1            # skip the EA BIG and THX logos (SSX
 $ConfDir = if ($env:APPDATA) { Join-Path $env:APPDATA 'ssx3-recomp' } else { Join-Path $HOME '.config\ssx3-recomp' }
 $LaunchConf = Join-Path $ConfDir 'run.conf'
 
+$WindowItems = @(
+    @('windowed',   'Windowed    resizable window'),
+    @('borderless', 'Borderless  full screen as a borderless window (fast Alt+Tab)'),
+    @('fullscreen', 'Fullscreen  exclusive full screen at the desktop resolution')
+)
 $ResItems = @(
     @('1', '1x  640x480    native, fastest'),
     @('2', '2x  1280x960'),
@@ -163,19 +169,25 @@ function Set-FpsEnv([string]$Fps) {
 function Invoke-LaunchMenu {
     if ((Get-EnvValue SSX3_RENDERER) -ne 'vulkan') { return }   # these settings only exist in the Vulkan back end
 
+    $askWin = -not (Get-EnvValue SSX3_WINDOW)
     $askRes = -not (Get-EnvValue SSX3_RES_SCALE)
     $askAspect = -not (Get-EnvValue SSX3_ASPECT)
     $askFps = -not ((Get-EnvValue SSX3_FPS_LIMIT) -or (Get-EnvValue SSX3_INTERP))
     $askVsync = -not (Get-EnvValue SSX3_VSYNC)
-    if ($env:SSX3_MENU -eq '1') { $askRes = $true; $askAspect = $true; $askFps = $true; $askVsync = $true }
+    if ($env:SSX3_MENU -eq '1') { $askWin = $true; $askRes = $true; $askAspect = $true; $askFps = $true; $askVsync = $true }
 
+    $win = Get-ConfValue WINDOW;      if (-not $win)   { $win = if ($env:SSX3_WINDOW) { $env:SSX3_WINDOW } else { 'windowed' } }
     $res = Get-ConfValue RES_SCALE;   if (-not $res)   { $res = if ($env:SSX3_RES_SCALE) { $env:SSX3_RES_SCALE } else { '1' } }
     $aspect = Get-ConfValue ASPECT;   if (-not $aspect) { $aspect = if ($env:SSX3_ASPECT) { $env:SSX3_ASPECT } else { '16:9' } }
     $fps = Get-ConfValue FPS;         if (-not $fps)   { $fps = 'display' }
     $vsync = Get-ConfValue VSYNC;     if (-not $vsync) { $vsync = if ($env:SSX3_VSYNC) { $env:SSX3_VSYNC } else { '0' } }
 
     $interactive = ($env:SSX3_MENU -ne '0') -and -not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected
-    if ($interactive -and ($askRes -or $askAspect -or $askFps -or $askVsync)) {
+    if ($interactive -and ($askWin -or $askRes -or $askAspect -or $askFps -or $askVsync)) {
+        if ($askWin) {
+            $win = Show-Menu 'Display mode (Alt+Enter / F11 toggles in game)' $win $WindowItems
+            if ($null -eq $win) { [Console]::Error.WriteLine('Cancelled.'); exit 0 }
+        }
         if ($askRes) {
             $res = Show-Menu 'Internal resolution (F10 cycles it in game)' $res $ResItems
             if ($null -eq $res) { [Console]::Error.WriteLine('Cancelled.'); exit 0 }
@@ -194,9 +206,13 @@ function Invoke-LaunchMenu {
         }
         New-Item -ItemType Directory -Force -Path $ConfDir | Out-Null
         Set-Content -LiteralPath $LaunchConf -Encoding ASCII -Value @(
-            '# scripts/run.ps1 - last start-up choice', "RES_SCALE=$res", "ASPECT=$aspect", "FPS=$fps", "VSYNC=$vsync")
+            '# scripts/run.ps1 - last start-up choice', "WINDOW=$win", "RES_SCALE=$res", "ASPECT=$aspect", "FPS=$fps", "VSYNC=$vsync")
     }
 
+    if ($askWin) {
+        if ($win -match '^(windowed|borderless|fullscreen)$') { $env:SSX3_WINDOW = $win }
+        else { [Console]::Error.WriteLine("run.ps1: ignoring saved display mode '$win'"); $env:SSX3_WINDOW = $null }
+    }
     if ($askRes) { $env:SSX3_RES_SCALE = $res }
     if ($askAspect) {
         if ($aspect -match '^(auto|[0-9]+:[0-9]+)$') { $env:SSX3_ASPECT = $aspect }
@@ -214,7 +230,8 @@ function Invoke-LaunchMenu {
     $vsyncText = if ($env:SSX3_VSYNC -eq '1') { 'on' } else { 'off' }
     $scale = if ($env:SSX3_RES_SCALE) { $env:SSX3_RES_SCALE } else { '1' }
     $aspectText = if ($env:SSX3_ASPECT) { $env:SSX3_ASPECT } else { '4:3' }
-    [Console]::Error.WriteLine("run.ps1: internal resolution ${scale}x, aspect $aspectText, frame rate $fpsText, v-sync $vsyncText")
+    $winText = if ($env:SSX3_WINDOW) { $env:SSX3_WINDOW } else { 'windowed' }
+    [Console]::Error.WriteLine("run.ps1: $winText, internal resolution ${scale}x, aspect $aspectText, frame rate $fpsText, v-sync $vsyncText")
 }
 
 Invoke-LaunchMenu

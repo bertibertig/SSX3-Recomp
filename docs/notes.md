@@ -371,3 +371,16 @@ _(date – what was done, what was found, next step)_
     a saved `ASPECT=16:10` reaches the back end (x1.200). Not tested: Windows build (the Vulkan back end is not
     built there yet; `g_ssx3_wide` stays 1 with the CPU renderer), split screen, replays/cut-scenes in game, HUD
     elements anchored to the screen edge (a quad with one vertex on the edge would be stretched).
+- 2026-10-19 – **Display modes** (`SSX3_WINDOW=windowed|borderless|fullscreen`, default windowed; branch
+  `display-mode` on top of `widescreen`). `vk_backend.c` `window_create` (both window paths): borderless =
+  `SDL_WINDOW_FULLSCREEN_DESKTOP`, fullscreen = `SDL_WINDOW_FULLSCREEN` at the desktop's own mode (no resolution
+  switch; the frame is scaled as before), cursor hidden in full screen. **Alt+Enter / F11** toggle windowed <->
+  the chosen full-screen mode (borderless when started windowed); the swapchain follows the resize. Start-up menus
+  (`_launch_menu.sh`, `run.ps1`): first question "Display mode", saved as `WINDOW=`.
+  - Fixed on the way: `ssx3_vk_host_main` opens the window before the guest calls `ssx3_vk_register`, so the
+    widescreen window size never applied (always 1280x960) – `window_create` now runs `wide_init` itself.
+  - Tested inside `gamescope --backend headless` (keys sent with xdotool to gamescope's own X display, not the
+    desktop): windowed 1280x720 (16:9) / 1680x720 (21:9), borderless and fullscreen 1920x1080, F11 and Alt+Enter
+    switch both ways (gamescope keeps every window at its full size, so "windowed" stays 1920x1080 there). Not
+    tested: on a real desktop session, Windows, multi-monitor (always display 0). Alt+Enter also reaches the
+    keyboard-as-pad mapping as Enter.

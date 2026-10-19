@@ -36,6 +36,10 @@
  *                           decimal, or auto (the desktop's shape); default 4:3
  *                           (off). Menus, loading screens and movies stay 4:3,
  *                           pillarboxed.
+ *   SSX3_WINDOW=<mode>      windowed (default, resizable), borderless (desktop-
+ *                           sized window without decorations) or fullscreen
+ *                           (exclusive, at the desktop's resolution);
+ *                           Alt+Enter / F11 toggle windowed <-> full screen
  *
  * Internal resolution: every guest surface is a GPU image of its guest size
  * times the scale (surface_extent). Vertices stay in guest pixels -- the
@@ -255,8 +259,9 @@ static struct {
 
 extern volatile float g_ssx3_wide;     /* recomp_manual.c: requested factor */
 extern int ssx3_in_game(void);         /* recomp_manual.c */
-static void wide_auto(void);
-static void window_size(int *w, int *h);
+static SDL_Window *window_create(const char *title);
+static void wide_init(void);
+static void window_key(const SDL_Event *ev);
 
 /* ---- frame interpolation: declarations ------------------------------------
  *
@@ -1017,17 +1022,9 @@ static int init_vulkan(void)
             fprintf(stderr, "  [VK] SDL video: %s\n", SDL_GetError());
             return 0;
         }
-        int ww, wh;
-        wide_auto();
-        window_size(&ww, &wh);
-        V.window = SDL_CreateWindow("SSX 3 (Recomp, Vulkan)",
-                                    SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                                    ww, wh,
-                                    SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_SHOWN);
-        if (!V.window) {
-            fprintf(stderr, "  [VK] SDL_CreateWindow: %s\n", SDL_GetError());
+        V.window = window_create("SSX 3 (Recomp, Vulkan)");
+        if (!V.window)
             return 0;
-        }
         xbox_InputSdlInit();
     }
     if (!create_instance())
@@ -3277,6 +3274,7 @@ static void pump_events(void)
                     || ev.window.event == SDL_WINDOWEVENT_RESIZED))
             V.swap_dirty = 1;
         scale_key(&ev);
+        window_key(&ev);
         xbox_InputSdlEvent(&ev);
     }
 }
@@ -3392,9 +3390,14 @@ static void wide_update(void)
  * "auto" is resolved by wide_auto once SDL video is up. */
 static void wide_init(void)
 {
+    static int done;
     const char *e = getenv("SSX3_ASPECT");
     double a = 4.0 / 3.0, w, h;
 
+    /* Called by window_create and ssx3_vk_register, whichever comes first
+     * (ssx3_vk_host_main opens the window before the guest registers). */
+    if (done++)
+        return;
     if (!e || !*e)
         return;
     if (!strcmp(e, "auto")) {
@@ -3446,6 +3449,89 @@ static void window_size(int *w, int *h)
         *w = 1280;
         *h = 960;
     }
+}
+
+/* SSX3_WINDOW: how the window is shown. */
+enum { WIN_WINDOWED, WIN_BORDERLESS, WIN_FULLSCREEN };
+static int s_win_mode = WIN_WINDOWED;
+static int s_win_full = WIN_BORDERLESS;     /* what Alt+Enter / F11 switches to */
+
+static Uint32 window_flags(int mode)
+{
+    return mode == WIN_FULLSCREEN ? SDL_WINDOW_FULLSCREEN
+         : mode == WIN_BORDERLESS ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0;
+}
+
+static const char *window_mode_name(int mode)
+{
+    return mode == WIN_FULLSCREEN ? "fullscreen"
+         : mode == WIN_BORDERLESS ? "borderless" : "windowed";
+}
+
+/* The game window (needs SDL video), in the mode SSX3_WINDOW asks for.
+ * Exclusive fullscreen uses the desktop's own mode, so the display does not
+ * switch resolution: the internal resolution is SSX3_RES_SCALE either way and
+ * the frame is scaled to the screen. The cursor is hidden in full screen. */
+static SDL_Window *window_create(const char *title)
+{
+    const char *e = getenv("SSX3_WINDOW");
+    SDL_DisplayMode dm;
+    SDL_Window *w;
+    int ww, wh;
+
+    if (e && *e) {
+        if (!strcmp(e, "borderless"))
+            s_win_mode = WIN_BORDERLESS;
+        else if (!strcmp(e, "fullscreen"))
+            s_win_mode = WIN_FULLSCREEN;
+        else if (strcmp(e, "windowed"))
+            fprintf(stderr, "  [VK] SSX3_WINDOW=%s not understood "
+                            "(windowed, borderless, fullscreen), using windowed\n", e);
+    }
+    if (s_win_mode != WIN_WINDOWED)
+        s_win_full = s_win_mode;
+    wide_init();
+    wide_auto();
+    window_size(&ww, &wh);
+    if (s_win_mode == WIN_FULLSCREEN && SDL_GetDesktopDisplayMode(0, &dm) == 0) {
+        ww = dm.w;
+        wh = dm.h;
+    }
+    w = SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, ww, wh,
+                         SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_SHOWN
+                         | window_flags(s_win_mode));
+    if (!w) {
+        fprintf(stderr, "  [VK] SDL_CreateWindow: %s\n", SDL_GetError());
+        return NULL;
+    }
+    if (s_win_mode == WIN_FULLSCREEN && SDL_GetDesktopDisplayMode(0, &dm) == 0)
+        SDL_SetWindowDisplayMode(w, &dm);
+    SDL_ShowCursor(s_win_mode == WIN_WINDOWED ? SDL_ENABLE : SDL_DISABLE);
+    fprintf(stderr, "  [VK] window: %s\n", window_mode_name(s_win_mode));
+    return w;
+}
+
+/* Alt+Enter / F11: windowed <-> the full-screen mode SSX3_WINDOW chose
+ * (borderless when it started windowed). On the thread that pumps the
+ * window's events, which created it. The swapchain follows the resize event. */
+static void window_key(const SDL_Event *ev)
+{
+    int to;
+
+    if (ev->type != SDL_KEYDOWN || ev->key.repeat || !V.window)
+        return;
+    if (!(ev->key.keysym.scancode == SDL_SCANCODE_F11
+          || (ev->key.keysym.scancode == SDL_SCANCODE_RETURN && (ev->key.keysym.mod & KMOD_ALT))))
+        return;
+    to = s_win_mode == WIN_WINDOWED ? s_win_full : WIN_WINDOWED;
+    if (SDL_SetWindowFullscreen(V.window, window_flags(to)) != 0) {
+        fprintf(stderr, "  [VK] %s: %s\n", window_mode_name(to), SDL_GetError());
+        return;
+    }
+    s_win_mode = to;
+    SDL_ShowCursor(to == WIN_WINDOWED ? SDL_ENABLE : SDL_DISABLE);
+    V.swap_dirty = 1;
+    fprintf(stderr, "  [VK] window: %s\n", window_mode_name(to));
 }
 
 /* SSX3_RES_SCALE at start-up; F10 cycles 1x .. VKB_MAX_SCALE x (any thread
@@ -3667,14 +3753,7 @@ int ssx3_vk_host_main(int (*guest_main)(void))
                 SDL_GetError());
         return guest_main();
     }
-    int ww, wh;
-
-    wide_auto();
-    window_size(&ww, &wh);
-    V.window = SDL_CreateWindow("SSX 3 (Recomp, Vulkan) | loading",
-                                SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                                ww, wh,
-                                SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_SHOWN);
+    V.window = window_create("SSX 3 (Recomp, Vulkan) | loading");
     s_guest_done_event = SDL_RegisterEvents(1);
     if (!V.window || s_guest_done_event == (Uint32)-1) {
         fprintf(stderr, "  [VK] window: %s; running without a window thread\n",
@@ -3718,6 +3797,7 @@ int ssx3_vk_host_main(int (*guest_main)(void))
                 if (ev.type == SDL_DISPLAYEVENT)
                     read_display_hz();
                 scale_key(&ev);
+                window_key(&ev);
                 xbox_InputSdlEvent(&ev);
             } while (SDL_PollEvent(&ev));
         }

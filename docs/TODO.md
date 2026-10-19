@@ -94,6 +94,8 @@ Order follows `CLAUDE.md` / `xboxrecomp/docs/GETTING_STARTED.md`. Details and fi
       the GPU from the game (5x, 270 Hz: game ~25 fps; `SSX3_FPS_LIMIT=120` keeps 60) – budget the presenter
 - [ ] Downscaling 4x/5x to a small window is one linear blit (aliasing); a box/mip downsample would give real SSAA
 - [x] Widescreen 16:9 / 16:10 / 21:9 / auto (`SSX3_ASPECT`): camera hook + `R.wide`; HUD 4:3 middle, menus pillarboxed
+- [x] Display modes: windowed / borderless / exclusive fullscreen (`SSX3_WINDOW`, start-up menu), Alt+Enter / F11 toggle
+- [ ] Display modes: pick the monitor (today display 0), check exclusive fullscreen on the Deck (gamescope) and Windows
 - [ ] Widescreen: check split screen, in-game cut-scenes/replays, follow window resizes (`auto` reads the desktop once)
 - [ ] Fence: replace the mirror with `nv2a_pb_set_semaphore_target` once desyncs/graphics glitches show up
 - [ ] `t:\$u\contentmeta.xbx` is missing at boot – check whether it matters

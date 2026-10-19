@@ -76,6 +76,12 @@ scripts/run_win.sh
 
 ### Run options
 
+Started from a terminal, `scripts/run.sh` first asks for the internal resolution (1x–5x) and the frame rate
+(display refresh, 60 without interpolation, 120/144/165/240, uncapped) – with whiptail or dialog when installed,
+otherwise a built-in arrow-key menu. The choice is saved in `~/.config/ssx3-recomp/run.conf` and reused, also
+for starts without a terminal (e.g. a Steam shortcut). `SSX3_MENU=0` skips the menu, `SSX3_MENU=1` always shows
+it; variables set in the environment win and are not asked for.
+
 `scripts/run.sh` sets the defaults the game needs; these are the ones you may want to change:
 
 | Variable | Default | |
@@ -84,6 +90,9 @@ scripts/run_win.sh
 | `SSX3_SKIP_LOGOS` | `1` | skip the EA BIG and THX logos |
 | `SSX3_SKIP_INTRO` | `0` | `1` = skip the intro movie too |
 | `SSX3_RES_SCALE` | `1` | internal resolution `1`–`5` × 640x480 (2 = 1280x960 … 5 = 3200x2400); **F10** cycles it in game |
+| `SSX3_FPS_LIMIT` | display refresh | interpolated frame cap in fps, `0` = uncapped |
+| `SSX3_INTERP` | `1` | `0` = no interpolation, show the game's own 60 fps |
+| `SSX3_MENU` | – | start-up menu: `0` never, `1` always |
 | `RECOMP_KEYBOARD` | `1` | keyboard as controller 1 (Enter = Start, Z = A, X = B, arrows = D-pad …) |
 | `RECOMP_USB_PADS` | `1` | emulated pads on the USB bus (up to 4, for split screen) |
 

@@ -306,3 +306,10 @@ _(date – what was done, what was found, next step)_
     (not installed here). The strips at the left/right edge of the title screen look the same at 1x (pre-existing).
   - Tests now use a virtual uinput Xbox 360 pad (python-evdev) + `SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS=1`
     instead of xdotool, so runs don't take the desktop's focus.
+- 2026-10-19 – **Start-up menu in `scripts/run.sh`** (`scripts/_launch_menu.sh`): asks for the internal resolution
+  (`SSX3_RES_SCALE` 1–5) and frame rate (display refresh / 60 = `SSX3_INTERP=0` / 120–240 = `SSX3_FPS_LIMIT` /
+  uncapped = `SSX3_FPS_LIMIT=0`) when stdin+stdout are a terminal and the renderer is Vulkan. whiptail or dialog when
+  installed, otherwise a built-in arrow-key menu (SteamOS may have neither). Last choice in
+  `${XDG_CONFIG_HOME:-~/.config}/ssx3-recomp/run.conf`, reused without a terminal; env vars win and are not asked;
+  `SSX3_MENU=0/1` never/always. Tested all three menu back ends through a pty (arrow keys, number keys, Esc =
+  quit, saved defaults, no-TTY, env override); not yet tried on a Deck.

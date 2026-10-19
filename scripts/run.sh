@@ -14,10 +14,13 @@
 #   SSX3_FPS_LIMIT=<n>      interpolated frame cap (default: fastest display's refresh, 0 = uncapped)
 #   SSX3_VSYNC=1            vsync (FIFO) instead of mailbox presentation
 #   SSX3_RES_SCALE=<1..5>   internal resolution (Vulkan), multiple of 640x480; F10 cycles it in game
+#   SSX3_MENU=0 / 1         start-up menu for resolution + frame rate: never / always (default: when in a
+#                           terminal and not set above). The choice is saved and reused (scripts/_launch_menu.sh)
 #   RECOMP_PB_SCAN=1 / RECOMP_PB_EXEC=1   analyse / execute the NV2A pushbuffer
 #   SSX3_PAD_TRACE=1        log every controller button change (pads: README "Controllers")
 #   RECOMP_USB_PADS=2       more emulated pads on the USB bus (split screen), default 1
 source "$(dirname "$0")/_common.sh"
+source "$(dirname "$0")/_launch_menu.sh"
 [ -x "$ROOT/build/ssx3_recomp" ] || { echo "No build. First run: scripts/build.sh" >&2; exit 1; }
 cd "$ROOT"
 export RECOMP_TITLE_KEVENTS="${RECOMP_TITLE_KEVENTS:-1}"
@@ -33,4 +36,5 @@ fi
 export RECOMP_USB="${RECOMP_USB:-1}"                  # emulated USB controller (XPP/OHCI)
 export RECOMP_KEYBOARD="${RECOMP_KEYBOARD:-1}"        # keyboard = controller 1 (Enter=Start, Z=A, X=B, arrows=D-pad …)
 export SSX3_SKIP_LOGOS="${SSX3_SKIP_LOGOS:-1}"        # skip the EA BIG and THX logos (SSX3_SKIP_INTRO=1: the intro too)
+launch_menu                                           # internal resolution + frame rate (Vulkan)
 exec ./build/ssx3_recomp "$@"

@@ -484,6 +484,19 @@ static int boot_memory(void)
     g_xbox_mem_offset = xbox_GetMemoryOffset();
     printf("Xbox memory mapped. Offset: 0x%llX\n", (unsigned long long)g_xbox_mem_offset);
 
+    /* The loader titled the framebuffer window after the XBE certificate
+     * ("SSX 3"); name the renderer in it, as the Vulkan window does
+     * ("SSX 3 (Recomp, Vulkan)"). Unused by the Vulkan back end. */
+    {
+        static const char name[] = "SSX 3 (Recomp, Software)";
+        uint16_t wname[sizeof name];
+        size_t i;
+        extern void xbox_FramebufferWindowSetTitle(const uint16_t *, int);
+        for (i = 0; i < sizeof name; i++)
+            wname[i] = (uint16_t)name[i];
+        xbox_FramebufferWindowSetTitle(wname, (int)sizeof name);
+    }
+
     s_xbe_data = xbe_data;
     s_xbe_size = xbe_size;
     return 0;
@@ -659,14 +672,30 @@ static int boot_and_run(void)
 
 /* ── Host entry points ─────────────────────────────────────── */
 
+/* `ssx3_recomp --renderers`: the render back ends this build has, one per
+ * line, preferred first -- for the start-up menus (SSX3_RENDERER). */
+static int list_renderers(void)
+{
+#if defined(SSX3_HAVE_VULKAN)
+    printf("vulkan\n");
+#endif
+    printf("cpu\n");
+    return 0;
+}
+
 #ifdef _WIN32
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
                    LPSTR lpCmdLine, int nCmdShow)
 {
     (void)hInstance;
     (void)hPrevInstance;
-    (void)lpCmdLine;
     (void)nCmdShow;
+
+    /* Start-up menu queries (run.ps1); main() passes the whole command line. */
+    if (lpCmdLine && strstr(lpCmdLine, "--renderers"))
+        return list_renderers();
+    if (lpCmdLine && strstr(lpCmdLine, "--list-displays"))
+        return 0;                          /* no monitor choice without the Vulkan window */
 
     /* Unbuffered output for immediate visibility during debugging */
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -740,6 +769,8 @@ int main(int argc, char **argv)
  * and runs boot_and_run on a second one; otherwise it just calls it. */
 int main(int argc, char **argv)
 {
+    if (argc > 1 && strcmp(argv[1], "--renderers") == 0)
+        return list_renderers();           /* for the start-up menus */
 #if defined(SSX3_HAVE_VULKAN)
     if (argc > 1 && strcmp(argv[1], "--list-displays") == 0)
         return ssx3_vk_list_displays();   /* for the start-up menus */

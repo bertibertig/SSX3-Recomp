@@ -5,7 +5,7 @@
 # Results in logs/release-test-<version>/: summary.txt, *.log, frame dumps and contact sheets
 # (linux_frames.png, windows_frames.png) to look at.
 #
-# Linux:   missing-game-files check; run.sh with the start-up menu forced on (SSX3_MENU=1, Enter x3) in a pty,
+# Linux:   missing-game-files check; run.sh with the start-up menu forced on (SSX3_MENU=1, Enter x4) in a pty,
 #          virtual pad: intro -> title -> menus -> race, Vulkan frame dumps.
 # Windows: missing-game-files check through pwsh; run.ps1's start-up menu (SSX3_RENDERER=vulkan, saves run.conf);
 #          the default flow (run.ps1, CPU renderer) under Wine with the virtual pad, CPU frame dumps.
@@ -60,10 +60,10 @@ if [ "${SKIP_LINUX:-0}" != 1 ]; then
   mkdir -p "$OUT/linux_dumps" "$OUT/linux_cfg"
   set +e
   XDG_CONFIG_HOME="$OUT/linux_cfg" SSX3_MENU=1 SSX3_VK_DUMP="$OUT/linux_dumps/f" SSX3_VK_DUMP_EVERY=300 \
-    python3 -I "$T/drive.py" --log "$OUT/linux.log" --seconds "$LINUX_SECS" --keys '\r' '\r' '\r' --pad linux \
+    python3 -I "$T/drive.py" --log "$OUT/linux.log" --seconds "$LINUX_SECS" --keys '\r' '\r' '\r' '\r' --pad linux \
     -- bash -c "cd '$P' && exec ./run.sh"
   set -e
-  say "  start-up menu: $(plain "$OUT/linux.log" | grep -a -o 'run.sh: internal resolution.*' | head -1)"
+  say "  start-up menu: $(plain "$OUT/linux.log" | grep -a -o 'run.sh: Vulkan.*' | head -1)"
   say "  saved: $(tr '\n' ' ' < "$OUT/linux_cfg/ssx3-recomp/run.conf" 2>/dev/null || echo 'no run.conf (FAIL)')"
   log_summary "$OUT/linux.log" linux
   ls "$OUT"/linux_dumps/*.bmp >/dev/null 2>&1 && python3 -I "$T/contact_sheet.py" "$OUT/linux_frames.png" "$OUT"/linux_dumps/*.bmp | tee -a "$SUMMARY"
@@ -82,7 +82,7 @@ if [ "${SKIP_WINDOWS:-0}" != 1 ]; then
   # run.ps1's start-up menu: only offered for the Vulkan renderer; down + Enter, down + Enter, Enter
   SSX3_RENDERER=vulkan python3 -I "$T/drive.py" --log "$OUT/win_menu.log" --seconds 25 \
     --keys '\x1b[B' '\r' '\x1b[B' '\r' '\r' -- pwsh -NoProfile -File "$P/run.ps1"
-  say "  start-up menu: $(plain "$OUT/win_menu.log" | grep -a -o 'run.ps1: internal resolution.*' | head -1)"
+  say "  start-up menu: $(plain "$OUT/win_menu.log" | grep -a -o 'run.ps1: Vulkan.*' | head -1)"
   say "  saved: $(grep -v '^#' "$OUT/win_appdata/ssx3-recomp/run.conf" 2>/dev/null | tr -d '\r' | tr '\n' ' ' || echo 'no run.conf (FAIL)')"
   # the default flow: run.ps1 without a menu (CPU renderer), pad into a race
   rm -f "$OUT/win_appdata/ssx3-recomp/run.conf"

@@ -7,8 +7,9 @@
 #   RECOMP_TITLE_KEVENTS=1  SSX3 builds KEVENTs itself (without: SIGSEGV in SetEvent on POSIX) – on by default here
 #   RECOMP_VBLANK=1         60 Hz VBlank interrupt; D3D_BlockUntilVerticalBlank waits for it – on by default here
 #   RECOMP_AC97_READY=1     AC'97 codec ready + emulated APU; without it DirectSoundCreate fails – on by default here
-#   SSX3_RENDERER=vulkan    GPU renderer (src/render, own window) – default here
+#   SSX3_RENDERER=vulkan    GPU renderer (src/render, own window) – default here; also chosen in the start-up menu
 #   SSX3_RENDERER=cpu       the executor's software rasteriser + framebuffer window, kept as the reference
+#                           (640x480, 4:3, 60 fps: none of the Vulkan-only switches below apply)
 #   RECOMP_FB_WINDOW=1      framebuffer window (SDL2) – set automatically for SSX3_RENDERER=cpu
 #   SSX3_VK_DUMP=<prefix> / RECOMP_FB_DUMP=<prefix>   BMP frame dumps (Vulkan / CPU) for comparisons
 #   SSX3_INTERP=0           no frame interpolation (Vulkan): show only the game's own 60 fps frames
@@ -19,7 +20,7 @@
 #   SSX3_WINDOW=<mode>      windowed (default), borderless or fullscreen (Vulkan); Alt+Enter / F11 toggle in game
 #   SSX3_MONITOR=<m>        primary (default: the desktop's main monitor), a number or part of a name
 #                           from `ssx3_recomp --list-displays`
-#   SSX3_MENU=0 / 1         start-up menu for monitor, display mode, resolution, aspect ratio, frame rate, v-sync: never / always (default: when in a
+#   SSX3_MENU=0 / 1         start-up menu for renderer, monitor, display mode, resolution, aspect ratio, frame rate, v-sync: never / always (default: when in a
 #                           terminal and not set above). The choice is saved and reused (scripts/_launch_menu.sh)
 #   RECOMP_PB_SCAN=1 / RECOMP_PB_EXEC=1   analyse / execute the NV2A pushbuffer
 #   SSX3_PAD_TRACE=1        log every controller button change (pads: README "Controllers")
@@ -43,6 +44,7 @@ export RECOMP_TITLE_KEVENTS="${RECOMP_TITLE_KEVENTS:-1}"
 export RECOMP_VBLANK="${RECOMP_VBLANK:-1}"
 export RECOMP_AC97_READY="${RECOMP_AC97_READY:-1}"
 export RECOMP_PB_EXEC="${RECOMP_PB_EXEC:-1}"          # decode/execute the pushbuffer – otherwise no picture
+launch_menu                                           # renderer; Vulkan: monitor, resolution, frame rate …
 export SSX3_RENDERER="${SSX3_RENDERER:-vulkan}"
 if [ "$SSX3_RENDERER" = cpu ]; then
   export RECOMP_FB_WINDOW="${RECOMP_FB_WINDOW:-1}"    # the CPU rasteriser's window
@@ -52,5 +54,4 @@ fi
 export RECOMP_USB="${RECOMP_USB:-1}"                  # emulated USB controller (XPP/OHCI)
 export RECOMP_KEYBOARD="${RECOMP_KEYBOARD:-1}"        # keyboard = controller 1 (Enter=Start, Z=A, X=B, arrows=D-pad …)
 export SSX3_SKIP_LOGOS="${SSX3_SKIP_LOGOS:-1}"        # skip the EA BIG and THX logos (SSX3_SKIP_INTRO=1: the intro too)
-launch_menu                                           # internal resolution, frame rate, v-sync (Vulkan)
 exec "$EXE" "$@"

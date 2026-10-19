@@ -8,11 +8,11 @@
 # Runtime switches (details: scripts/run.sh, docs/notes.md, xboxrecomp/docs):
 #   RECOMP_TITLE_KEVENTS / RECOMP_VBLANK / RECOMP_AC97_READY / RECOMP_PB_EXEC   on by default, as in run.sh
 #   SSX3_RENDERER=cpu       default on Windows: the Vulkan back end has no Win32 surface yet (docs/TODO.md, M4)
-#   SSX3_RENDERER=vulkan    GPU renderer, once a build includes it; enables the start-up menu below
+#   SSX3_RENDERER=vulkan    GPU renderer, once a build includes it; then also chosen in the start-up menu below
 #   SSX3_INTERP=0 / SSX3_FPS_LIMIT=<n> / SSX3_VSYNC=1 / SSX3_RES_SCALE=<1..5> / SSX3_ASPECT=<16:9|16:10|21:9|auto>
 #                           / SSX3_WINDOW=<windowed|borderless|fullscreen> / SSX3_MONITOR=<primary|number|name>
 #                           Vulkan settings, as in run.sh
-#   SSX3_MENU=0 / 1         start-up menu for monitor, display mode, resolution, aspect ratio, frame rate, v-sync: never / always (default: when in a
+#   SSX3_MENU=0 / 1         start-up menu for renderer, monitor, display mode, resolution, aspect ratio, frame rate, v-sync: never / always (default: when in a
 #                           console and not set above). The choice is saved in %APPDATA%\ssx3-recomp\run.conf
 #   SSX3_PAD_TRACE=1        log every controller button change
 #   RECOMP_USB_PADS=2       more emulated pads on the USB bus (split screen), default 1
@@ -47,12 +47,6 @@ Set-EnvDefault RECOMP_TITLE_KEVENTS 1
 Set-EnvDefault RECOMP_VBLANK 1
 Set-EnvDefault RECOMP_AC97_READY 1
 Set-EnvDefault RECOMP_PB_EXEC 1             # decode/execute the pushbuffer - otherwise no picture
-Set-EnvDefault SSX3_RENDERER cpu            # see above: no Vulkan on Windows yet
-if ((Get-EnvValue SSX3_RENDERER) -eq 'cpu') {
-    Set-EnvDefault RECOMP_FB_WINDOW 1       # the CPU rasteriser's window
-} else {
-    [Environment]::SetEnvironmentVariable('RECOMP_FB_WINDOW', $null)   # the Vulkan back end opens its own window
-}
 Set-EnvDefault RECOMP_USB 1                 # emulated USB controller (XPP/OHCI)
 Set-EnvDefault RECOMP_KEYBOARD 1            # keyboard = controller 1 (Enter=Start, Z=A, X=B, arrows=D-pad ...)
 Set-EnvDefault SSX3_SKIP_LOGOS 1            # skip the EA BIG and THX logos (SSX3_SKIP_INTRO=1: the intro too)
@@ -62,6 +56,10 @@ Set-EnvDefault SSX3_SKIP_LOGOS 1            # skip the EA BIG and THX logos (SSX
 $ConfDir = if ($env:APPDATA) { Join-Path $env:APPDATA 'ssx3-recomp' } else { Join-Path $HOME '.config\ssx3-recomp' }
 $LaunchConf = Join-Path $ConfDir 'run.conf'
 
+$RendererText = @{
+    'vulkan' = 'Vulkan    GPU: higher resolution, widescreen, over 60 fps, full screen'
+    'cpu'    = 'Software  CPU reference renderer: 640x480, 4:3, 60 fps, window only, slow'
+}
 $WindowItems = @(
     @('windowed',   'Windowed    resizable window'),
     @('borderless', 'Borderless  full screen as a borderless window (fast Alt+Tab)'),
@@ -170,6 +168,14 @@ function Get-MonitorItems {  # from `ssx3_recomp --list-displays`; empty with on
     return ,(@(,@('primary', $label)) + $items)
 }
 
+function Get-Renderers {  # from `ssx3_recomp --renderers`, preferred first; "cpu" when the exe lists none
+    $list = @()
+    try { $lines = & $Exe --renderers 2>$null } catch { $lines = @() }
+    foreach ($l in @($lines)) { if ("$l".Trim() -match '^(vulkan|cpu)$') { $list += $Matches[1] } }
+    if ($list.Count -eq 0) { $list = @('cpu') }   # no Vulkan on Windows yet
+    return ,$list
+}
+
 function Set-FpsEnv([string]$Fps) {
     switch -regex ($Fps) {
         '^display$'  { break }                                    # the back end's default: fastest display's refresh
@@ -181,16 +187,24 @@ function Set-FpsEnv([string]$Fps) {
 }
 
 function Invoke-LaunchMenu {
-    if ((Get-EnvValue SSX3_RENDERER) -ne 'vulkan') { return }   # these settings only exist in the Vulkan back end
-
+    $renderers = Get-Renderers
+    $renItems = @()
+    if ($renderers.Count -ge 2) { foreach ($r in $renderers) { $renItems += ,@($r, $RendererText[$r]) } }
+    $askRen = -not (Get-EnvValue SSX3_RENDERER)
     $askMon = -not (Get-EnvValue SSX3_MONITOR)
     $askWin = -not (Get-EnvValue SSX3_WINDOW)
     $askRes = -not (Get-EnvValue SSX3_RES_SCALE)
     $askAspect = -not (Get-EnvValue SSX3_ASPECT)
     $askFps = -not ((Get-EnvValue SSX3_FPS_LIMIT) -or (Get-EnvValue SSX3_INTERP))
     $askVsync = -not (Get-EnvValue SSX3_VSYNC)
-    if ($env:SSX3_MENU -eq '1') { $askMon = $true; $askWin = $true; $askRes = $true; $askAspect = $true; $askFps = $true; $askVsync = $true }
+    if ($env:SSX3_MENU -eq '1') { $askRen = $true; $askMon = $true; $askWin = $true; $askRes = $true; $askAspect = $true; $askFps = $true; $askVsync = $true }
 
+    $ren = Get-EnvValue SSX3_RENDERER
+    if ($askRen) {
+        $ren = Get-ConfValue RENDERER
+        if ($renderers -notcontains $ren) { $ren = $renderers[0] }   # unknown or not in this build
+    }
+    if ($renItems.Count -eq 0) { $askRen = $false }
     $mon = Get-ConfValue MONITOR;     if (-not $mon)   { $mon = if ($env:SSX3_MONITOR) { $env:SSX3_MONITOR } else { 'primary' } }
     $win = Get-ConfValue WINDOW;      if (-not $win)   { $win = if ($env:SSX3_WINDOW) { $env:SSX3_WINDOW } else { 'windowed' } }
     $res = Get-ConfValue RES_SCALE;   if (-not $res)   { $res = if ($env:SSX3_RES_SCALE) { $env:SSX3_RES_SCALE } else { '1' } }
@@ -199,7 +213,15 @@ function Invoke-LaunchMenu {
     $vsync = Get-ConfValue VSYNC;     if (-not $vsync) { $vsync = if ($env:SSX3_VSYNC) { $env:SSX3_VSYNC } else { '0' } }
 
     $interactive = ($env:SSX3_MENU -ne '0') -and -not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected
-    if ($interactive -and ($askMon -or $askWin -or $askRes -or $askAspect -or $askFps -or $askVsync)) {
+    if ($interactive -and -not $askRen -and $ren -ne 'vulkan') { $interactive = $false }   # software renderer: nothing to ask
+    if ($interactive -and ($askRen -or $askMon -or $askWin -or $askRes -or $askAspect -or $askFps -or $askVsync)) {
+        if ($askRen) {
+            $ren = Show-Menu 'Renderer (the software renderer has no further options)' $ren $renItems
+            if ($null -eq $ren) { [Console]::Error.WriteLine('Cancelled.'); exit 0 }
+        }
+        if ($ren -ne 'vulkan') {   # the options below only exist in the Vulkan back end
+            $askMon = $false; $askWin = $false; $askRes = $false; $askAspect = $false; $askFps = $false; $askVsync = $false
+        }
         if ($askMon) {
             $monItems = Get-MonitorItems
             if ($monItems.Count -gt 0) {
@@ -229,9 +251,14 @@ function Invoke-LaunchMenu {
         }
         New-Item -ItemType Directory -Force -Path $ConfDir | Out-Null
         Set-Content -LiteralPath $LaunchConf -Encoding ASCII -Value @(
-            '# scripts/run.ps1 - last start-up choice', "MONITOR=$mon", "WINDOW=$win", "RES_SCALE=$res", "ASPECT=$aspect", "FPS=$fps", "VSYNC=$vsync")
+            '# scripts/run.ps1 - last start-up choice', "RENDERER=$ren", "MONITOR=$mon", "WINDOW=$win", "RES_SCALE=$res", "ASPECT=$aspect", "FPS=$fps", "VSYNC=$vsync")
     }
 
+    $env:SSX3_RENDERER = $ren
+    if ($ren -ne 'vulkan') {
+        [Console]::Error.WriteLine('run.ps1: software renderer (640x480, 4:3, 60 fps, windowed)')
+        return
+    }
     if ($askMon) {
         if (-not $mon -or $mon -eq 'primary') { $env:SSX3_MONITOR = $null } else { $env:SSX3_MONITOR = $mon }
     }
@@ -258,9 +285,15 @@ function Invoke-LaunchMenu {
     $aspectText = if ($env:SSX3_ASPECT) { $env:SSX3_ASPECT } else { '4:3' }
     $winText = if ($env:SSX3_WINDOW) { $env:SSX3_WINDOW } else { 'windowed' }
     $monText = if ($env:SSX3_MONITOR) { $env:SSX3_MONITOR } else { 'primary' }
-    [Console]::Error.WriteLine("run.ps1: monitor $monText, $winText, internal resolution ${scale}x, aspect $aspectText, frame rate $fpsText, v-sync $vsyncText")
+    [Console]::Error.WriteLine("run.ps1: Vulkan, monitor $monText, $winText, internal resolution ${scale}x, aspect $aspectText, frame rate $fpsText, v-sync $vsyncText")
 }
 
-Invoke-LaunchMenu
+Invoke-LaunchMenu                       # renderer; Vulkan: monitor, resolution, frame rate ...
+Set-EnvDefault SSX3_RENDERER cpu            # see above: no Vulkan on Windows yet
+if ((Get-EnvValue SSX3_RENDERER) -eq 'cpu') {
+    Set-EnvDefault RECOMP_FB_WINDOW 1       # the CPU rasteriser's window
+} else {
+    [Environment]::SetEnvironmentVariable('RECOMP_FB_WINDOW', $null)   # the Vulkan back end opens its own window
+}
 & $Exe @args
 exit $LASTEXITCODE

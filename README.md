@@ -30,7 +30,7 @@ build 2003-09-19; English, French, German, Spanish). Other versions are not supp
 | Windowed, borderless windowed and exclusive fullscreen; Alt+Enter / F11 toggles | ✅ Linux |
 | Opens on the main monitor; any other monitor selectable | ✅ Linux |
 | Controllers (XInput/SDL pads, hotplug, rumble), keyboard as player 1 | ✅ |
-| Start-up menu for monitor, display mode, resolution, aspect ratio, frame rate, v-sync | ✅ |
+| Start-up menu for renderer, monitor, display mode, resolution, aspect ratio, frame rate, v-sync | ✅ |
 | Windows build | ⚠️ experimental: menus work, software renderer only (slow); crashes when a race loads – only tested on Linux with Wine and Proton |
 | Full run through the game (all peaks, Conquer the Mountain, saving) | ⬜ not verified |
 | Split screen | ⬜ untested |
@@ -197,17 +197,17 @@ skill in `.claude/skills/release/` for Claude Code.
 
 ## Run options
 
-Started from a terminal, `run.sh` first asks for the monitor (with more than one), the display mode (windowed,
-borderless, fullscreen), the
-internal resolution (1x–5x), the aspect ratio (4:3, 16:9,
-16:10, 21:9, auto), the frame rate (display
-refresh, 60 without interpolation, 120/144/165/240, uncapped) and v-sync. The choice is saved in
+Started from a terminal, `run.sh` first asks for the renderer (Vulkan or software, when the build has both). The
+software renderer is fixed at 640x480, 4:3, 60 fps in a window, so nothing else is asked. With Vulkan it goes on
+with the monitor (with more than one), the display mode (windowed, borderless, fullscreen), the internal
+resolution (1x–5x), the aspect ratio (4:3, 16:9, 16:10, 21:9, auto), the frame rate (display refresh, 60 without
+interpolation, 120/144/165/240, uncapped) and v-sync. The window title names the renderer in use. The choice is saved in
 `~/.config/ssx3-recomp/run.conf` (Windows: `%APPDATA%\ssx3-recomp\run.conf`) and reused, also for starts
 without a terminal (e.g. a Steam shortcut). Variables set in the environment win and are not asked for.
 
 | Variable | Default | |
 |---|---|---|
-| `SSX3_RENDERER` | `vulkan` (Windows: `cpu`) | `cpu` = the software renderer (reference, slow) |
+| `SSX3_RENDERER` | `vulkan` (Windows: `cpu`) | `cpu` = the software renderer (reference, slow); all variables below up to `SSX3_VSYNC` are Vulkan only |
 | `SSX3_RES_SCALE` | `1` | internal resolution `1`–`5` × 640x480; **F10** cycles it in game |
 | `SSX3_MONITOR` | `primary` | the desktop's main monitor; or a number / part of a name from `ssx3_recomp --list-displays` |
 | `SSX3_WINDOW` | `windowed` | `borderless` (desktop-sized, no frame) or `fullscreen` (exclusive); **Alt+Enter** / **F11** toggle in game |

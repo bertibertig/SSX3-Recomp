@@ -406,3 +406,17 @@ _(date – what was done, what was found, next step)_
   `ESC[6n`; `contact_sheet.py`) automates this session's checks: missing-game-files message, `run.sh` menu
   (`SSX3_MENU=1`), Linux race with Vulkan dumps; Windows: `run.ps1` menu + default flow under Wine (own prefix in the
   results folder). Run on v0.1.0: Linux reaches a race (game 35–60 fps), Windows menus then exit 139 as before.
+- 2026-10-19 – **Renderer choice in the start-up menus + renderer in the window title.** `ssx3_recomp --renderers`
+  lists the back ends the build has, preferred first (`vulkan` + `cpu` on Linux, `cpu` only on Windows; handled
+  before any boot work, in WinMain through the command line). `_launch_menu.sh` / `run.ps1` ask "Renderer" first
+  when there are two, saved as `RENDERER=` in `run.conf` (a saved value this build lacks falls back to the first
+  listed); `run.sh` / `run.ps1` now apply the `SSX3_RENDERER` default after the menu. The software renderer has none
+  of the other options (monitor, display mode, resolution, aspect ratio, frame rate, v-sync are all `vk_backend.c`;
+  the widescreen projection patch reads `g_ssx3_wide`, which only the Vulkan back end sets), so choosing it ends the
+  menu; the other saved values are kept for switching back. `SSX3_RENDERER` in the environment wins, as before.
+  The framebuffer window was titled after the XBE certificate ("SSX 3"); `boot_memory` now renames it
+  "SSX 3 (Recomp, Software)", matching "SSX 3 (Recomp, Vulkan)". `test_release.sh` sends one more Enter on Linux.
+  - Tested: built-in menu through a pty (software chosen → no further questions, saved; reused without a tty; env
+    `SSX3_RENDERER=cpu` → no menu; back to Vulkan → all 7 questions), both renderers boot from `run.sh`, titles read
+    with xprop (SDL_VIDEODRIVER=x11); MinGW build: `--renderers` = `cpu`, `run.ps1` under Wine with a saved
+    `RENDERER=vulkan` → software. Not tested: whiptail/dialog front ends (same `_menu` call), native Windows.

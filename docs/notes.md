@@ -491,4 +491,6 @@ _(date – what was done, what was found, next step)_
   NtDeleteFile and NtQueryFullAttributesFile). Test on a fresh copy: overwrite BRK -> "Save complete.", the save's
   three files rewritten (Data.ssx byte-identical, no progress since the last save), no failed open in the log.
   Not tested: a save into a new slot with a new name (the scripted on-screen keyboard was too fiddly).
- 
+  - Upstream: https://github.com/sp00nznet/xboxrecomp/pull/237 (fork bertibertig/xboxrecomp, branch
+    fix-posix-rootdirectory-opens, on upstream main v0.15.0, with `tests/kernel_file_relative`: 3 of 9 checks fail
+    without the change – the bare name was created in the process's working directory – all 9 pass with it).

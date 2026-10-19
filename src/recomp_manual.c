@@ -49,6 +49,35 @@ typedef void (*recomp_func_t)(void);
 extern uint32_t g_eax;
 extern ptrdiff_t g_xbox_mem_offset;
 
+/* ── Game clock for frame interpolation ─────────────────────── */
+
+/*
+ * SSX 3 advances its world in fixed steps: the app object (pointer at
+ * 0x003A930C, 0x00369550) counts them at +0x20, one per 1/60 s timer tick
+ * (sub_001AD880 increments it before each state update), and draws after the
+ * updates that were due. When the title falls behind, one frame holds two
+ * steps of motion. The Vulkan presenter (src/render/vk_backend.c) spaces
+ * frames by this count rather than by arrival time, so motion stays even.
+ *
+ * The count is taken when the renderer presents: sub_001F3020 (renderer
+ * vtable 0x002F7E50 +0x50, flush and D3D Present) is only reached through
+ * indirect calls, so it can be wrapped here. Read by the NV2A thread at the
+ * flip that this present queued; a present the title makes elsewhere (loading
+ * screens) leaves it unchanged, and the presenter falls back to arrival time.
+ */
+extern void sub_001F3020(void);
+
+volatile uint32_t g_ssx3_present_steps;
+
+static void present_with_clock(void)
+{
+    uint32_t app = *(volatile uint32_t *)((uintptr_t)0x003A930Cu + g_xbox_mem_offset);
+
+    if (app)
+        g_ssx3_present_steps = *(volatile uint32_t *)((uintptr_t)(app + 0x20) + g_xbox_mem_offset);
+    sub_001F3020();
+}
+
 /* ── Manual function overrides ─────────────────────────────── */
 
 /*
@@ -87,15 +116,8 @@ extern ptrdiff_t g_xbox_mem_offset;
  */
 recomp_func_t recomp_lookup_manual(uint32_t xbox_va)
 {
-    /*
-     * TODO: Add your overrides here. Examples:
-     *
-     * if (xbox_va == 0x00012345) return traced_sub_00012345;
-     * if (xbox_va == 0x00067890) return stub_00067890;
-     * if (xbox_va == 0x000ABCDE) return fixed_sub_000ABCDE;
-     */
-
-    (void)xbox_va;
+    if (xbox_va == 0x001F3020u)
+        return present_with_clock;
     return (recomp_func_t)0;
 }
 

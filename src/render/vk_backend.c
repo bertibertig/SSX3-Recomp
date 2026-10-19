@@ -5,12 +5,17 @@
  * uber-shader (milestone 3). Design: docs/vulkan-backend.md.
  *
  * Threading: every entry point is called on the NV2A poll thread, one at a
- * time (nv2a_backend.h), so this file keeps no locks. Vulkan, the window and
- * the swapchain are created lazily by the first call.
+ * time (nv2a_backend.h). Vulkan, the window and the swapchain are created
+ * lazily by the first call. With frame interpolation (default) a presenter
+ * thread owns the swapchain; the two share the queue under s_qlock and hand
+ * recorded frames over under I.lock (docs/frame-interpolation.md).
  *
  * Frame model: clears and draws between two flips are recorded into one
- * command buffer; flip blits the surface the title last rendered into to the
- * swapchain, submits and presents. One frame in flight for now.
+ * command buffer. Without interpolation flip blits the surface the title last
+ * rendered into to the swapchain, submits and presents. With it, flip submits
+ * and passes the frame's recording to the presenter, which re-renders it with
+ * vertex positions blended from the frame before, as often as the display
+ * allows.
  *
  * Switches:
  *   SSX3_VK_VALIDATE=1      enable VK_LAYER_KHRONOS_validation (if installed)
@@ -19,6 +24,12 @@
  *   SSX3_VK_GPU=<substr>    pick the physical device whose name contains it
  *   SSX3_VK_TEXLOG=1        log the first 60 re-decodes of cached textures
  *   SSX3_VK_NO_RC=1         ignore the combiner extension (milestone-2 look)
+ *   SSX3_INTERP=0           no frame interpolation: present the game's own frames
+ *   SSX3_FPS_LIMIT=<n>      presenter frame cap (default: fastest display's refresh;
+ *                           0 = uncapped)
+ *   SSX3_VSYNC=1            FIFO presentation (default mailbox / immediate)
+ *   SSX3_VKI_DUMP=<prefix>  write interpolated frames at blend 0, 1/2, 1 as
+ *                           <prefix><flip>_<t*100>.bmp, every SSX3_VK_DUMP_EVERY flips
  */
 #include "volk.h"
 #include <SDL.h>
@@ -31,6 +42,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
+#include <time.h>
 
 #include "nv2a_backend.h"     /* xboxrecomp/src/kernel */
 
@@ -137,6 +150,7 @@ static struct {
     VkSemaphore       sem_render_done[VKB_MAX_SWAP_IMAGES];
     volatile int      swap_dirty;          /* resized / out of date (any thread) */
     int               host_main;           /* window owned by ssx3_vk_host_main */
+    volatile int      display_hz;          /* refresh of the window's display, 0 unknown */
 
     VkCommandPool     cmd_pool;
     VkCommandBuffer   cmd;
@@ -177,12 +191,139 @@ static struct {
     uint32_t          stat_new;            /* ... of which first sight / cache misses */
     uint32_t          last_frame_draws;
     uint32_t          title_ms, title_flips;   /* window-title FPS counter */
+    uint32_t          title_presents;
 
     const char       *dump_prefix;
     uint32_t          dump_every;
 } V;
 
+/* ---- frame interpolation: declarations ------------------------------------
+ *
+ * SSX 3's simulation runs on a fixed 60 Hz step (1/60 is a constant in ~50
+ * code sites, not a delta time; docs/notes.md), so a higher frame rate cannot
+ * come from the title. Instead every frame's draws are recorded as they are
+ * executed, and a presenter thread re-renders the last frame with each vertex
+ * position blended from its place in the frame before, at whatever rate the
+ * display (or SSX3_FPS_LIMIT) allows. Shown frames trail the game by at most
+ * one frame. Details: docs/frame-interpolation.md. */
+
+#define VKI_PACKETS   6        /* recorded frames in the ring */
+#define VKI_SNAPS     8        /* render-target textures copied per frame */
+#define VKI_INFLIGHT  2        /* presenter command buffers */
+#define VKI_RING      (32u << 20)
+
+enum { VKI_FREE, VKI_FILLING, VKI_READY, VKI_HELD };
+
+/* One recorded clear or draw, everything needed to issue it again. */
+typedef struct {
+    VkbSurface     *target;
+    uint32_t        type;            /* 0 draw, 1 clear */
+    uint32_t        count;
+    size_t          vofs, eofs;      /* into the packet's vertex / ext arrays */
+    int             has_ext, rc;     /* rc: combiner block index, -1 none */
+    VkImageView     views[4];
+    VkSampler       samplers[4];
+    int             surf[4];         /* V.surfaces index of a render-target view */
+    VkbPush         pc;
+    Nv2aRenderState rs;
+    uint64_t        key;             /* identity for matching across frames */
+    uint64_t        sig;             /* texture-coordinate hash (presenter) */
+    uint32_t        flags, argb, zstencil;   /* clear */
+} VkiCmd;
+
+typedef struct {
+    VkImage        image;
+    VkDeviceMemory memory;
+    VkImageView    view;
+    uint32_t       w, h;
+} VkiImage;
+
+/* One recorded frame. Filled by the NV2A thread, read-only once READY. */
+typedef struct {
+    int             state;
+    uint64_t        release_serial;  /* presenter submissions that may read it */
+    VkiCmd         *cmds;  size_t ncmds, ccap;
+    Nv2aVertex     *vtx;   size_t nvtx, vcap;
+    Nv2aVertexExt  *ext;   size_t next, ecap;
+    VkbCombiners   *rc;    size_t nrc, rcap;
+    int            *match; size_t mcap;     /* per cmd: draw of the frame before, -1
+                                             * none, -2 motion borrowed (synth_motion) */
+    float         (*ppos)[4]; size_t pcap;  /* per vertex: x, y, z, rhw a frame earlier */
+    VkiImage        snap[VKI_SNAPS];        /* copies of sampled render targets */
+    uint32_t        width, height, logical_w, logical_h;
+    uint32_t        flip;
+    uint32_t        steps;                  /* the title's world steps at its present */
+    double          arrival, t_show, dur;   /* host seconds; the blend from the frame
+                                             * before runs t_show .. t_show + dur */
+} VkiPacket;
+
+static struct {
+    int             on;
+    pthread_mutex_t lock;
+    pthread_cond_t  cond;
+    VkiPacket       pk[VKI_PACKETS];
+    VkiPacket      *rec;             /* being filled (NV2A thread) */
+    int             rec_none;        /* no free slot this frame */
+    double          period;          /* smoothed interval between game frames */
+    double          jitter, cushion; /* mean lateness spread, extra latency */
+    double          step;            /* measured real length of one world step */
+    int             holding;         /* blend done, next frame not here yet */
+    double          last_arrival, last_show, last_dur;
+    uint32_t        last_steps;
+    int             have_steps;
+    uint64_t        submitted, completed;   /* presenter submission serials */
+
+    /* presenter thread only */
+    VkCommandPool   pool;
+    VkCommandBuffer cmd[VKI_INFLIGHT];
+    VkFence         fence[VKI_INFLIGHT];
+    VkSemaphore     acquire[VKI_INFLIGHT];
+    VkbRing         ring[VKI_INFLIGHT];
+    uint64_t        slot_serial[VKI_INFLIGHT];
+    VkiImage        color, depth;
+    VkiPacket      *prev, *cur;
+    int             shown_final;     /* cur already shown unblended */
+    double          limit_env;       /* SSX3_FPS_LIMIT: >0 cap, 0 none, <0 display */
+    double          next_deadline;
+
+    volatile uint32_t presents;      /* frames shown, for the FPS title */
+    uint32_t        stat_draws, stat_matched, stat_frames;
+    uint32_t        stat_jump, stat_none;   /* why draws did not match */
+    uint32_t        stat_synth;             /* ... of those, given borrowed motion */
+    uint32_t        stat_hold;              /* blends that waited for a late frame */
+    uint32_t        stat_drop;              /* game frames not recorded: no free slot */
+    uint32_t        stat_clock;             /* frames timed by the game's step count */
+} I;
+
+static void rec_draw(VkbSurface *s, const Nv2aBatch *b, const Nv2aBatchExt *e,
+                     const VkbCombiners *rcu, const Nv2aTexture *const stex[4],
+                     const VkImageView views[4], const VkSampler smp[4],
+                     const int surf[4], const VkbPush *pc, const Nv2aRenderState *rs);
+static void rec_clear(VkbSurface *s, uint32_t flags, uint32_t argb, uint32_t zstencil);
+static int view_surface(VkImageView v);
+
 /* ---- helpers --------------------------------------------------------- */
+
+/* The one queue is shared by the NV2A thread and, with frame interpolation,
+ * the presenter thread: vkQueueSubmit/Present and vkDeviceWaitIdle need
+ * external synchronisation. */
+static pthread_mutex_t s_qlock = PTHREAD_MUTEX_INITIALIZER;
+
+static void device_idle(void)
+{
+    pthread_mutex_lock(&s_qlock);
+    vkDeviceWaitIdle(V.device);
+    pthread_mutex_unlock(&s_qlock);
+}
+
+static VkResult queue_submit(const VkSubmitInfo *si, VkFence fence)
+{
+    VkResult r;
+    pthread_mutex_lock(&s_qlock);
+    r = vkQueueSubmit(V.queue, 1, si, fence);
+    pthread_mutex_unlock(&s_qlock);
+    return r;
+}
 
 #define VK_CHECK(call)                                                      \
     do {                                                                    \
@@ -205,8 +346,8 @@ static uint32_t find_memory_type(uint32_t type_bits, VkMemoryPropertyFlags want)
 
 /* One layout transition with deliberately broad masks: correctness first,
  * milestone 4 narrows them. */
-static void transition(VkImage image, VkImageAspectFlags aspect,
-                       VkImageLayout from, VkImageLayout to)
+static void transition_cmd(VkCommandBuffer cmd, VkImage image, VkImageAspectFlags aspect,
+                           VkImageLayout from, VkImageLayout to)
 {
     VkImageMemoryBarrier b;
 
@@ -222,9 +363,15 @@ static void transition(VkImage image, VkImageAspectFlags aspect,
     b.subresourceRange.aspectMask = aspect;
     b.subresourceRange.levelCount = 1;
     b.subresourceRange.layerCount = 1;
-    vkCmdPipelineBarrier(V.cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                          VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
                          0, NULL, 0, NULL, 1, &b);
+}
+
+static void transition(VkImage image, VkImageAspectFlags aspect,
+                       VkImageLayout from, VkImageLayout to)
+{
+    transition_cmd(V.cmd, image, aspect, from, to);
 }
 
 static void surface_to(VkbSurface *s, VkImageLayout to)
@@ -436,7 +583,7 @@ static void destroy_swapchain(void)
     uint32_t i;
     if (!V.swapchain)
         return;
-    vkDeviceWaitIdle(V.device);
+    device_idle();
     for (i = 0; i < V.swap_count; i++)
         vkDestroySemaphore(V.device, V.sem_render_done[i], NULL);
     vkDestroySwapchainKHR(V.device, V.swapchain, NULL);
@@ -454,6 +601,7 @@ static int create_swapchain(void)
     uint32_t nf = 32, nm = 8, i;
     VkPresentModeKHR mode = VK_PRESENT_MODE_FIFO_KHR;
     VkSwapchainCreateInfoKHR ci;
+    const char *vsync = getenv("SSX3_VSYNC");
     int w, h;
 
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(V.gpu, V.wsi, &caps);
@@ -467,7 +615,9 @@ static int create_swapchain(void)
     for (i = 0; i < nm; i++)
         if (modes[i] == VK_PRESENT_MODE_MAILBOX_KHR)
             mode = VK_PRESENT_MODE_MAILBOX_KHR;
-    if (mode != VK_PRESENT_MODE_MAILBOX_KHR)
+    if (vsync && *vsync == '1')
+        mode = VK_PRESENT_MODE_FIFO_KHR;   /* the display's refresh rate */
+    else if (mode != VK_PRESENT_MODE_MAILBOX_KHR)
         for (i = 0; i < nm; i++)
             if (modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR)
                 mode = VK_PRESENT_MODE_IMMEDIATE_KHR;
@@ -850,6 +1000,8 @@ static int init_vulkan(void)
     return 1;
 }
 
+static void interp_start(void);
+
 /* First call from the executor brings everything up; a failure leaves the
  * back end inert (the title keeps running, nothing is drawn). */
 static int ensure_ready(void)
@@ -864,6 +1016,7 @@ static int ensure_ready(void)
         return 0;
     }
     V.ready = 1;
+    interp_start();
     return 1;
 }
 
@@ -938,7 +1091,7 @@ static VkbSurface *surface_get(const Nv2aSurface *g)
         return NULL;
     }
     if (victim->image) {
-        vkDeviceWaitIdle(V.device);
+        device_idle();
         if (V.last == victim) V.last = NULL;
         surface_free(victim);
     }
@@ -997,7 +1150,7 @@ static VkbDepth *depth_get(uint32_t va, uint32_t w, uint32_t h)
     if (!victim)
         return NULL;
     if (victim->image) {
-        vkDeviceWaitIdle(V.device);
+        device_idle();
         depth_free(victim);
     }
     d = victim;
@@ -1267,13 +1420,16 @@ static VkImageView texture_view(const Nv2aTexture *g)
         for (i = 0; i < VKB_MAX_TEXTURES; i++) {
             VkbTexture *c = &V.textures[i];
             if (!c->image) { victim = c; break; }
-            if (c->last_used != V.flips && (!victim || c->last_used < victim->last_used))
+            /* With interpolation the presenter still draws the last few
+             * frames' textures, so those stay too. */
+            if (V.flips - c->last_used >= (I.on ? 8u : 1u)
+                    && (!victim || c->last_used < victim->last_used))
                 victim = c;
         }
         if (!victim)
             return NULL;
         if (victim->image) {
-            vkDeviceWaitIdle(V.device);
+            device_idle();
             texture_free(victim);
         }
         t = victim;
@@ -1393,7 +1549,7 @@ static void dump_surface(VkbSurface *s)
     si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount = 1;
     si.pCommandBuffers = &V.cmd;
-    vkQueueSubmit(V.queue, 1, &si, V.frame_fence);
+    queue_submit(&si, V.frame_fence);
     vkWaitForFences(V.device, 1, &V.frame_fence, VK_TRUE, UINT64_MAX);
 
     vkMapMemory(V.device, mem, 0, size, 0, (void **)&px);
@@ -1482,53 +1638,1248 @@ static VkStencilOp stencil_op(uint32_t op)
     }
 }
 
-static void apply_state(const Nv2aRenderState *rs)
+static void apply_state(VkCommandBuffer cmd, const Nv2aRenderState *rs)
 {
     VkBool32 blend = rs->blend_enable ? VK_TRUE : VK_FALSE;
     VkColorBlendEquationEXT eq;
     VkColorComponentFlags mask = 0;
     float bc[4];
 
-    vkCmdSetColorBlendEnableEXT(V.cmd, 0, 1, &blend);
+    vkCmdSetColorBlendEnableEXT(cmd, 0, 1, &blend);
     eq.srcColorBlendFactor = blend_factor(rs->blend_src);
     eq.dstColorBlendFactor = blend_factor(rs->blend_dst);
     eq.colorBlendOp = blend_op(rs->blend_eq);
     eq.srcAlphaBlendFactor = eq.srcColorBlendFactor;
     eq.dstAlphaBlendFactor = eq.dstColorBlendFactor;
     eq.alphaBlendOp = eq.colorBlendOp;
-    vkCmdSetColorBlendEquationEXT(V.cmd, 0, 1, &eq);
+    vkCmdSetColorBlendEquationEXT(cmd, 0, 1, &eq);
     bc[0] = (float)((rs->blend_color >> 16) & 0xFF) / 255.0f;
     bc[1] = (float)((rs->blend_color >>  8) & 0xFF) / 255.0f;
     bc[2] = (float)( rs->blend_color        & 0xFF) / 255.0f;
     bc[3] = (float)((rs->blend_color >> 24) & 0xFF) / 255.0f;
-    vkCmdSetBlendConstants(V.cmd, bc);
+    vkCmdSetBlendConstants(cmd, bc);
 
     if (rs->color_mask & 0x00010000u) mask |= VK_COLOR_COMPONENT_R_BIT;
     if (rs->color_mask & 0x00000100u) mask |= VK_COLOR_COMPONENT_G_BIT;
     if (rs->color_mask & 0x00000001u) mask |= VK_COLOR_COMPONENT_B_BIT;
     if (rs->color_mask & 0x01000000u) mask |= VK_COLOR_COMPONENT_A_BIT;
-    vkCmdSetColorWriteMaskEXT(V.cmd, 0, 1, &mask);
+    vkCmdSetColorWriteMaskEXT(cmd, 0, 1, &mask);
 
     /* Culling stays off: the NV2A decides facing from the projected, mirrored
      * triangle (nv2a_backend.h advice). Per-triangle culling: milestone 4. */
-    vkCmdSetCullMode(V.cmd, VK_CULL_MODE_NONE);
-    vkCmdSetFrontFace(V.cmd, VK_FRONT_FACE_CLOCKWISE);
+    vkCmdSetCullMode(cmd, VK_CULL_MODE_NONE);
+    vkCmdSetFrontFace(cmd, VK_FRONT_FACE_CLOCKWISE);
 
     /* GL writes depth only while the test is enabled, and so does the NV2A. */
-    vkCmdSetDepthTestEnable(V.cmd, rs->depth_test_enable ? VK_TRUE : VK_FALSE);
-    vkCmdSetDepthWriteEnable(V.cmd, (rs->depth_test_enable && rs->depth_write) ? VK_TRUE : VK_FALSE);
-    vkCmdSetDepthCompareOp(V.cmd, compare_op(rs->depth_func));
+    vkCmdSetDepthTestEnable(cmd, rs->depth_test_enable ? VK_TRUE : VK_FALSE);
+    vkCmdSetDepthWriteEnable(cmd, (rs->depth_test_enable && rs->depth_write) ? VK_TRUE : VK_FALSE);
+    vkCmdSetDepthCompareOp(cmd, compare_op(rs->depth_func));
 
-    vkCmdSetStencilTestEnable(V.cmd, rs->stencil_enable ? VK_TRUE : VK_FALSE);
-    vkCmdSetStencilOp(V.cmd, VK_STENCIL_FACE_FRONT_AND_BACK,
+    vkCmdSetStencilTestEnable(cmd, rs->stencil_enable ? VK_TRUE : VK_FALSE);
+    vkCmdSetStencilOp(cmd, VK_STENCIL_FACE_FRONT_AND_BACK,
                       stencil_op(rs->stencil_fail), stencil_op(rs->stencil_zpass),
                       stencil_op(rs->stencil_zfail), compare_op(rs->stencil_func));
-    vkCmdSetStencilCompareMask(V.cmd, VK_STENCIL_FACE_FRONT_AND_BACK, rs->stencil_func_mask & 0xFF);
-    vkCmdSetStencilWriteMask(V.cmd, VK_STENCIL_FACE_FRONT_AND_BACK, rs->stencil_write_mask & 0xFF);
-    vkCmdSetStencilReference(V.cmd, VK_STENCIL_FACE_FRONT_AND_BACK, rs->stencil_ref & 0xFF);
+    vkCmdSetStencilCompareMask(cmd, VK_STENCIL_FACE_FRONT_AND_BACK, rs->stencil_func_mask & 0xFF);
+    vkCmdSetStencilWriteMask(cmd, VK_STENCIL_FACE_FRONT_AND_BACK, rs->stencil_write_mask & 0xFF);
+    vkCmdSetStencilReference(cmd, VK_STENCIL_FACE_FRONT_AND_BACK, rs->stencil_ref & 0xFF);
 }
 
 /* ---- back-end entry points -------------------------------------------- */
+
+/* ---- frame interpolation ------------------------------------------------- */
+
+/* The title's world-step count at its last present (src/recomp_manual.c);
+ * one step is nominally 1/60 s -- in practice its timer's period in whole
+ * milliseconds, so the real step length is measured (I.step). */
+extern volatile uint32_t g_ssx3_present_steps;
+
+static double now_s(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+}
+
+/* Grow *p to hold `need` elements; 0 when out of memory. */
+static int grow(void **p, size_t *cap, size_t need, size_t elem)
+{
+    size_t n = *cap ? *cap : 256;
+    void *q;
+
+    if (need <= *cap)
+        return 1;
+    while (n < need)
+        n *= 2;
+    if (!(q = realloc(*p, n * elem)))
+        return 0;
+    *p = q;
+    *cap = n;
+    return 1;
+}
+
+static int view_surface(VkImageView v)
+{
+    int i;
+    if (!v)
+        return -1;
+    for (i = 0; i < VKB_MAX_SURFACES; i++)
+        if (V.surfaces[i].image && V.surfaces[i].view == v)
+            return i;
+    return -1;
+}
+
+static void vki_image_free(VkiImage *m)
+{
+    if (m->view)
+        vkDestroyImageView(V.device, m->view, NULL);
+    if (m->image)
+        vkDestroyImage(V.device, m->image, NULL);
+    if (m->memory)
+        vkFreeMemory(V.device, m->memory, NULL);
+    memset(m, 0, sizeof *m);
+}
+
+/* The slot this frame records into, or NULL when the presenter holds them
+ * all (the frame is then not shown; it still renders as usual). */
+static VkiPacket *rec_packet(void)
+{
+    int i;
+
+    if (I.rec || I.rec_none)
+        return I.rec;
+    pthread_mutex_lock(&I.lock);
+    /* Retire presenter submissions that finished (a fence's serial only moves
+     * after its submission, so a signalled fence covers the serial read). */
+    for (i = 0; i < VKI_INFLIGHT; i++)
+        if (I.slot_serial[i] > I.completed && vkGetFenceStatus(V.device, I.fence[i]) == VK_SUCCESS)
+            I.completed = I.slot_serial[i];
+    for (i = 0; i < VKI_PACKETS; i++) {
+        VkiPacket *p = &I.pk[i];
+        if (p->state == VKI_FREE && p->release_serial <= I.completed) {
+            p->state = VKI_FILLING;
+            p->ncmds = p->nvtx = p->next = p->nrc = 0;
+            I.rec = p;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&I.lock);
+    if (!I.rec) {
+        I.rec_none = 1;
+        I.stat_drop++;
+    }
+    return I.rec;
+}
+
+static uint64_t fnv(uint64_t h, uint32_t v)
+{
+    int i;
+    for (i = 0; i < 4; i++) {
+        h ^= (v >> (i * 8)) & 0xFF;
+        h *= 0x100000001B3ull;
+    }
+    return h;
+}
+
+/* What makes two draws in consecutive frames "the same object": textures
+ * by guest address, how it blends and tests (the vertex count is compared
+ * separately: near-plane clipping changes it). Not vertex data
+ * or combiner constants -- those animate. */
+static uint64_t rec_key(const Nv2aBatch *b, const Nv2aBatchExt *e,
+                        const Nv2aTexture *const stex[4], const Nv2aRenderState *rs)
+{
+    uint64_t h = 0xCBF29CE484222325ull;
+    int i;
+
+    (void)b;
+    for (i = 0; i < 4; i++)
+        h = fnv(h, stex[i] ? stex[i]->offset : 0);
+    h = fnv(h, e ? 1u : 0u);
+    if (e && e->rc) {
+        h = fnv(h, e->rc->control);
+        h = fnv(h, e->rc->stage_program);
+    }
+    h = fnv(h, rs->blend_enable | rs->blend_src << 4 | rs->blend_dst << 20);
+    h = fnv(h, rs->depth_test_enable | rs->depth_write << 1 | rs->alpha_test_enable << 2
+               | rs->stencil_enable << 3);
+    return h;
+}
+
+static void rec_draw(VkbSurface *s, const Nv2aBatch *b, const Nv2aBatchExt *e,
+                     const VkbCombiners *rcu, const Nv2aTexture *const stex[4],
+                     const VkImageView views[4], const VkSampler smp[4],
+                     const int surf[4], const VkbPush *pc, const Nv2aRenderState *rs)
+{
+    VkiPacket *p = rec_packet();
+    VkiCmd *c;
+    int i;
+
+    if (!p)
+        return;
+    if (!grow((void **)&p->cmds, &p->ccap, p->ncmds + 1, sizeof *p->cmds)
+            || !grow((void **)&p->vtx, &p->vcap, p->nvtx + b->count, sizeof *p->vtx)
+            || (e && !grow((void **)&p->ext, &p->ecap, p->next + b->count, sizeof *p->ext))
+            || (rcu && !grow((void **)&p->rc, &p->rcap, p->nrc + 1, sizeof *p->rc)))
+        return;
+    c = &p->cmds[p->ncmds++];
+    memset(c, 0, sizeof *c);
+    c->target = s;
+    c->type = 0;
+    c->count = b->count;
+    c->vofs = p->nvtx;
+    memcpy(p->vtx + p->nvtx, b->vertices, b->count * sizeof *p->vtx);
+    p->nvtx += b->count;
+    c->has_ext = e != NULL;
+    if (e) {
+        c->eofs = p->next;
+        memcpy(p->ext + p->next, e->vertices, b->count * sizeof *p->ext);
+        p->next += b->count;
+    }
+    c->rc = -1;
+    if (rcu) {
+        if (!p->nrc || memcmp(&p->rc[p->nrc - 1], rcu, sizeof *rcu))
+            p->rc[p->nrc++] = *rcu;
+        c->rc = (int)p->nrc - 1;
+    }
+    for (i = 0; i < 4; i++) {
+        c->views[i] = views[i] ? views[i] : V.white.view;
+        c->samplers[i] = smp[i];
+        c->surf[i] = views[i] ? surf[i] : -1;
+    }
+    c->pc = *pc;
+    c->rs = *rs;
+    c->key = rec_key(b, e, stex, rs);
+}
+
+static void rec_clear(VkbSurface *s, uint32_t flags, uint32_t argb, uint32_t zstencil)
+{
+    VkiPacket *p = rec_packet();
+    VkiCmd *c;
+
+    if (!p || !grow((void **)&p->cmds, &p->ccap, p->ncmds + 1, sizeof *p->cmds))
+        return;
+    c = &p->cmds[p->ncmds++];
+    memset(c, 0, sizeof *c);
+    c->target = s;
+    c->type = 1;
+    c->rc = -1;
+    c->flags = flags;
+    c->argb = argb;
+    c->zstencil = zstencil;
+}
+
+static void rec_release(VkiPacket *p)
+{
+    pthread_mutex_lock(&I.lock);
+    p->state = VKI_FREE;
+    pthread_mutex_unlock(&I.lock);
+}
+
+/* At the flip, on the NV2A thread with V.cmd open and no rendering scope:
+ * keep the commands that drew the shown surface and copy the render targets
+ * they sample (the next frame redraws those while the presenter still reads
+ * this one). NULL: nothing to show. */
+static VkiPacket *rec_finish(VkbSurface *disp)
+{
+    VkiPacket *p = I.rec;
+    int map[VKB_MAX_SURFACES];
+    size_t i, n = 0, draws = 0;
+    int nsnap = 0, k;
+
+    I.rec = NULL;
+    I.rec_none = 0;
+    if (!p)
+        return NULL;
+    if (!disp) {
+        rec_release(p);
+        return NULL;
+    }
+    for (i = 0; i < p->ncmds; i++)
+        if (p->cmds[i].target == disp) {
+            draws += p->cmds[i].type == 0;
+            p->cmds[n++] = p->cmds[i];
+        }
+    p->ncmds = n;
+    if (!draws) {
+        rec_release(p);
+        return NULL;
+    }
+    for (k = 0; k < VKB_MAX_SURFACES; k++)
+        map[k] = -1;
+    for (i = 0; i < p->ncmds; i++) {
+        VkiCmd *c = &p->cmds[i];
+        for (k = 0; k < 4; k++) {
+            VkbSurface *rt;
+            VkiImage *m;
+            VkImageCopy cp;
+            int sidx = c->surf[k];
+
+            if (c->type != 0 || sidx < 0)
+                continue;
+            if (map[sidx] >= 0) {
+                c->views[k] = p->snap[map[sidx]].view;
+                continue;
+            }
+            rt = &V.surfaces[sidx];
+            if (nsnap == VKI_SNAPS || !rt->image || rt->layout == VK_IMAGE_LAYOUT_UNDEFINED) {
+                c->views[k] = V.white.view;
+                continue;
+            }
+            m = &p->snap[nsnap];
+            if (m->image && (m->w != rt->width || m->h != rt->height))
+                vki_image_free(m);       /* earlier V.cmd retired, presenter released it */
+            if (!m->image) {
+                if (!image_create(rt->width, rt->height, VK_FORMAT_B8G8R8A8_UNORM,
+                                  VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                                  VK_IMAGE_ASPECT_COLOR_BIT, &m->image, &m->memory, &m->view)) {
+                    vki_image_free(m);
+                    c->views[k] = V.white.view;
+                    continue;
+                }
+                m->w = rt->width;
+                m->h = rt->height;
+            }
+            surface_to(rt, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+            transition(m->image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            memset(&cp, 0, sizeof cp);
+            cp.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            cp.srcSubresource.layerCount = 1;
+            cp.dstSubresource = cp.srcSubresource;
+            cp.extent.width = rt->width;
+            cp.extent.height = rt->height;
+            cp.extent.depth = 1;
+            vkCmdCopyImage(V.cmd, rt->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           m->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cp);
+            transition(m->image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            map[sidx] = nsnap++;
+            c->views[k] = m->view;
+        }
+    }
+    p->width = disp->width;
+    p->height = disp->height;
+    p->logical_w = disp->logical_w;
+    p->logical_h = disp->logical_h;
+    p->flip = V.flips;
+    p->steps = g_ssx3_present_steps;
+    return p;
+}
+
+/* Hand a finished frame to the presenter (after its V.cmd was submitted)
+ * and give it a display time. The blend into it lasts as long as the game
+ * time between it and the frame before -- world steps x 1/60 s when the
+ * title's step count moved (two steps when it fell behind and updated twice),
+ * else the smoothed arrival interval -- and starts where the previous blend
+ * ends, so motion plays back evenly whatever the arrival jitter. A cushion of
+ * about twice that jitter keeps a slightly late frame from stalling a blend;
+ * the start stays within [arrival + cushion, + two steps] and drifts back
+ * towards arrival + cushion, so the shown frames trail the game by about one
+ * frame plus the cushion. */
+static void rec_publish(VkiPacket *p)
+{
+    double now = now_s(), interval, target, lo, hi;
+    uint32_t dsteps = p->steps - I.last_steps;
+
+    pthread_mutex_lock(&I.lock);
+    interval = now - I.last_arrival;
+
+    if (I.last_arrival > 0 && interval < 0.1) {
+        I.period += (interval - I.period) * 0.05;
+        if (I.period < 1.0 / 240) I.period = 1.0 / 240;
+        if (I.period > 1.0 / 15) I.period = 1.0 / 15;
+    }
+    if (I.have_steps && dsteps >= 1 && dsteps <= 6) {
+        if (interval < 0.1)
+            I.step += (interval / dsteps - I.step) * 0.02;
+        p->dur = dsteps * I.step;
+        I.stat_clock++;
+    } else {
+        p->dur = I.period;
+    }
+    I.have_steps = 1;
+    I.last_steps = p->steps;
+    target = I.last_show + I.last_dur;
+    if (I.last_arrival > 0 && interval < 0.1)
+        I.jitter += (fabs(target - now - I.cushion) - I.jitter) * 0.05;
+    I.cushion = 2.0 * I.jitter;
+    if (I.cushion < 0.002) I.cushion = 0.002;
+    if (I.cushion > 0.016) I.cushion = 0.016;
+    lo = now + I.cushion;
+    hi = lo + 2 * I.step;
+    if (I.last_arrival <= 0 || interval >= 0.1 || target < lo)
+        p->t_show = lo;
+    else {
+        /* Ahead of what the cushion needs: give a tenth of the excess back
+         * per frame, so the latency settles at the cushion and stays. */
+        p->t_show = target - 0.1 * (target - lo);
+        if (p->t_show > hi)
+            p->t_show = hi;
+    }
+    p->arrival = now;
+    I.last_arrival = now;
+    I.last_show = p->t_show;
+    I.last_dur = p->dur;
+    p->state = VKI_READY;
+    pthread_cond_signal(&I.cond);
+    pthread_mutex_unlock(&I.lock);
+}
+
+/* Texture coordinates of a draw as one hash: static geometry keeps them
+ * from frame to frame while its positions move, so equal signatures (same
+ * key and count) identify the same mesh. */
+static uint64_t draw_sig(const VkiPacket *p, const VkiCmd *c)
+{
+    uint64_t h = 0xCBF29CE484222325ull;
+    uint32_t v, bits[2];
+
+    for (v = 0; v < c->count; v++) {
+        if (c->has_ext) {
+            memcpy(bits, p->ext[c->eofs + v].tex[0], sizeof bits);
+        } else {
+            memcpy(&bits[0], &p->vtx[c->vofs + v].u, 4);
+            memcpy(&bits[1], &p->vtx[c->vofs + v].v, 4);
+        }
+        h = fnv(h, bits[0]);
+        h = fnv(h, bits[1]);
+    }
+    return h;
+}
+
+/* Mean screen distance over up to 16 sampled vertices; FLT_MAX when any
+ * sampled vertex jumps further than `limit` or crosses w = 0. */
+static float draw_dist(const Nv2aVertex *a, const Nv2aVertex *b, uint32_t n, float limit)
+{
+    uint32_t step = n > 16 ? n / 16 : 1, v, m = 0;
+    float sum = 0;
+
+    for (v = 0; v < n; v += step, m++) {
+        float dx = fabsf(a[v].x - b[v].x), dy = fabsf(a[v].y - b[v].y);
+        if (dx > limit || dy > limit || (a[v].rhw > 0) != (b[v].rhw > 0))
+            return 3.0e38f;
+        sum += dx + dy;
+    }
+    return sum / (float)m;
+}
+
+/* Where every vertex of `cur` was a frame earlier (cur->ppos). Paired draws
+ * take their partner's vertices. A transformed draw without a partner -- a
+ * terrain chunk whose near-plane clipping changed its vertex count, say --
+ * would stand still while its neighbours move and open cracks between them,
+ * so it borrows motion: a vertex at exactly the position of a paired vertex
+ * (a shared edge) takes that vertex's motion, any other the motion of the
+ * nearest paired vertex at a similar depth. Screen-space draws without a
+ * partner (HUD) stay put. */
+#define VKI_GX        32
+#define VKI_GY        24
+#define VKI_CELL      16
+#define VKI_HASH_BITS 18
+
+typedef struct { float m[4]; float x, y, w; } VkiSample;
+
+static struct { uint32_t xb, yb, gen; float m[4]; } s_vh[1u << VKI_HASH_BITS];
+static uint32_t  s_vgen;
+static VkiSample s_cell[VKI_GY][VKI_GX][VKI_CELL];
+static uint32_t  s_cell_n[VKI_GY][VKI_GX], s_cell_seen[VKI_GY][VKI_GX];
+
+static uint32_t vhash(uint32_t xb, uint32_t yb)
+{
+    return ((xb * 0x9E3779B1u) ^ (yb * 0x85EBCA77u)) >> (32 - VKI_HASH_BITS);
+}
+
+static void cell_of(const VkiPacket *p, float x, float y, int *cx, int *cy)
+{
+    int gx = (int)(x * VKI_GX / (float)p->width), gy = (int)(y * VKI_GY / (float)p->height);
+    *cx = gx < 0 ? 0 : gx >= VKI_GX ? VKI_GX - 1 : gx;
+    *cy = gy < 0 ? 0 : gy >= VKI_GY ? VKI_GY - 1 : gy;
+}
+
+static void synth_motion(const VkiPacket *prev, VkiPacket *cur)
+{
+    float scale = 1.0f / (float)(cur->width + cur->height);
+    size_t i;
+    uint32_t v;
+
+    if (!prev || !grow((void **)&cur->ppos, &cur->pcap, cur->nvtx ? cur->nvtx : 1,
+                       sizeof *cur->ppos)) {
+        for (i = 0; i < cur->ncmds; i++)
+            cur->match[i] = -1;
+        return;
+    }
+    if (++s_vgen == 0) {
+        memset(s_vh, 0, sizeof s_vh);
+        s_vgen = 1;
+    }
+    memset(s_cell_n, 0, sizeof s_cell_n);
+    memset(s_cell_seen, 0, sizeof s_cell_seen);
+
+    for (i = 0; i < cur->ncmds; i++) {
+        const VkiCmd *c = &cur->cmds[i];
+        const Nv2aVertex *a, *b;
+        if (c->type != 0 || cur->match[i] < 0)
+            continue;
+        a = prev->vtx + prev->cmds[cur->match[i]].vofs;
+        b = cur->vtx + c->vofs;
+        for (v = 0; v < c->count; v++) {
+            float *pp = cur->ppos[c->vofs + v];
+            float m[4];
+            uint32_t xb, yb, h, probe;
+            int cx, cy;
+            uint32_t *n, seen;
+
+            pp[0] = a[v].x; pp[1] = a[v].y; pp[2] = a[v].z; pp[3] = a[v].rhw;
+            if (!c->has_ext || b[v].rhw <= 0)
+                continue;
+            m[0] = a[v].x - b[v].x; m[1] = a[v].y - b[v].y;
+            m[2] = a[v].z - b[v].z; m[3] = a[v].rhw - b[v].rhw;
+            memcpy(&xb, &b[v].x, 4);
+            memcpy(&yb, &b[v].y, 4);
+            for (h = vhash(xb, yb), probe = 0; probe < 8;
+                 probe++, h = (h + 1) & ((1u << VKI_HASH_BITS) - 1)) {
+                if (s_vh[h].gen != s_vgen) {
+                    s_vh[h].gen = s_vgen;
+                    s_vh[h].xb = xb;
+                    s_vh[h].yb = yb;
+                    memcpy(s_vh[h].m, m, sizeof m);
+                    break;
+                }
+                if (s_vh[h].xb == xb && s_vh[h].yb == yb)
+                    break;
+            }
+            cell_of(cur, b[v].x, b[v].y, &cx, &cy);
+            n = &s_cell_n[cy][cx];
+            seen = ++s_cell_seen[cy][cx];
+            {
+                /* Reservoir: an even sample of the cell, not its first draws. */
+                uint32_t slot = *n < VKI_CELL ? (*n)++ : (seen * 2654435761u) % seen;
+                if (slot < VKI_CELL) {
+                    VkiSample *sm = &s_cell[cy][cx][slot];
+                    memcpy(sm->m, m, sizeof m);
+                    sm->x = b[v].x;
+                    sm->y = b[v].y;
+                    sm->w = 1.0f / b[v].rhw;
+                }
+            }
+        }
+    }
+
+    for (i = 0; i < cur->ncmds; i++) {
+        const VkiCmd *c = &cur->cmds[i];
+        const Nv2aVertex *b;
+        if (c->type != 0 || cur->match[i] >= 0 || !c->has_ext)
+            continue;
+        b = cur->vtx + c->vofs;
+        for (v = 0; v < c->count; v++) {
+            float *pp = cur->ppos[c->vofs + v];
+            const float *m = NULL;
+            uint32_t xb, yb, h, probe;
+
+            memcpy(&xb, &b[v].x, 4);
+            memcpy(&yb, &b[v].y, 4);
+            for (h = vhash(xb, yb), probe = 0; probe < 8 && s_vh[h].gen == s_vgen;
+                 probe++, h = (h + 1) & ((1u << VKI_HASH_BITS) - 1))
+                if (s_vh[h].xb == xb && s_vh[h].yb == yb) {
+                    m = s_vh[h].m;
+                    break;
+                }
+            if (!m && b[v].rhw > 0) {
+                float w = 1.0f / b[v].rhw, best = 3.0e38f;
+                int cx, cy, gx, gy;
+                uint32_t k;
+                cell_of(cur, b[v].x, b[v].y, &cx, &cy);
+                for (gy = cy - 1; gy <= cy + 1; gy++)
+                    for (gx = cx - 1; gx <= cx + 1; gx++) {
+                        if (gx < 0 || gy < 0 || gx >= VKI_GX || gy >= VKI_GY)
+                            continue;
+                        for (k = 0; k < s_cell_n[gy][gx]; k++) {
+                            const VkiSample *sm = &s_cell[gy][gx][k];
+                            float score = (fabsf(sm->x - b[v].x) + fabsf(sm->y - b[v].y)) * scale
+                                        + 2.0f * fabsf(sm->w - w) / (sm->w > w ? sm->w : w);
+                            if (score < best) {
+                                best = score;
+                                m = sm->m;
+                            }
+                        }
+                    }
+            }
+            pp[0] = b[v].x; pp[1] = b[v].y; pp[2] = b[v].z; pp[3] = b[v].rhw;
+            if (m) {
+                pp[0] += m[0]; pp[1] += m[1]; pp[2] += m[2]; pp[3] += m[3];
+            }
+        }
+        cur->match[i] = -2;
+        I.stat_synth++;
+    }
+}
+
+/* Pair each draw of `cur` with the same object in `prev`: same identity key
+ * and vertex count, preferring equal texture coordinates, then the nearest.
+ * Draws that jump (camera cut, respawn) or have no partner are shown as
+ * they are. */
+static void match_packets(const VkiPacket *prev, VkiPacket *cur)
+{
+    enum { HBITS = 12, HSIZE = 1 << HBITS };
+    static int head[HSIZE];
+    static int *chain, *used;
+    static size_t chain_cap, used_cap;
+    size_t i, k;
+    float limit, near_limit;
+
+    if (!grow((void **)&cur->match, &cur->mcap, cur->ncmds ? cur->ncmds : 1, sizeof *cur->match))
+        return;
+    for (i = 0; i < cur->ncmds; i++) {
+        cur->match[i] = -1;
+        if (cur->cmds[i].type == 0)
+            cur->cmds[i].sig = draw_sig(cur, &cur->cmds[i]);
+    }
+    if (!prev || prev->width != cur->width || prev->height != cur->height)
+        return;
+    if (!grow((void **)&chain, &chain_cap, prev->ncmds + 1, sizeof *chain)
+            || !grow((void **)&used, &used_cap, prev->ncmds + 1, sizeof *used))
+        return;
+    limit = 0.25f * (float)(cur->width > cur->height ? cur->width : cur->height);
+    near_limit = limit / 4;
+    for (k = 0; k < HSIZE; k++)
+        head[k] = -1;
+    /* Chains in reverse so each walks prev in submission order. */
+    for (k = prev->ncmds; k-- > 0;) {
+        const VkiCmd *q = &prev->cmds[k];
+        uint32_t hb;
+        used[k] = 0;
+        if (q->type != 0)
+            continue;
+        hb = (uint32_t)((q->key ^ (q->count * 0x9E3779B97F4A7C15ull)) >> (64 - HBITS));
+        chain[k] = head[hb];
+        head[hb] = (int)k;
+    }
+    for (i = 0; i < cur->ncmds; i++) {
+        const VkiCmd *c = &cur->cmds[i];
+        const Nv2aVertex *b = cur->vtx + c->vofs;
+        uint32_t hb;
+        int best = -1, best_sig = 0, any = 0, q;
+        float best_d = 3.0e38f;
+
+        if (c->type != 0)
+            continue;
+        I.stat_draws++;
+        hb = (uint32_t)((c->key ^ (c->count * 0x9E3779B97F4A7C15ull)) >> (64 - HBITS));
+        for (q = head[hb]; q >= 0; q = chain[q]) {
+            const VkiCmd *p = &prev->cmds[q];
+            int same_sig;
+            float d;
+            if (used[q] || p->key != c->key || p->count != c->count)
+                continue;
+            any = 1;
+            same_sig = p->sig == c->sig;
+            if (best_sig && !same_sig)
+                continue;
+            d = draw_dist(prev->vtx + p->vofs, b, c->count, limit);
+            if (d > (same_sig ? limit : near_limit))
+                continue;
+            if ((same_sig && !best_sig) || d < best_d) {
+                best = q;
+                best_d = d;
+                best_sig = same_sig;
+            }
+        }
+        if (best >= 0) {
+            cur->match[i] = best;
+            used[best] = 1;
+            I.stat_matched++;
+        } else if (any) {
+            I.stat_jump++;
+        } else {
+            I.stat_none++;
+        }
+    }
+    synth_motion(prev, cur);
+}
+
+static int vki_target(uint32_t w, uint32_t h)
+{
+    if (I.color.image && I.color.w == w && I.color.h == h)
+        return 1;
+    device_idle();
+    vki_image_free(&I.color);
+    vki_image_free(&I.depth);
+    if (!image_create(w, h, VK_FORMAT_B8G8R8A8_UNORM,
+                      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                      VK_IMAGE_ASPECT_COLOR_BIT, &I.color.image, &I.color.memory, &I.color.view)
+            || !image_create(w, h, V.depth_format, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                             VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+                             &I.depth.image, &I.depth.memory, &I.depth.view)) {
+        vki_image_free(&I.color);
+        vki_image_free(&I.depth);
+        return 0;
+    }
+    I.color.w = I.depth.w = w;
+    I.color.h = I.depth.h = h;
+    return 1;
+}
+
+/* Replay `cur` into the presenter's target with positions at blend t
+ * between the matched draws of `prev` (t = 1: exactly `cur`). */
+static void vki_replay(VkCommandBuffer cmd, VkbRing *ring, const VkiPacket *prev,
+                       const VkiPacket *cur, float t)
+{
+    VkRenderingAttachmentInfo ca, da;
+    VkRenderingInfo ri;
+    VkViewport vp;
+    VkRect2D sc;
+    VkDeviceSize rc_off = 0;
+    int rc_last = -1;
+    size_t i;
+
+    transition_cmd(cmd, I.color.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                   VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    transition_cmd(cmd, I.depth.image, VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+                   VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+    memset(&ca, 0, sizeof ca);
+    ca.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    ca.imageView = I.color.view;
+    ca.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    ca.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    ca.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    da = ca;
+    da.imageView = I.depth.view;
+    da.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    da.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    da.clearValue.depthStencil.depth = 1.0f;
+    memset(&ri, 0, sizeof ri);
+    ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    ri.renderArea.extent.width = cur->width;
+    ri.renderArea.extent.height = cur->height;
+    ri.layerCount = 1;
+    ri.colorAttachmentCount = 1;
+    ri.pColorAttachments = &ca;
+    ri.pDepthAttachment = &da;
+    ri.pStencilAttachment = &da;
+    vkCmdBeginRendering(cmd, &ri);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, V.pipeline);
+    vp.x = 0; vp.y = 0;
+    vp.width = (float)cur->width; vp.height = (float)cur->height;
+    vp.minDepth = 0.0f; vp.maxDepth = 1.0f;
+    vkCmdSetViewport(cmd, 0, 1, &vp);
+    sc.offset.x = 0; sc.offset.y = 0;
+    sc.extent.width = cur->width; sc.extent.height = cur->height;
+    vkCmdSetScissor(cmd, 0, 1, &sc);
+
+    for (i = 0; i < cur->ncmds; i++) {
+        const VkiCmd *c = &cur->cmds[i];
+        VkDescriptorImageInfo dii[4];
+        VkDescriptorBufferInfo dbi;
+        VkWriteDescriptorSet w[VKB_BIND_RC + 1];
+        VkDeviceSize voff[2], vstride[2];
+        VkBuffer vbufs[2];
+        Nv2aVertex *dst;
+        void *edst;
+        int k;
+
+        if (c->type == 1) {
+            VkClearAttachment at[2];
+            VkClearRect rect;
+            uint32_t n = 0;
+            memset(at, 0, sizeof at);
+            if (c->flags & 0xF0) {
+                at[n].aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                at[n].clearValue.color.float32[0] = (float)((c->argb >> 16) & 0xFF) / 255.0f;
+                at[n].clearValue.color.float32[1] = (float)((c->argb >>  8) & 0xFF) / 255.0f;
+                at[n].clearValue.color.float32[2] = (float)( c->argb        & 0xFF) / 255.0f;
+                at[n].clearValue.color.float32[3] = (float)((c->argb >> 24) & 0xFF) / 255.0f;
+                n++;
+            }
+            if (c->flags & 0x3) {
+                at[n].aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+                at[n].clearValue.depthStencil.depth =
+                    (float)((double)(c->zstencil >> 8) / 16777215.0);
+                at[n].clearValue.depthStencil.stencil = c->zstencil & 0xFF;
+                n++;
+            }
+            if (n) {
+                memset(&rect, 0, sizeof rect);
+                rect.rect = sc;
+                rect.layerCount = 1;
+                vkCmdClearAttachments(cmd, n, at, 1, &rect);
+            }
+            continue;
+        }
+
+        dst = (Nv2aVertex *)ring_alloc(ring, (VkDeviceSize)c->count * sizeof(Nv2aVertex),
+                                       16, &voff[0]);
+        edst = ring_alloc(ring, c->has_ext ? (VkDeviceSize)c->count * sizeof(Nv2aVertexExt)
+                                           : sizeof(Nv2aVertexExt), 16, &voff[1]);
+        if (c->rc >= 0 && c->rc != rc_last) {
+            void *u = ring_alloc(ring, sizeof(VkbCombiners), V.ubo_align, &rc_off);
+            if (u) {
+                memcpy(u, &cur->rc[c->rc], sizeof(VkbCombiners));
+                rc_last = c->rc;
+            } else {
+                dst = NULL;
+            }
+        }
+        if (!dst || !edst) {
+            static int warned;
+            if (!warned++)
+                fprintf(stderr, "  [VKI] presenter vertex ring full\n");
+            break;
+        }
+        if (prev && t < 1.0f && cur->match && cur->match[i] != -1) {
+            const float (*a)[4] = (const float (*)[4])cur->ppos + c->vofs;
+            const Nv2aVertex *b = cur->vtx + c->vofs;
+            uint32_t v;
+            for (v = 0; v < c->count; v++) {
+                dst[v] = b[v];
+                dst[v].x = a[v][0] + (b[v].x - a[v][0]) * t;
+                dst[v].y = a[v][1] + (b[v].y - a[v][1]) * t;
+                dst[v].z = a[v][2] + (b[v].z - a[v][2]) * t;
+                dst[v].rhw = a[v][3] + (b[v].rhw - a[v][3]) * t;
+            }
+        } else {
+            memcpy(dst, cur->vtx + c->vofs, c->count * sizeof(Nv2aVertex));
+        }
+        if (c->has_ext)
+            memcpy(edst, cur->ext + c->eofs, c->count * sizeof(Nv2aVertexExt));
+        else
+            memset(edst, 0, sizeof(Nv2aVertexExt));
+
+        memset(w, 0, sizeof w);
+        for (k = 0; k < 4; k++) {
+            dii[k].sampler = c->samplers[k];
+            dii[k].imageView = c->views[k];
+            dii[k].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            w[k].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w[k].dstBinding = (uint32_t)k;
+            w[k].descriptorCount = 1;
+            w[k].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            w[k].pImageInfo = &dii[k];
+        }
+        dbi.buffer = ring->buffer;
+        dbi.offset = c->rc >= 0 ? rc_off : 0;
+        dbi.range = sizeof(VkbCombiners);
+        w[VKB_BIND_RC].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w[VKB_BIND_RC].dstBinding = VKB_BIND_RC;
+        w[VKB_BIND_RC].descriptorCount = 1;
+        w[VKB_BIND_RC].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        w[VKB_BIND_RC].pBufferInfo = &dbi;
+        vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, V.pipe_layout,
+                                  0, VKB_BIND_RC + 1, w);
+        apply_state(cmd, &c->rs);
+        vkCmdPushConstants(cmd, V.pipe_layout,
+                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0, sizeof c->pc, &c->pc);
+        vbufs[0] = vbufs[1] = ring->buffer;
+        vstride[0] = sizeof(Nv2aVertex);
+        vstride[1] = c->has_ext ? sizeof(Nv2aVertexExt) : 0;
+        vkCmdBindVertexBuffers2(cmd, 0, 2, vbufs, voff, NULL, vstride);
+        vkCmdDraw(cmd, c->count, 1, 0, 0);
+    }
+    vkCmdEndRendering(cmd);
+}
+
+/* Render and present one frame at blend t. 0: nothing presented. */
+static int vki_present(float t)
+{
+    int slot = (int)(I.submitted % VKI_INFLIGHT);
+    VkCommandBuffer cmd = I.cmd[slot];
+    VkCommandBufferBeginInfo bi;
+    VkMemoryBarrier mb;
+    VkImageSubresourceRange range;
+    VkClearColorValue black;
+    VkImageBlit blit;
+    VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    VkSubmitInfo si;
+    VkPresentInfoKHR pi;
+    VkImage img;
+    VkResult r;
+    uint32_t idx;
+    double sw, sh, aspect, fw, fh;
+
+    vkWaitForFences(V.device, 1, &I.fence[slot], VK_TRUE, UINT64_MAX);
+    pthread_mutex_lock(&I.lock);
+    if (I.slot_serial[slot] > I.completed)
+        I.completed = I.slot_serial[slot];
+    pthread_mutex_unlock(&I.lock);
+
+    if (V.swap_dirty || !V.swapchain) {
+        destroy_swapchain();
+        if (!create_swapchain())
+            return 0;
+    }
+    if (!vki_target(I.cur->width, I.cur->height))
+        return 0;
+    r = vkAcquireNextImageKHR(V.device, V.swapchain, 100000000ull, I.acquire[slot],
+                              VK_NULL_HANDLE, &idx);
+    if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) {
+        if (r == VK_ERROR_OUT_OF_DATE_KHR)
+            V.swap_dirty = 1;
+        return 0;
+    }
+    vkResetFences(V.device, 1, &I.fence[slot]);
+    vkResetCommandBuffer(cmd, 0);
+    memset(&bi, 0, sizeof bi);
+    bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd, &bi);
+    /* Everything the NV2A thread submitted before (snapshots, texture
+     * uploads) is visible to this replay. */
+    memset(&mb, 0, sizeof mb);
+    mb.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    mb.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+    mb.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                         VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
+    I.ring[slot].used = 0;
+    vki_replay(cmd, &I.ring[slot], I.prev, I.cur, t);
+
+    img = V.swap_images[idx];
+    memset(&range, 0, sizeof range);
+    range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    range.levelCount = 1;
+    range.layerCount = 1;
+    memset(&black, 0, sizeof black);
+    transition_cmd(cmd, I.color.image, VK_IMAGE_ASPECT_COLOR_BIT,
+                   VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    transition_cmd(cmd, img, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    vkCmdClearColorImage(cmd, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &range);
+    memset(&blit, 0, sizeof blit);
+    blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    blit.srcSubresource.layerCount = 1;
+    blit.srcOffsets[1].x = (int32_t)I.cur->width;
+    blit.srcOffsets[1].y = (int32_t)I.cur->height;
+    blit.srcOffsets[1].z = 1;
+    blit.dstSubresource = blit.srcSubresource;
+    sw = (double)V.swap_extent.width;
+    sh = (double)V.swap_extent.height;
+    aspect = (double)I.cur->logical_w / (double)I.cur->logical_h;
+    fw = sw; fh = sw / aspect;
+    if (fh > sh) { fh = sh; fw = sh * aspect; }
+    blit.dstOffsets[0].x = (int32_t)((sw - fw) / 2);
+    blit.dstOffsets[0].y = (int32_t)((sh - fh) / 2);
+    blit.dstOffsets[1].x = blit.dstOffsets[0].x + (int32_t)fw;
+    blit.dstOffsets[1].y = blit.dstOffsets[0].y + (int32_t)fh;
+    blit.dstOffsets[1].z = 1;
+    vkCmdBlitImage(cmd, I.color.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+    transition_cmd(cmd, img, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                   VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+    vkEndCommandBuffer(cmd);
+
+    memset(&si, 0, sizeof si);
+    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.waitSemaphoreCount = 1;
+    si.pWaitSemaphores = &I.acquire[slot];
+    si.pWaitDstStageMask = &wait_stage;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &cmd;
+    si.signalSemaphoreCount = 1;
+    si.pSignalSemaphores = &V.sem_render_done[idx];
+    memset(&pi, 0, sizeof pi);
+    pi.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+    pi.waitSemaphoreCount = 1;
+    pi.pWaitSemaphores = &V.sem_render_done[idx];
+    pi.swapchainCount = 1;
+    pi.pSwapchains = &V.swapchain;
+    pi.pImageIndices = &idx;
+    pthread_mutex_lock(&s_qlock);
+    r = vkQueueSubmit(V.queue, 1, &si, I.fence[slot]);
+    if (r == VK_SUCCESS)
+        r = vkQueuePresentKHR(V.queue, &pi);
+    pthread_mutex_unlock(&s_qlock);
+    if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR)
+        V.swap_dirty = 1;
+    pthread_mutex_lock(&I.lock);
+    I.slot_serial[slot] = ++I.submitted;
+    pthread_mutex_unlock(&I.lock);
+    I.presents++;
+    return 1;
+}
+
+/* SSX3_VKI_DUMP=<prefix>: write the presenter's image (the blended frame,
+ * before scaling to the window) as <prefix><flip>_<t*100>.bmp, for frames
+ * whose flip number is a multiple of SSX3_VK_DUMP_EVERY. Waits for the GPU. */
+static void vki_dump(int slot, uint32_t flip, float t)
+{
+    VkCommandBuffer cmd = I.cmd[slot];
+    VkCommandBufferBeginInfo bi;
+    VkBufferImageCopy region;
+    VkSubmitInfo si;
+    VkbRing buf;
+    uint32_t w = I.color.w, h = I.color.h, x, y, row_bytes, pad, filesz;
+    uint8_t hdr[54];
+    char path[512];
+    FILE *f;
+
+    memset(&buf, 0, sizeof buf);
+    if (!ring_create(&buf, (VkDeviceSize)w * h * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT))
+        return;
+    vkWaitForFences(V.device, 1, &I.fence[slot], VK_TRUE, UINT64_MAX);
+    vkResetFences(V.device, 1, &I.fence[slot]);
+    vkResetCommandBuffer(cmd, 0);
+    memset(&bi, 0, sizeof bi);
+    bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    vkBeginCommandBuffer(cmd, &bi);
+    memset(&region, 0, sizeof region);
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.layerCount = 1;
+    region.imageExtent.width = w;
+    region.imageExtent.height = h;
+    region.imageExtent.depth = 1;
+    vkCmdCopyImageToBuffer(cmd, I.color.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           buf.buffer, 1, &region);
+    vkEndCommandBuffer(cmd);
+    memset(&si, 0, sizeof si);
+    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &cmd;
+    queue_submit(&si, I.fence[slot]);
+    vkWaitForFences(V.device, 1, &I.fence[slot], VK_TRUE, UINT64_MAX);
+
+    snprintf(path, sizeof path, "%s%06u_%03d.bmp", getenv("SSX3_VKI_DUMP"), flip,
+             (int)(t * 100.0f + 0.5f));
+    if ((f = fopen(path, "wb"))) {
+        row_bytes = w * 3;
+        pad = (4 - (row_bytes & 3)) & 3;
+        filesz = 54 + (row_bytes + pad) * h;
+        memset(hdr, 0, sizeof hdr);
+        hdr[0] = 'B'; hdr[1] = 'M';
+        memcpy(hdr + 2, &filesz, 4);
+        hdr[10] = 54; hdr[14] = 40;
+        memcpy(hdr + 18, &w, 4);
+        memcpy(hdr + 22, &h, 4);
+        hdr[26] = 1; hdr[28] = 24;
+        fwrite(hdr, 1, sizeof hdr, f);
+        for (y = h; y-- > 0;) {
+            const uint8_t *row = buf.mapped + (size_t)y * w * 4;
+            for (x = 0; x < w; x++)
+                fwrite(row + x * 4, 1, 3, f);
+            fwrite("\0\0\0", 1, pad, f);
+        }
+        fclose(f);
+    }
+    vkUnmapMemory(V.device, buf.memory);
+    vkDestroyBuffer(V.device, buf.buffer, NULL);
+    vkFreeMemory(V.device, buf.memory, NULL);
+}
+
+/* Every submission retired: all released packets are free again. */
+static void vki_drain(void)
+{
+    vkWaitForFences(V.device, VKI_INFLIGHT, I.fence, VK_TRUE, UINT64_MAX);
+    pthread_mutex_lock(&I.lock);
+    I.completed = I.submitted;
+    pthread_mutex_unlock(&I.lock);
+}
+
+static void timed_wait(double until)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    {
+        double d = until - now_s();
+        long ns;
+        if (d <= 0)
+            return;
+        if (d > 0.1)
+            d = 0.1;
+        ns = ts.tv_nsec + (long)(d * 1e9);
+        ts.tv_sec += ns / 1000000000L;
+        ts.tv_nsec = ns % 1000000000L;
+    }
+    pthread_cond_timedwait(&I.cond, &I.lock, &ts);
+}
+
+static void *presenter_main(void *unused)
+{
+    int dump_on = getenv("SSX3_VKI_DUMP") != NULL;
+
+    (void)unused;
+    pthread_mutex_lock(&I.lock);
+    for (;;) {
+        VkiPacket *next = NULL;
+        int i, nready = 0, adopted = 0;
+        double now = now_s(), t;
+
+        /* The oldest frame not yet shown; take it once its time has come,
+         * at once when frames pile up. */
+        for (i = 0; i < VKI_PACKETS; i++)
+            if (I.pk[i].state == VKI_READY) {
+                nready++;
+                if (!next || I.pk[i].flip < next->flip)
+                    next = &I.pk[i];
+            }
+        if (next && (!I.cur || now >= next->t_show || nready > 2)) {
+            I.holding = 0;
+            if (I.prev) {
+                I.prev->state = VKI_FREE;
+                I.prev->release_serial = I.submitted;
+            }
+            I.prev = I.cur;
+            I.cur = next;
+            next->state = VKI_HELD;
+            if (nready > 2)
+                next->t_show = now;
+            I.shown_final = 0;
+            adopted = 1;
+        }
+        if (!I.cur) {
+            pthread_cond_wait(&I.cond, &I.lock);
+            continue;
+        }
+        if (adopted) {
+            pthread_mutex_unlock(&I.lock);
+            match_packets(I.prev, I.cur);
+            I.stat_frames++;
+            pthread_mutex_lock(&I.lock);
+        }
+        t = I.prev ? (now - I.cur->t_show) / I.cur->dur : 1.0;
+        if (t >= 1.0) {
+            t = 1.0;
+            if (I.shown_final) {
+                /* Nothing new to show until the next frame's time. A hold
+                 * (visible stutter) when that frame has not even arrived. */
+                if (!next && !I.holding && I.prev) {
+                    I.holding = 1;
+                    I.stat_hold++;
+                }
+                pthread_mutex_unlock(&I.lock);
+                vki_drain();
+                pthread_mutex_lock(&I.lock);
+                timed_wait(next ? next->t_show : now + 0.1);
+                continue;
+            }
+        }
+        if (t < 0)
+            t = 0;
+        pthread_mutex_unlock(&I.lock);
+
+        {
+            /* Explicit cap, else the display's refresh (FIFO paces itself). */
+            double hz = I.limit_env >= 0 ? I.limit_env : (double)V.display_hz;
+            double d, dt = hz > 0 ? 1.0 / hz : 0;
+            if (dt <= 0)
+                goto no_cap;
+            d = I.next_deadline - now_s();
+            if (d > 0) {
+                struct timespec ts;
+                ts.tv_sec = (time_t)d;
+                ts.tv_nsec = (long)((d - (double)ts.tv_sec) * 1e9);
+                nanosleep(&ts, NULL);
+            }
+            I.next_deadline += dt;
+            if (I.next_deadline < now_s())
+                I.next_deadline = now_s();
+        }
+no_cap:
+        if (adopted && I.prev && dump_on && V.dump_every
+                && I.cur->flip % V.dump_every == 0) {
+            /* The same frame at blends 0, 1/2 and 1, one after the other. */
+            static const float ts[3] = { 0.0f, 0.5f, 1.0f };
+            for (i = 0; i < 3; i++)
+                if (vki_present(ts[i]))
+                    vki_dump((int)((I.submitted - 1) % VKI_INFLIGHT), I.cur->flip, ts[i]);
+        }
+        if (vki_present((float)t)) {
+            if (t >= 1.0)
+                I.shown_final = 1;
+        } else {
+            struct timespec ts = { 0, 20000000 };
+            nanosleep(&ts, NULL);
+        }
+        pthread_mutex_lock(&I.lock);
+    }
+    return NULL;
+}
+
+/* On the NV2A thread right after Vulkan came up. Interpolation needs the
+ * window thread (ssx3_vk_host_main): the presenter owns the swapchain. */
+static void interp_start(void)
+{
+    const char *e = getenv("SSX3_INTERP");
+    VkCommandPoolCreateInfo pci;
+    VkCommandBufferAllocateInfo ai;
+    VkFenceCreateInfo fci;
+    VkSemaphoreCreateInfo sci;
+    pthread_t th;
+    int i;
+
+    if ((e && *e == '0') || !V.host_main)
+        return;
+    pthread_mutex_init(&I.lock, NULL);
+    pthread_cond_init(&I.cond, NULL);
+    I.period = I.step = 1.0 / 60;
+    memset(&pci, 0, sizeof pci);
+    pci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    pci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    pci.queueFamilyIndex = V.queue_family;
+    memset(&ai, 0, sizeof ai);
+    ai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    ai.commandBufferCount = VKI_INFLIGHT;
+    memset(&fci, 0, sizeof fci);
+    fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    fci.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+    memset(&sci, 0, sizeof sci);
+    sci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    if (vkCreateCommandPool(V.device, &pci, NULL, &I.pool) != VK_SUCCESS)
+        goto fail;
+    ai.commandPool = I.pool;
+    if (vkAllocateCommandBuffers(V.device, &ai, I.cmd) != VK_SUCCESS)
+        goto fail;
+    for (i = 0; i < VKI_INFLIGHT; i++)
+        if (vkCreateFence(V.device, &fci, NULL, &I.fence[i]) != VK_SUCCESS
+                || vkCreateSemaphore(V.device, &sci, NULL, &I.acquire[i]) != VK_SUCCESS
+                || !ring_create(&I.ring[i], VKI_RING,
+                                VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
+                                | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT))
+            goto fail;
+    e = getenv("SSX3_FPS_LIMIT");
+    I.limit_env = e ? atof(e) : -1.0;
+    I.next_deadline = now_s();
+    I.on = 1;
+    if (pthread_create(&th, NULL, presenter_main, NULL) != 0) {
+        I.on = 0;
+        goto fail;
+    }
+    pthread_detach(th);
+    if (I.limit_env > 0)
+        fprintf(stderr, "  [VKI] frame interpolation on, frame cap %.0f fps\n", I.limit_env);
+    else if (I.limit_env == 0)
+        fprintf(stderr, "  [VKI] frame interpolation on, uncapped\n");
+    else
+        fprintf(stderr, "  [VKI] frame interpolation on, frame cap = display refresh\n");
+    return;
+fail:
+    fprintf(stderr, "  [VKI] frame interpolation unavailable, presenting game frames\n");
+}
+
+/* vkb_flip with interpolation on: submit the frame without presenting and
+ * hand its recording to the presenter. */
+static void flip_interp(void)
+{
+    VkiPacket *p;
+    VkSubmitInfo si;
+
+    if (!ensure_recording())
+        return;
+    end_rendering();
+    p = rec_finish(V.last);
+    vkEndCommandBuffer(V.cmd);
+    V.recording = 0;
+    memset(&si, 0, sizeof si);
+    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &V.cmd;
+    if (queue_submit(&si, V.frame_fence) != VK_SUCCESS) {
+        fprintf(stderr, "  [VK] submit failed\n");
+        if (p)
+            rec_release(p);
+        return;
+    }
+    if (p)
+        rec_publish(p);
+    if (V.dump_prefix && V.last && V.flips % V.dump_every == 0)
+        dump_surface(V.last);
+}
 
 static void vkb_clear(const Nv2aSurface *g, const Nv2aRenderState *rs,
                       uint32_t flags, uint32_t argb, uint32_t zstencil)
@@ -1541,6 +2892,8 @@ static void vkb_clear(const Nv2aSurface *g, const Nv2aRenderState *rs,
     if (!(s = surface_get(g)))
         return;
     V.last = s;
+    if (I.on)
+        rec_clear(s, flags, argb, zstencil);
     end_rendering();
     memset(&range, 0, sizeof range);
     range.levelCount = 1;
@@ -1581,12 +2934,11 @@ static void unpack_argb(uint32_t c, float o[4])
 
 /* The batch's combiner state in this frame's ring, as nv2a.frag reads it.
  * Consecutive batches mostly share it, so an unchanged block is reused. */
-static int combiners_upload(const Nv2aBatchExt *e, VkDeviceSize *off)
+static void combiners_build(const Nv2aBatchExt *e, VkbCombiners *out)
 {
     const Nv2aCombiner *rc = e->rc;
     uint32_t flags = rc->control >> 8;
     VkbCombiners u;
-    void *dst;
     int i;
 
     memset(&u, 0, sizeof u);
@@ -1613,6 +2965,13 @@ static int combiners_upload(const Nv2aBatchExt *e, VkDeviceSize *off)
         u.tex_scale[i][1] = (t && t->pitch && t->height) ? 1.0f / (float)t->height : 1.0f;
     }
     u.misc[0] = e->clip_plane_mode;
+    *out = u;
+}
+
+static int combiners_upload(const VkbCombiners *pu, VkDeviceSize *off)
+{
+    VkbCombiners u = *pu;
+    void *dst;
 
     if (V.last_rc_off != ~(VkDeviceSize)0 && !memcmp(&u, &V.last_rc, sizeof u)) {
         *off = V.last_rc_off;
@@ -1642,6 +3001,8 @@ static void vkb_draw(const Nv2aSurface *g, const Nv2aBatch *b)
     VkbPush pc;
     VkDeviceSize voff[2], vstride[2], rc_off = 0;
     VkDeviceSize bytes = (VkDeviceSize)b->count * sizeof(Nv2aVertex);
+    VkbCombiners rcu;
+    int surf[4] = { -1, -1, -1, -1 };
     VkDeviceSize ebytes;
     VkBuffer vbufs[2];
     void *dst, *edst;
@@ -1672,12 +3033,16 @@ static void vkb_draw(const Nv2aSurface *g, const Nv2aBatch *b)
     else
         stex[0] = b->texture;
     for (i = 0; i < 4; i++)
-        if (stex[i])
+        if (stex[i]) {
             views[i] = texture_view(stex[i]);
+            surf[i] = view_surface(views[i]);
+        }
+    if (use_rc)
+        combiners_build(e, &rcu);
 
     if (!(dst = ring_alloc(&V.vring, bytes, 16, &voff[0]))
             || !(edst = ring_alloc(&V.vring, ebytes, 16, &voff[1]))
-            || (use_rc && !combiners_upload(e, &rc_off))) {
+            || (use_rc && !combiners_upload(&rcu, &rc_off))) {
         static int warned;
         if (!warned++)
             fprintf(stderr, "  [VK] vertex ring full this frame\n");
@@ -1690,7 +3055,7 @@ static void vkb_draw(const Nv2aSurface *g, const Nv2aBatch *b)
         memset(edst, 0, (size_t)ebytes);
 
     begin_rendering(s, d);
-    apply_state(rs);
+    apply_state(V.cmd, rs);
 
     memset(w, 0, sizeof w);
     for (i = 0; i < 4; i++) {
@@ -1736,6 +3101,13 @@ static void vkb_draw(const Nv2aSurface *g, const Nv2aBatch *b)
     vstride[1] = e ? sizeof(Nv2aVertexExt) : 0;
     vkCmdBindVertexBuffers2(V.cmd, 0, 2, vbufs, voff, NULL, vstride);
     vkCmdDraw(V.cmd, b->count, 1, 0, 0);
+
+    if (I.on) {
+        VkSampler smp[4];
+        for (i = 0; i < 4; i++)
+            smp[i] = dii[i].sampler;
+        rec_draw(s, b, e, use_rc ? &rcu : NULL, stex, views, smp, surf, &pc, rs);
+    }
 }
 
 static void pump_events(void)
@@ -1780,13 +3152,21 @@ static void update_title(void)
     if (!V.title_ms) {
         V.title_ms = now;
         V.title_flips = V.flips;
+        V.title_presents = I.presents;
         return;
     }
     if (now - V.title_ms < 1000)
         return;
-    snprintf(tb, sizeof tb, "SSX 3 (Recomp, Vulkan) | FPS: %.1f | draws: %u",
-             (double)(V.flips - V.title_flips) * 1000.0 / (double)(now - V.title_ms),
-             V.last_frame_draws);
+    if (I.on)
+        /* Shown frames (interpolated) and the game's own frames. */
+        snprintf(tb, sizeof tb, "SSX 3 (Recomp, Vulkan) | FPS: %.1f (game %.1f) | draws: %u",
+                 (double)(I.presents - V.title_presents) * 1000.0 / (double)(now - V.title_ms),
+                 (double)(V.flips - V.title_flips) * 1000.0 / (double)(now - V.title_ms),
+                 V.last_frame_draws);
+    else
+        snprintf(tb, sizeof tb, "SSX 3 (Recomp, Vulkan) | FPS: %.1f | draws: %u",
+                 (double)(V.flips - V.title_flips) * 1000.0 / (double)(now - V.title_ms),
+                 V.last_frame_draws);
     SDL_SetWindowTitle(V.window, tb);
     {
         /* The same figure in the log every 5 s, for runs nobody watches. */
@@ -1795,6 +3175,20 @@ static void update_title(void)
             fprintf(stderr, "  [VK] %s | decodes/5s: %u (%u new, %.1f Mtexels)\n",
                     tb + sizeof "SSX 3 (Recomp, Vulkan) | " - 1, V.stat_decodes,
                     V.stat_new, (double)V.stat_decode_px / 1e6);
+            if (I.on && I.stat_frames) {
+                /* Racy reads of the presenter's counters: a log line only. */
+                fprintf(stderr, "  [VKI] holds/5s: %u, unrecorded frames: %u, on game clock: %u,"
+                        " cushion %.1f ms, step %.2f ms\n", I.stat_hold, I.stat_drop,
+                        I.stat_clock, I.cushion * 1e3, I.step * 1e3);
+                I.stat_hold = I.stat_drop = I.stat_clock = 0;
+                fprintf(stderr, "  [VKI] blended draws/5s: %u of %u (%.0f%%), %u frames;"
+                        " unpaired: %u moved too far, %u no partner, %u of them given borrowed motion\n",
+                        I.stat_matched, I.stat_draws,
+                        I.stat_draws ? 100.0 * I.stat_matched / I.stat_draws : 0.0,
+                        I.stat_frames, I.stat_jump, I.stat_none, I.stat_synth);
+                I.stat_matched = I.stat_draws = I.stat_frames = 0;
+                I.stat_jump = I.stat_none = I.stat_synth = 0;
+            }
             V.stat_decodes = V.stat_new = 0;
             V.stat_decode_px = 0;
             logged = now;
@@ -1802,6 +3196,7 @@ static void update_title(void)
     }
     V.title_ms = now;
     V.title_flips = V.flips;
+    V.title_presents = I.presents;
 }
 
 static void vkb_flip(void)
@@ -1833,6 +3228,10 @@ static void vkb_flip(void)
     }
     V.last_frame_draws = V.frame_draws;
     V.frame_draws = 0;
+    if (I.on) {
+        flip_interp();
+        return;
+    }
     if (V.swap_dirty) {
         destroy_swapchain();
         if (!create_swapchain())
@@ -1857,7 +3256,7 @@ static void vkb_flip(void)
         none.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         none.commandBufferCount = 1;
         none.pCommandBuffers = &V.cmd;
-        vkQueueSubmit(V.queue, 1, &none, V.frame_fence);
+        queue_submit(&none, V.frame_fence);
         return;
     }
     img = V.swap_images[idx];
@@ -1902,7 +3301,7 @@ static void vkb_flip(void)
     si.pCommandBuffers = &V.cmd;
     si.signalSemaphoreCount = 1;
     si.pSignalSemaphores = &V.sem_render_done[idx];
-    if (vkQueueSubmit(V.queue, 1, &si, V.frame_fence) != VK_SUCCESS) {
+    if (queue_submit(&si, V.frame_fence) != VK_SUCCESS) {
         fprintf(stderr, "  [VK] submit failed\n");
         return;
     }
@@ -1913,7 +3312,9 @@ static void vkb_flip(void)
     pi.swapchainCount = 1;
     pi.pSwapchains = &V.swapchain;
     pi.pImageIndices = &idx;
+    pthread_mutex_lock(&s_qlock);
     r = vkQueuePresentKHR(V.queue, &pi);
+    pthread_mutex_unlock(&s_qlock);
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR)
         V.swap_dirty = 1;
 
@@ -1926,6 +3327,24 @@ static const Nv2aBackend s_vk_backend = { vkb_clear, vkb_draw, vkb_flip };
 /* ---- the window on the process main thread ------------------------------ */
 
 extern void xbox_InputSetMainPump(int on);    /* src/input/xinput_device.c */
+
+/* The highest refresh rate of the connected displays: the presenter's
+ * default frame cap (more frames than a display shows only take GPU time
+ * from the game). The fastest display, not the window's: under Wayland SDL
+ * cannot tell which display a window is on. */
+static void read_display_hz(void)
+{
+    SDL_DisplayMode m;
+    int d, n = SDL_GetNumVideoDisplays(), hz = 0;
+
+    for (d = 0; d < n; d++)
+        if (SDL_GetCurrentDisplayMode(d, &m) == 0 && m.refresh_rate > hz)
+            hz = m.refresh_rate;
+    if (hz > 0 && hz != V.display_hz) {
+        V.display_hz = hz;
+        fprintf(stderr, "  [VK] fastest display refresh %d Hz\n", hz);
+    }
+}
 
 static int (*s_guest_main)(void);
 static int s_guest_rc;
@@ -1989,6 +3408,7 @@ int ssx3_vk_host_main(int (*guest_main)(void))
     }
     xbox_InputSetMainPump(1);
     xbox_InputSdlInit();
+    read_display_hz();
     V.host_main = 1;
     s_guest_main = guest_main;
     if (!start_guest_thread()) {
@@ -2016,6 +3436,8 @@ int ssx3_vk_host_main(int (*guest_main)(void))
                         && (ev.window.event == SDL_WINDOWEVENT_SIZE_CHANGED
                             || ev.window.event == SDL_WINDOWEVENT_RESIZED))
                     V.swap_dirty = 1;
+                if (ev.type == SDL_DISPLAYEVENT)
+                    read_display_hz();
                 xbox_InputSdlEvent(&ev);
             } while (SDL_PollEvent(&ev));
         }

@@ -10,6 +10,9 @@
 #   SSX3_RENDERER=cpu       the executor's software rasteriser + framebuffer window, kept as the reference
 #   RECOMP_FB_WINDOW=1      framebuffer window (SDL2) – set automatically for SSX3_RENDERER=cpu
 #   SSX3_VK_DUMP=<prefix> / RECOMP_FB_DUMP=<prefix>   BMP frame dumps (Vulkan / CPU) for comparisons
+#   SSX3_INTERP=0           no frame interpolation (Vulkan): show only the game's own 60 fps frames
+#   SSX3_FPS_LIMIT=<n>      interpolated frame cap (default: fastest display's refresh, 0 = uncapped)
+#   SSX3_VSYNC=1            vsync (FIFO) instead of mailbox presentation
 #   RECOMP_PB_SCAN=1 / RECOMP_PB_EXEC=1   analyse / execute the NV2A pushbuffer
 #   SSX3_PAD_TRACE=1        log every controller button change (pads: README "Controllers")
 #   RECOMP_USB_PADS=2       more emulated pads on the USB bus (split screen), default 1

@@ -55,8 +55,12 @@ Order follows `CLAUDE.md` / `xboxrecomp/docs/GETTING_STARTED.md`. Details and fi
 - [ ] Crash right after the intro/attract video opens (`sub_00177F80`, VA 0xE0220705), intermittent.
       `reference/SSX3-recomp-koen/CLAUDE.md`: `sub_00177F80` = EA STRM "next chunk"; their ring corruption came from
       critical sections being preemption points (fix: `RECOMP_CS_KEEP_CPU`) and unfair guest-CPU handover (`RECOMP_FAIR_YIELD`)
+- [x] **Above 60 fps:** frame interpolation in the Vulkan back end (presenter thread, game-clock timing):
+      120 fps steady with `SSX3_FPS_LIMIT=120`, ~270 at a 270 Hz display (`docs/frame-interpolation.md`)
+- [ ] Interpolation follow-ups: blend animated UVs/colours, cut detection, Win32 path, latency option
+      (`SSX3_INTERP=0` today), verify on the Steam Deck (90 Hz OLED / 60 Hz LCD)
 - [ ] VBlank rate: the runtime ticks ~50 Hz by accident; derive it from the display mode (PAL 50 / PAL-60 / NTSC),
-      check which mode SSX 3 (PAL) sets; prerequisite for the unlocked/high-fps work
+      check which mode SSX 3 (PAL) sets (the game's frame pacing uses its own 60 Hz XAPI timer, not vblank)
 - [ ] Vulkan M3 leftovers: cube maps (face 0 only), bump-env/dot-product stage modes, palettised textures
 - [ ] Vulkan M4: verify render-to-texture, AA/resolution, per-triangle culling, frames in flight, Windows (Win32 surface)
 - [ ] Fence: replace the mirror with `nv2a_pb_set_semaphore_target` once desyncs/graphics glitches show up

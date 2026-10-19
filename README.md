@@ -35,7 +35,8 @@ Our base is the PAL/EU build (title ID 0x4541003C, 2003-09-19; English, French, 
 | Controllers: XInput/SDL pads with hotplug, keyboard as player 1 | ✅ |
 | Full game run-through (all peaks, Freestyle, Conquer the Mountain, saving) | ⬜ not verified yet |
 | Split screen (2 pads) | ⬜ untested |
-| Steady 60 fps everywhere (pre-race screen ~40 fps), later >60 fps | ⬜ in progress |
+| Frame interpolation above 60 fps: menus and races shown at the display's refresh (tested 120 and 270 Hz) while the game simulates at 60 | ✅ (Vulkan, default; `SSX3_INTERP=0` off) |
+| Steady 60 game fps everywhere (pre-race screen ~40 fps) | ⬜ in progress |
 | Higher resolution, AA, widescreen, HD textures | ⬜ planned |
 | Steam Deck test, Windows native build, macOS | ⬜ planned |
 

@@ -275,3 +275,16 @@ _(date – what was done, what was found, next step)_
   - `scripts/test_pad.sh` checks rumble on the virtual pad. Quirk: under sdl2-compat (2.32.50+) the virtual pad's
     rumble callback must return non-zero for success (SDL3 bool), real SDL2 wants 0 – the test picks by version.
   - Not verified: the feel on a real pad (8BitDo was switched off during the test).
+- 2026-10-19 – **Frame interpolation above 60 fps** (branch `feature/unlocked-framerate`, design and numbers in
+  `docs/frame-interpolation.md`). The simulation is a fixed 60 Hz step: timer object vtable 0x002F5300,
+  `sub_001AE480` = Init(hz) (period 1000/hz), app runner `sub_001ADAC0` sets app+0x14 = 60, app+0x18 = 1/60;
+  `sub_001AD880` increments app+0x20 per state update; 1/60 (0x3C888889) hard-coded in ~50 code sites → no faster tick.
+  Instead the Vulkan back end records each frame, and a presenter thread re-renders it with positions blended from the
+  previous frame (pairing by key + UV signature, borrowed motion for unpaired 3D draws against cracks). Timed by the
+  game's step count via a wrapper on `sub_001F3020` (indirect-only, `src/recomp_manual.c`). Results: steady 120 fps
+  with `SSX3_FPS_LIMIT=120`, 266–271 fps at the default cap (270 Hz display), 0 holds in races, game fps unchanged vs.
+  `SSX3_INTERP=0`. Pitfalls found on the way: first-in-order pairing mismatched identical terrain chunks (cracks);
+  `vkGetFenceStatus` polling needed so the NV2A thread finds free packets; fixed 1/60 per step drifts (timer has ms
+  resolution) → measured step length; schedule latency must be pulled back towards the cushion or it sticks at the
+  maximum. Debug: `SSX3_VKI_DUMP`, `[VKI]` log lines every 5 s.
+

@@ -384,3 +384,18 @@ _(date – what was done, what was found, next step)_
     switch both ways (gamescope keeps every window at its full size, so "windowed" stays 1920x1080 there). Not
     tested: on a real desktop session, Windows, multi-monitor (always display 0). Alt+Enter also reaches the
     keyboard-as-pad mapping as Enter.
+- 2026-10-19 – **Monitor choice** (`SSX3_MONITOR=primary|<number>|<part of name>`, default primary; branch
+  `display-mode`). Cause of "opens on the 16:10 monitor": SDL 2 runs on Wayland here and has no primary monitor
+  there – display 0 is the first output KWin announces (HP ZR24w 1920x1200), while the KDE primary is DP-2 (ASUS
+  VG279QM, 1920x1080 at 0,0). `vk_backend.c` `display_primary` asks Xwayland's RandR monitor list (KDE/GNOME
+  mirror the primary there; libX11/libXrandr via dlopen, no build dependency) and takes the SDL display at the
+  primary's position; no X → display 0. The window is created with `SDL_WINDOWPOS_CENTERED_DISPLAY(d)`; borderless/
+  fullscreen use that display's desktop mode, `SSX3_ASPECT=auto` its shape. `ssx3_recomp --list-displays` prints
+  number / name / mode / Hz / primary (tab-separated, before any boot work) for the menus; `run.sh` and `run.ps1`
+  ask "Monitor" first when there are two or more and save the name (`MONITOR=`; the saved-value parsers accept
+  names with spaces, dots, commas, brackets). The swapchain log line now names the window's display.
+  - Tested: on this desktop `--list-displays` marks the ASUS (SDL display 1) primary; nested headless KWin with 3
+    virtual outputs (own dbus + config dir): primary/1/2 × borderless/fullscreen each land on the chosen output;
+    built-in menu through a pty (choice saved and reused), `Get-MonitorItems` under pwsh. Not testable nested: a
+    primary other than output 0 (KWin owns Xwayland's primary). Windowed placement on Wayland stays the
+    compositor's decision.

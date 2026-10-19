@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Start-up menu for scripts/run.sh: display mode, internal resolution, aspect ratio, frame rate and v-sync
+# Start-up menu for scripts/run.sh: monitor, display mode, internal resolution, aspect ratio, frame rate and v-sync
 # (Vulkan renderer).
 # Loaded with `source`; call launch_menu. Uses whiptail or dialog when installed, otherwise a built-in
 # arrow-key menu. The last choice is saved and reused – also when there is no terminal (e.g. a Steam shortcut).
 #   SSX3_MENU=0   never show the menu (saved choice / defaults only)
-#   SSX3_MENU=1   show it even if SSX3_WINDOW / SSX3_RES_SCALE / SSX3_ASPECT / SSX3_FPS_LIMIT / SSX3_INTERP / SSX3_VSYNC are already set
+#   SSX3_MENU=1   show it even if SSX3_MONITOR / SSX3_WINDOW / SSX3_RES_SCALE / SSX3_ASPECT / SSX3_FPS_LIMIT / SSX3_INTERP / SSX3_VSYNC are already set
 # Variables set in the environment win over the saved choice and are not asked for.
 
 LAUNCH_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/ssx3-recomp/run.conf"
@@ -109,7 +109,24 @@ _menu() {
 
 _conf_get() {  # _conf_get KEY -> value from the saved choice (no `source`: the file is only data)
   [ -f "$LAUNCH_CONF" ] || return 0
-  sed -n "s/^$1=\([A-Za-z0-9:]*\)$/\1/p" "$LAUNCH_CONF" | tail -n1
+  sed -n "s/^$1=\([][A-Za-z0-9:.,()_ -]*\)$/\1/p" "$LAUNCH_CONF" | tail -n1
+}
+
+# _monitor_items -> MONITOR_ITEMS from `ssx3_recomp --list-displays` (number, name, mode, Hz, primary);
+# empty with one monitor or a binary that cannot list them. Tags: "primary" or the monitor's name.
+_monitor_items() {
+  MONITOR_ITEMS=()
+  local list n=0 num name mode hz prim main=""
+  [ -n "${EXE:-}" ] && [ -x "$EXE" ] || return 0
+  list="$("$EXE" --list-displays 2>/dev/null)" || return 0
+  while IFS=$'\t' read -r num name mode hz prim; do
+    [ -n "$name" ] || continue
+    n=$((n + 1))
+    [ "$prim" = 1 ] && main="$name"
+    MONITOR_ITEMS+=("$name" "$(printf '%-36.36s %s @ %s Hz' "$name" "$mode" "$hz")")
+  done <<<"$list"
+  if [ "$n" -lt 2 ]; then MONITOR_ITEMS=(); return 0; fi
+  MONITOR_ITEMS=(primary "Main monitor (${main:-display 0})" "${MONITOR_ITEMS[@]}")
 }
 
 _apply_fps() {
@@ -125,15 +142,17 @@ _apply_fps() {
 launch_menu() {
   [ "${SSX3_RENDERER:-vulkan}" = vulkan ] || return 0  # both settings only exist in the Vulkan back end
 
-  local ask_win=1 ask_res=1 ask_aspect=1 ask_fps=1 ask_vsync=1
+  local ask_mon=1 ask_win=1 ask_res=1 ask_aspect=1 ask_fps=1 ask_vsync=1
   [ -n "${SSX3_WINDOW:-}" ] && ask_win=0
+  [ -n "${SSX3_MONITOR:-}" ] && ask_mon=0
   [ -n "${SSX3_RES_SCALE:-}" ] && ask_res=0
   [ -n "${SSX3_ASPECT:-}" ] && ask_aspect=0
   [ -n "${SSX3_FPS_LIMIT:-}${SSX3_INTERP:-}" ] && ask_fps=0
   [ -n "${SSX3_VSYNC:-}" ] && ask_vsync=0
-  if [ "${SSX3_MENU:-}" = 1 ]; then ask_win=1; ask_res=1; ask_aspect=1; ask_fps=1; ask_vsync=1; fi
+  if [ "${SSX3_MENU:-}" = 1 ]; then ask_mon=1; ask_win=1; ask_res=1; ask_aspect=1; ask_fps=1; ask_vsync=1; fi
 
-  local win res aspect fps vsync
+  local mon win res aspect fps vsync
+  mon="$(_conf_get MONITOR)"; mon="${mon:-${SSX3_MONITOR:-primary}}"
   win="$(_conf_get WINDOW)"; win="${win:-${SSX3_WINDOW:-windowed}}"
   res="$(_conf_get RES_SCALE)"; res="${res:-${SSX3_RES_SCALE:-1}}"
   aspect="$(_conf_get ASPECT)"; aspect="${aspect:-${SSX3_ASPECT:-16:9}}"
@@ -142,11 +161,18 @@ launch_menu() {
 
   local interactive=1
   { [ "${SSX3_MENU:-}" = 0 ] || [ ! -t 0 ] || [ ! -t 1 ]; } && interactive=0
-  if [ "$interactive" = 1 ] && [ $((ask_win + ask_res + ask_aspect + ask_fps + ask_vsync)) -gt 0 ]; then
+  if [ "$interactive" = 1 ] && [ $((ask_mon + ask_win + ask_res + ask_aspect + ask_fps + ask_vsync)) -gt 0 ]; then
     if [ -z "${SSX3_MENU_TOOL:-}" ]; then           # SSX3_MENU_TOOL=builtin|whiptail|dialog forces one
       SSX3_MENU_TOOL=builtin
       command -v dialog   >/dev/null 2>&1 && SSX3_MENU_TOOL=dialog
       command -v whiptail >/dev/null 2>&1 && SSX3_MENU_TOOL=whiptail
+    fi
+    if [ "$ask_mon" = 1 ]; then
+      _monitor_items
+      if [ ${#MONITOR_ITEMS[@]} -gt 0 ]; then
+        mon="$(_menu "Monitor" "Which monitor the game opens on:" "$mon" "${MONITOR_ITEMS[@]}")" \
+          || { echo "Cancelled." >&2; exit 0; }
+      fi
     fi
     if [ "$ask_win" = 1 ]; then
       win="$(_menu "Display mode" "How the game is shown (Alt+Enter / F11 toggles in game):" "$win" "${WINDOW_ITEMS[@]}")" \
@@ -170,10 +196,16 @@ launch_menu() {
     fi
     [ "$SSX3_MENU_TOOL" = builtin ] || clear
     mkdir -p "$(dirname "$LAUNCH_CONF")"
-    printf '# scripts/run.sh – last start-up choice\nWINDOW=%s\nRES_SCALE=%s\nASPECT=%s\nFPS=%s\nVSYNC=%s\n' \
-      "$win" "$res" "$aspect" "$fps" "$vsync" >"$LAUNCH_CONF"
+    printf '# scripts/run.sh – last start-up choice\nMONITOR=%s\nWINDOW=%s\nRES_SCALE=%s\nASPECT=%s\nFPS=%s\nVSYNC=%s\n' \
+      "$mon" "$win" "$res" "$aspect" "$fps" "$vsync" >"$LAUNCH_CONF"
   fi
 
+  if [ "$ask_mon" = 1 ]; then
+    case "$mon" in
+      ''|primary) unset SSX3_MONITOR ;;              # the back end's default: the desktop's main monitor
+      *) export SSX3_MONITOR="$mon" ;;
+    esac
+  fi
   if [ "$ask_win" = 1 ]; then
     case "$win" in
       windowed|borderless|fullscreen) export SSX3_WINDOW="$win" ;;
@@ -200,5 +232,5 @@ launch_menu() {
   elif [ -n "${SSX3_FPS_LIMIT:-}" ]; then fps_text="$SSX3_FPS_LIMIT"
   fi
   local vsync_text=off; [ "${SSX3_VSYNC:-0}" = 1 ] && vsync_text=on
-  echo "run.sh: ${SSX3_WINDOW:-windowed}, internal resolution ${SSX3_RES_SCALE:-1}x, aspect ${SSX3_ASPECT:-4:3}, frame rate $fps_text, v-sync $vsync_text" >&2
+  echo "run.sh: monitor ${SSX3_MONITOR:-primary}, ${SSX3_WINDOW:-windowed}, internal resolution ${SSX3_RES_SCALE:-1}x, aspect ${SSX3_ASPECT:-4:3}, frame rate $fps_text, v-sync $vsync_text" >&2
 }

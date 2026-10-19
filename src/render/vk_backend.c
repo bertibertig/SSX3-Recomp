@@ -40,6 +40,9 @@
  *                           sized window without decorations) or fullscreen
  *                           (exclusive, at the desktop's resolution);
  *                           Alt+Enter / F11 toggle windowed <-> full screen
+ *   SSX3_MONITOR=<m>        primary (default: the desktop's main monitor),
+ *                           an SDL display number, or part of the monitor's
+ *                           name; `ssx3_recomp --list-displays` lists them
  *
  * Internal resolution: every guest surface is a GPU image of its guest size
  * times the scale (surface_extent). Vertices stay in guest pixels -- the
@@ -59,6 +62,8 @@
 #include <SDL_vulkan.h>
 
 #include <pthread.h>
+#include <dlfcn.h>
+#include <strings.h>
 #include <sys/resource.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -726,10 +731,11 @@ static int create_swapchain(void)
         VK_CHECK(vkCreateSemaphore(V.device, &sci, NULL, &V.sem_render_done[i]));
     }
     V.swap_dirty = 0;
-    fprintf(stderr, "  [VK] swapchain %ux%u, %u images, %s\n",
+    fprintf(stderr, "  [VK] swapchain %ux%u, %u images, %s, display %d\n",
             V.swap_extent.width, V.swap_extent.height, V.swap_count,
             mode == VK_PRESENT_MODE_MAILBOX_KHR ? "mailbox"
-            : mode == VK_PRESENT_MODE_IMMEDIATE_KHR ? "immediate" : "fifo");
+            : mode == VK_PRESENT_MODE_IMMEDIATE_KHR ? "immediate" : "fifo",
+            SDL_GetWindowDisplayIndex(V.window));
     return 1;
 }
 
@@ -3420,14 +3426,14 @@ static void wide_init(void)
 }
 
 /* SSX3_ASPECT=auto: the desktop's shape (needs SDL video). */
-static void wide_auto(void)
+static void wide_auto(int display)
 {
     SDL_DisplayMode m;
 
     if (!R.wide_auto)
         return;
     R.wide_auto = 0;
-    if (SDL_GetDesktopDisplayMode(0, &m) != 0 || m.w <= 0 || m.h <= 0) {
+    if (SDL_GetDesktopDisplayMode(display, &m) != 0 || m.w <= 0 || m.h <= 0) {
         fprintf(stderr, "  [VK] SSX3_ASPECT=auto: no desktop mode (%s), using 4:3\n",
                 SDL_GetError());
         return;
@@ -3449,6 +3455,131 @@ static void window_size(int *w, int *h)
         *w = 1280;
         *h = 960;
     }
+}
+
+/* ---- monitor choice ------------------------------------------------------
+ *
+ * SDL 2 has no notion of a primary monitor on Wayland: display 0 is whichever
+ * output the compositor announced first (on a KDE desktop here: a side
+ * monitor). The desktops (KDE, GNOME) do tell Xwayland which output is
+ * primary, so its RandR monitor list is asked -- libX11/libXrandr loaded at run
+ * time, no build dependency -- and the SDL display at the same position is
+ * taken. Under SDL's X11 driver that is the same answer; without X (no
+ * DISPLAY, no libraries) display 0 stays the fallback. */
+
+/* XRRMonitorInfo (X11/extensions/Xrandr.h, RandR 1.5). */
+typedef struct {
+    unsigned long name;
+    int primary, automatic, noutput;
+    int x, y, width, height, mwidth, mheight;
+    unsigned long *outputs;
+} XrrMonitor;
+
+/* Position of the X server's primary monitor; 0 if there is none to ask. */
+static int x11_primary(int *x, int *y)
+{
+    void *x11 = NULL, *xrr = NULL, *dpy = NULL;
+    void *(*open_display)(const char *);
+    int (*close_display)(void *);
+    unsigned long (*root_window)(void *);
+    XrrMonitor *(*get_monitors)(void *, unsigned long, int, int *);
+    void (*free_monitors)(XrrMonitor *);
+    XrrMonitor *mon;
+    int n = 0, i, found = 0;
+
+    if (!getenv("DISPLAY")
+            || !(x11 = dlopen("libX11.so.6", RTLD_NOW | RTLD_LOCAL))
+            || !(xrr = dlopen("libXrandr.so.2", RTLD_NOW | RTLD_LOCAL)))
+        goto out;
+    open_display = (void *(*)(const char *))dlsym(x11, "XOpenDisplay");
+    close_display = (int (*)(void *))dlsym(x11, "XCloseDisplay");
+    root_window = (unsigned long (*)(void *))dlsym(x11, "XDefaultRootWindow");
+    get_monitors = (XrrMonitor *(*)(void *, unsigned long, int, int *))dlsym(xrr, "XRRGetMonitors");
+    free_monitors = (void (*)(XrrMonitor *))dlsym(xrr, "XRRFreeMonitors");
+    if (!open_display || !close_display || !root_window || !get_monitors || !free_monitors
+            || !(dpy = open_display(NULL)))
+        goto out;
+    if ((mon = get_monitors(dpy, root_window(dpy), 1, &n))) {
+        for (i = 0; i < n; i++)
+            if (mon[i].primary) {
+                *x = mon[i].x;
+                *y = mon[i].y;
+                found = 1;
+                break;
+            }
+        free_monitors(mon);
+    }
+    close_display(dpy);
+out:
+    if (xrr) dlclose(xrr);
+    if (x11) dlclose(x11);
+    return found;
+}
+
+/* The SDL display of the desktop's primary monitor (0 if unknown). */
+static int display_primary(void)
+{
+    int n = SDL_GetNumVideoDisplays(), i, x, y;
+    SDL_Rect r;
+
+    if (n > 1 && x11_primary(&x, &y))
+        for (i = 0; i < n; i++)
+            if (SDL_GetDisplayBounds(i, &r) == 0 && r.x == x && r.y == y)
+                return i;
+    return 0;
+}
+
+/* SSX3_MONITOR: primary (default), a display number or part of a name. */
+static int display_pick(void)
+{
+    const char *e = getenv("SSX3_MONITOR");
+    int n = SDL_GetNumVideoDisplays(), i;
+    char *end;
+    long v;
+
+    if (n <= 1)
+        return 0;
+    if (e && *e && strcasecmp(e, "primary")) {
+        v = strtol(e, &end, 10);
+        if (!*end) {
+            if (v >= 0 && v < n)
+                return (int)v;
+        } else {
+            for (i = 0; i < n; i++) {
+                const char *name = SDL_GetDisplayName(i);
+                size_t k, len = strlen(e);
+                for (k = 0; name && name[k]; k++)
+                    if (!strncasecmp(name + k, e, len))
+                        return i;
+            }
+        }
+        fprintf(stderr, "  [VK] SSX3_MONITOR=%s: no such monitor, using the primary one\n", e);
+    }
+    return display_primary();
+}
+
+/* `ssx3_recomp --list-displays`: one line per monitor for the start-up menus,
+ * "<number>\t<name>\t<W>x<H>\t<Hz>\t<primary 0/1>". */
+int ssx3_vk_list_displays(void)
+{
+    int n, i, primary;
+
+    if (SDL_Init(SDL_INIT_VIDEO) != 0) {
+        fprintf(stderr, "SDL video: %s\n", SDL_GetError());
+        return 1;
+    }
+    n = SDL_GetNumVideoDisplays();
+    primary = display_primary();
+    for (i = 0; i < n; i++) {
+        SDL_DisplayMode m;
+        const char *name = SDL_GetDisplayName(i);
+        if (SDL_GetDesktopDisplayMode(i, &m) != 0)
+            memset(&m, 0, sizeof m);
+        printf("%d\t%s\t%dx%d\t%d\t%d\n", i, name ? name : "?", m.w, m.h, m.refresh_rate,
+               i == primary);
+    }
+    SDL_Quit();
+    return 0;
 }
 
 /* SSX3_WINDOW: how the window is shown. */
@@ -3477,7 +3608,7 @@ static SDL_Window *window_create(const char *title)
     const char *e = getenv("SSX3_WINDOW");
     SDL_DisplayMode dm;
     SDL_Window *w;
-    int ww, wh;
+    int ww, wh, d;
 
     if (e && *e) {
         if (!strcmp(e, "borderless"))
@@ -3490,24 +3621,27 @@ static SDL_Window *window_create(const char *title)
     }
     if (s_win_mode != WIN_WINDOWED)
         s_win_full = s_win_mode;
+    d = display_pick();
     wide_init();
-    wide_auto();
+    wide_auto(d);
     window_size(&ww, &wh);
-    if (s_win_mode == WIN_FULLSCREEN && SDL_GetDesktopDisplayMode(0, &dm) == 0) {
+    if (s_win_mode == WIN_FULLSCREEN && SDL_GetDesktopDisplayMode(d, &dm) == 0) {
         ww = dm.w;
         wh = dm.h;
     }
-    w = SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, ww, wh,
+    w = SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED_DISPLAY(d),
+                         SDL_WINDOWPOS_CENTERED_DISPLAY(d), ww, wh,
                          SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_SHOWN
                          | window_flags(s_win_mode));
     if (!w) {
         fprintf(stderr, "  [VK] SDL_CreateWindow: %s\n", SDL_GetError());
         return NULL;
     }
-    if (s_win_mode == WIN_FULLSCREEN && SDL_GetDesktopDisplayMode(0, &dm) == 0)
+    if (s_win_mode == WIN_FULLSCREEN && SDL_GetDesktopDisplayMode(d, &dm) == 0)
         SDL_SetWindowDisplayMode(w, &dm);
     SDL_ShowCursor(s_win_mode == WIN_WINDOWED ? SDL_ENABLE : SDL_DISABLE);
-    fprintf(stderr, "  [VK] window: %s\n", window_mode_name(s_win_mode));
+    fprintf(stderr, "  [VK] window: %s on display %d (%s)\n", window_mode_name(s_win_mode),
+            d, SDL_GetDisplayName(d) ? SDL_GetDisplayName(d) : "?");
     return w;
 }
 

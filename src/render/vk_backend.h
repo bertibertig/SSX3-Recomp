@@ -19,4 +19,8 @@ int ssx3_vk_register(void);
  * window stays responsive through the load. Returns guest_main's result. */
 int ssx3_vk_host_main(int (*guest_main)(void));
 
+/* `--list-displays`: print the monitors (SDL display number, name, desktop
+ * mode, refresh, primary flag; tab-separated) for the start-up menus. */
+int ssx3_vk_list_displays(void);
+
 #endif /* SSX3_VK_BACKEND_H */

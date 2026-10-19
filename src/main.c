@@ -740,8 +740,13 @@ int main(int argc, char **argv)
  * and runs boot_and_run on a second one; otherwise it just calls it. */
 int main(int argc, char **argv)
 {
-    (void)argc;
-    (void)argv;
+#if defined(SSX3_HAVE_VULKAN)
+    if (argc > 1 && strcmp(argv[1], "--list-displays") == 0)
+        return ssx3_vk_list_displays();   /* for the start-up menus */
+#else
+    if (argc > 1 && strcmp(argv[1], "--list-displays") == 0)
+        return 0;                          /* no monitor choice without the Vulkan window */
+#endif
 
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);

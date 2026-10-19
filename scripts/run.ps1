@@ -10,9 +10,9 @@
 #   SSX3_RENDERER=cpu       default on Windows: the Vulkan back end has no Win32 surface yet (docs/TODO.md, M4)
 #   SSX3_RENDERER=vulkan    GPU renderer, once a build includes it; enables the start-up menu below
 #   SSX3_INTERP=0 / SSX3_FPS_LIMIT=<n> / SSX3_VSYNC=1 / SSX3_RES_SCALE=<1..5> / SSX3_ASPECT=<16:9|16:10|21:9|auto>
-#                           / SSX3_WINDOW=<windowed|borderless|fullscreen>
+#                           / SSX3_WINDOW=<windowed|borderless|fullscreen> / SSX3_MONITOR=<primary|number|name>
 #                           Vulkan settings, as in run.sh
-#   SSX3_MENU=0 / 1         start-up menu for display mode, resolution, aspect ratio, frame rate, v-sync: never / always (default: when in a
+#   SSX3_MENU=0 / 1         start-up menu for monitor, display mode, resolution, aspect ratio, frame rate, v-sync: never / always (default: when in a
 #                           console and not set above). The choice is saved in %APPDATA%\ssx3-recomp\run.conf
 #   SSX3_PAD_TRACE=1        log every controller button change
 #   RECOMP_USB_PADS=2       more emulated pads on the USB bus (split screen), default 1
@@ -151,9 +151,23 @@ function Get-ConfValue([string]$Key) {  # value from the saved choice (parsed as
     if (-not (Test-Path -LiteralPath $LaunchConf)) { return $null }
     $v = $null
     foreach ($line in Get-Content -LiteralPath $LaunchConf) {
-        if ($line -match "^$Key=([A-Za-z0-9:]*)$") { $v = $Matches[1] }
+        if ($line -match "^$Key=([][A-Za-z0-9:.,()_ -]*)$") { $v = $Matches[1] }
     }
     return $v
+}
+
+function Get-MonitorItems {  # from `ssx3_recomp --list-displays`; empty with one monitor or none listed
+    $items = @(); $main = $null
+    try { $lines = & $Exe --list-displays 2>$null } catch { return @() }
+    foreach ($l in @($lines)) {
+        $f = "$l" -split "`t"
+        if ($f.Count -lt 5 -or -not $f[1]) { continue }
+        if ($f[4] -eq '1') { $main = $f[1] }
+        $items += ,@($f[1], ('{0,-36} {1} @ {2} Hz' -f $f[1], $f[2], $f[3]))
+    }
+    if ($items.Count -lt 2) { return @() }
+    $label = if ($main) { "Main monitor ($main)" } else { 'Main monitor' }
+    return ,(@(,@('primary', $label)) + $items)
 }
 
 function Set-FpsEnv([string]$Fps) {
@@ -169,13 +183,15 @@ function Set-FpsEnv([string]$Fps) {
 function Invoke-LaunchMenu {
     if ((Get-EnvValue SSX3_RENDERER) -ne 'vulkan') { return }   # these settings only exist in the Vulkan back end
 
+    $askMon = -not (Get-EnvValue SSX3_MONITOR)
     $askWin = -not (Get-EnvValue SSX3_WINDOW)
     $askRes = -not (Get-EnvValue SSX3_RES_SCALE)
     $askAspect = -not (Get-EnvValue SSX3_ASPECT)
     $askFps = -not ((Get-EnvValue SSX3_FPS_LIMIT) -or (Get-EnvValue SSX3_INTERP))
     $askVsync = -not (Get-EnvValue SSX3_VSYNC)
-    if ($env:SSX3_MENU -eq '1') { $askWin = $true; $askRes = $true; $askAspect = $true; $askFps = $true; $askVsync = $true }
+    if ($env:SSX3_MENU -eq '1') { $askMon = $true; $askWin = $true; $askRes = $true; $askAspect = $true; $askFps = $true; $askVsync = $true }
 
+    $mon = Get-ConfValue MONITOR;     if (-not $mon)   { $mon = if ($env:SSX3_MONITOR) { $env:SSX3_MONITOR } else { 'primary' } }
     $win = Get-ConfValue WINDOW;      if (-not $win)   { $win = if ($env:SSX3_WINDOW) { $env:SSX3_WINDOW } else { 'windowed' } }
     $res = Get-ConfValue RES_SCALE;   if (-not $res)   { $res = if ($env:SSX3_RES_SCALE) { $env:SSX3_RES_SCALE } else { '1' } }
     $aspect = Get-ConfValue ASPECT;   if (-not $aspect) { $aspect = if ($env:SSX3_ASPECT) { $env:SSX3_ASPECT } else { '16:9' } }
@@ -183,7 +199,14 @@ function Invoke-LaunchMenu {
     $vsync = Get-ConfValue VSYNC;     if (-not $vsync) { $vsync = if ($env:SSX3_VSYNC) { $env:SSX3_VSYNC } else { '0' } }
 
     $interactive = ($env:SSX3_MENU -ne '0') -and -not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected
-    if ($interactive -and ($askWin -or $askRes -or $askAspect -or $askFps -or $askVsync)) {
+    if ($interactive -and ($askMon -or $askWin -or $askRes -or $askAspect -or $askFps -or $askVsync)) {
+        if ($askMon) {
+            $monItems = Get-MonitorItems
+            if ($monItems.Count -gt 0) {
+                $mon = Show-Menu 'Monitor (which one the game opens on)' $mon $monItems
+                if ($null -eq $mon) { [Console]::Error.WriteLine('Cancelled.'); exit 0 }
+            }
+        }
         if ($askWin) {
             $win = Show-Menu 'Display mode (Alt+Enter / F11 toggles in game)' $win $WindowItems
             if ($null -eq $win) { [Console]::Error.WriteLine('Cancelled.'); exit 0 }
@@ -206,9 +229,12 @@ function Invoke-LaunchMenu {
         }
         New-Item -ItemType Directory -Force -Path $ConfDir | Out-Null
         Set-Content -LiteralPath $LaunchConf -Encoding ASCII -Value @(
-            '# scripts/run.ps1 - last start-up choice', "WINDOW=$win", "RES_SCALE=$res", "ASPECT=$aspect", "FPS=$fps", "VSYNC=$vsync")
+            '# scripts/run.ps1 - last start-up choice', "MONITOR=$mon", "WINDOW=$win", "RES_SCALE=$res", "ASPECT=$aspect", "FPS=$fps", "VSYNC=$vsync")
     }
 
+    if ($askMon) {
+        if (-not $mon -or $mon -eq 'primary') { $env:SSX3_MONITOR = $null } else { $env:SSX3_MONITOR = $mon }
+    }
     if ($askWin) {
         if ($win -match '^(windowed|borderless|fullscreen)$') { $env:SSX3_WINDOW = $win }
         else { [Console]::Error.WriteLine("run.ps1: ignoring saved display mode '$win'"); $env:SSX3_WINDOW = $null }
@@ -231,7 +257,8 @@ function Invoke-LaunchMenu {
     $scale = if ($env:SSX3_RES_SCALE) { $env:SSX3_RES_SCALE } else { '1' }
     $aspectText = if ($env:SSX3_ASPECT) { $env:SSX3_ASPECT } else { '4:3' }
     $winText = if ($env:SSX3_WINDOW) { $env:SSX3_WINDOW } else { 'windowed' }
-    [Console]::Error.WriteLine("run.ps1: $winText, internal resolution ${scale}x, aspect $aspectText, frame rate $fpsText, v-sync $vsyncText")
+    $monText = if ($env:SSX3_MONITOR) { $env:SSX3_MONITOR } else { 'primary' }
+    [Console]::Error.WriteLine("run.ps1: monitor $monText, $winText, internal resolution ${scale}x, aspect $aspectText, frame rate $fpsText, v-sync $vsyncText")
 }
 
 Invoke-LaunchMenu

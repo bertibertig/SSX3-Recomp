@@ -28,8 +28,9 @@ build 2003-09-19; English, French, German, Spanish). Other versions are not supp
 | Internal resolution 1x–5x (up to 3200x2400) | ✅ Linux |
 | Widescreen in races: 16:9, 16:10, 21:9, any ratio or the desktop's (menus stay 4:3) | ✅ Linux |
 | Windowed, borderless windowed and exclusive fullscreen; Alt+Enter / F11 toggles | ✅ Linux |
+| Opens on the main monitor; any other monitor selectable | ✅ Linux |
 | Controllers (XInput/SDL pads, hotplug, rumble), keyboard as player 1 | ✅ |
-| Start-up menu for display mode, resolution, aspect ratio, frame rate, v-sync | ✅ |
+| Start-up menu for monitor, display mode, resolution, aspect ratio, frame rate, v-sync | ✅ |
 | Windows build | ⚠️ experimental: menus work, software renderer only (slow); crashes when a race loads – only tested on Linux with Wine and Proton |
 | Full run through the game (all peaks, Conquer the Mountain, saving) | ⬜ not verified |
 | Split screen | ⬜ untested |
@@ -192,7 +193,8 @@ compatibility with older distributions, Windows with the host's MinGW) – witho
 
 ## Run options
 
-Started from a terminal, `run.sh` first asks for the display mode (windowed, borderless, fullscreen), the
+Started from a terminal, `run.sh` first asks for the monitor (with more than one), the display mode (windowed,
+borderless, fullscreen), the
 internal resolution (1x–5x), the aspect ratio (4:3, 16:9,
 16:10, 21:9, auto), the frame rate (display
 refresh, 60 without interpolation, 120/144/165/240, uncapped) and v-sync. The choice is saved in
@@ -203,6 +205,7 @@ without a terminal (e.g. a Steam shortcut). Variables set in the environment win
 |---|---|---|
 | `SSX3_RENDERER` | `vulkan` (Windows: `cpu`) | `cpu` = the software renderer (reference, slow) |
 | `SSX3_RES_SCALE` | `1` | internal resolution `1`–`5` × 640x480; **F10** cycles it in game |
+| `SSX3_MONITOR` | `primary` | the desktop's main monitor; or a number / part of a name from `ssx3_recomp --list-displays` |
 | `SSX3_WINDOW` | `windowed` | `borderless` (desktop-sized, no frame) or `fullscreen` (exclusive); **Alt+Enter** / **F11** toggle in game |
 | `SSX3_ASPECT` | `4:3` | widescreen in races: `16:9`, `16:10`, `21:9`, any `W:H`, `auto` (desktop); menus stay 4:3 |
 | `SSX3_FPS_LIMIT` | display refresh | interpolated frame cap in fps, `0` = uncapped |

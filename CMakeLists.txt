@@ -44,6 +44,31 @@ list(REMOVE_ITEM SSX3_INPUT_SOURCES xinput_device.c)
 set_property(TARGET xbox_input PROPERTY SOURCES
     ${SSX3_INPUT_SOURCES} ${CMAKE_CURRENT_SOURCE_DIR}/src/input/ssx3_pad.c)
 
+# ── LAN multiplayer net core (src/net, docs/lan-multiplayer.md) ─
+#
+# ENet is a pinned submodule (third_party/enet, v1.3.18, MIT). The net
+# core does not depend on the game, so ssx3_lanbot (the headless test
+# client) builds without generated code: cmake --build build --target ssx3_lanbot
+set(SSX3_ENET_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/enet)
+if(NOT EXISTS ${SSX3_ENET_DIR}/include/enet/enet.h)
+    message(FATAL_ERROR "ENet submodule missing: git submodule update --init third_party/enet")
+endif()
+add_subdirectory(${SSX3_ENET_DIR} ${CMAKE_BINARY_DIR}/enet EXCLUDE_FROM_ALL)
+target_include_directories(enet PUBLIC ${SSX3_ENET_DIR}/include)
+if(WIN32 AND NOT MINGW)
+    target_link_libraries(enet PUBLIC ws2_32 winmm)
+endif()
+
+add_library(ssx3_net STATIC src/net/net_session.c)
+target_include_directories(ssx3_net PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/net)
+target_link_libraries(ssx3_net PUBLIC enet)
+if(NOT WIN32)
+    target_link_libraries(ssx3_net PUBLIC m)
+endif()
+
+add_executable(ssx3_lanbot tools/lanbot/lanbot.c)
+target_link_libraries(ssx3_lanbot PRIVATE ssx3_net)
+
 # ── Recompiled game executable ──────────────────────────────────
 
 # Collect generated recompiled code.

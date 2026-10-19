@@ -646,4 +646,26 @@ _(date – what was done, what was found, next step)_
   - Upstream: https://github.com/sp00nznet/xboxrecomp/pull/237 (fork bertibertig/xboxrecomp, branch
     fix-posix-rootdirectory-opens, on upstream main v0.15.0, with `tests/kernel_file_relative`: 3 of 9 checks fail
     without the change – the bare name was created in the process's working directory – all 9 pass with it).
-
+- 2026-10-20 – **LAN phase 1: net core** (`src/net/`, `tools/lanbot/`, ENet 1.3.18 as submodule `third_party/enet`).
+  Star topology, host = player 0 owns lobby/rules/clock/start/results; channel 0 reliable (hello, profile, ready,
+  chat, finish, the whole lobby on every change), channel 1 unreliable (snapshots 56 bytes, clock pings). Clients
+  identify with a random 64-bit token: a drop keeps the place for 30 s, an orderly leave (disconnect data "LEAV")
+  frees it at once, a kick bans the token. Clock: host time = local + offset of the ping sample with the smallest
+  round trip (8 samples, 100 ms apart, then 1 s). LAN browser: UDP query on port 27216 to 255.255.255.255,
+  127.255.255.255 and 127.0.0.1 (Linux delivers the loopback broadcast to every host on the machine); one entry per
+  lobby (the LAN address wins over loopback). `ssx3_lanbot selftest`: 27/27 on Linux and under Wine (MinGW build).
+  Bug found by it: the reconnect timeout compared unsigned (`drop_time` = now | 1 can be 1 ms ahead) and dropped a
+  player at once about one run in five; now a signed compare. Separate processes (host + 11 bots + browse) and
+  Linux host with Windows bots under Wine work.
+- 2026-10-20 – **Spike 6: the profile's rider stats** (user's leveled save "BRK": Zoe got 4 attribute points).
+  `Data.ssx` (39797 bytes) = 10 rider records of **0xF88 bytes** (character 0..9, Zoe = 4) + a 37-byte tail
+  (checksum/signature, changes with every save). In memory the records are at **0x3469E4 + (player·10 + char)·0xF88**
+  (player 0/1 = split-screen side); current character of a player = 0x4AB30(p) = byte 0x34595C + [0x346400+p]·0x20.
+  Record fields: +0x0 profile name (record 0), **+0xAD0 bank** (attribute points to spend), **+0xAD4 total
+  earned** (0x4E0D0 adds to both), +0xAD8 flag bits (0x51610 tests them), **+0xBEB..+0xBF1 the 7 attributes**,
+  one byte each, 5 per bar (unleveled 5, max 55 = 11 bars). Buy screen cFEStateBuyAttrib (ctor 0xB4FE0) shows them in
+  the order 1,3,0,4,6,5,2 (table 0x2934D4) via 0x56600; buying (0x4E570) costs table 0x300CDC[value/5 − 1]
+  (250, 500, 750 … 2500, 5000) and checks the bank. The save diff matches exactly: attribute 4 5 → 9, total
+  5 → 1018, bank 5 → 18 (4 × 250 spent). Also changed in Zoe's record: +0xDC 0 → 2 and +0xE0 0 → 3 (no direct
+  references; perhaps equipped gear – open). Static analysis plus the save diff only; not yet checked in a
+  running game. For LAN: `lan_profile.attrib[7]` carries the raw bytes; "equal stats" sets them all to 5.

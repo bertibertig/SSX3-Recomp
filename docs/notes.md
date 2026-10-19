@@ -600,4 +600,38 @@ _(date – what was done, what was found, next step)_
     every frame next to/ahead of the player, +0xAC4 = 1; Snow Jam race regression: puppet visible as before.
     (rider+0x460 is not a lighting position as guessed above: 0x24C30 passes the box min to the world query
     0x1C0310 for the rider's light/collision lists.)
+  - **Spike 7 – cost of 12 riders** (2026-10-19, Ryzen 7 3800X, 1x, Vulkan, no frame dumps, free roam, same
+    route 40 s; `SSX3_PUPPET_TEST=2` = every AI slot a puppet fanned out around the player):
+    player only 56.7 fps (17.6 ms) · 6 riders, 5 visible next to the player 38.9 fps (25.7 ms) · 6 riders, 5 AI
+    away 49.6 fps (20.2 ms) -> ~0.5 ms per rider simulated, ~1.6 ms per visible rider; 12 visible ≈ 35 ms ≈
+    28 fps. The bottleneck is the known CPU-bound vertex interpreter: 12-player LAN on the Steam Deck needs GPU
+    vertex programs (koen has them).
+    Memory: the game's main heap (allocator 0x1A9BD0 -> 0x1ADBD0, heap object 0x3A9368, base 0x3A9334 =
+    0x81000000, size 0x3A9338 = 44.5 MB; free bytes = 0x1ADD00; blocks <= 512 B from a small-block pool
+    0x1AF8D0; `SSX3_HEAP_TRACE=1` logs it): free roam with the player only 13.45 MB free, with 5 extra riders
+    (different characters) 9.83 MB (≈ 0.72 MB per rider), a 6-rider race 9.96 MB. 11 extra riders ≈ 8 MB ->
+    ~5.5 MB left: fits (the runtime's own [HEAP] log is the Xbox allocation map, a different thing).
+  - **Spike 5 – front end: native LAN entry possible** (`src/lan/menu.c`). Main menu = cFEStateMainMenu
+    (0x289BE4); items are string hashes (0x1AAEA0, ELF-style: h = h·16 + c, fold the top nibble) of "1conquer",
+    "2quick play", "3multi play", "4bonus material", "5online"; 0x9CB40 maps them to front-end states 0x0B,
+    9, 0x16, 5, 0x31. Selection handler 0x9CC70 (thiscall item, event; 1 focus, 2 unfocus, 5 select, 6 back):
+    Multi Play sets 2 players (0x505A0(2)) and the "leaving" flag menu+0x48 *before* checking it to open
+    **cFEPopupSelectMultiplayerMode** (0x4C bytes, ctor 0x9C390, vtable 0x28EF38, layout "86multiplayermode" =
+    hash 0x0846B3A5, present in data/ui/fe.lui) – dead code on Xbox, the PS2's online/offline choice.
+    `SSX3_MP_POPUP=1` opens it the way that code would: "Select Mode" with **"Single Event"** ("2 player quick
+    competition") and a **second entry with no label**. Its handler 0x9C8F0 sets the global byte
+    **0x368444 = (entry != 0)** and pops itself; the main menu gets the selection again (menu+0x4C = the item)
+    and continues into the split-screen flow – checked for both entries (0x368444 = 0 / 1). So: Multi Play ->
+    popup -> entry 0 = split screen, entry 1 = LAN (branch on 0x368444). Open: a label for entry 1 (its text is
+    not in the Xbox locale files; needs a text-lookup hook), and Multi Play with one pad: 0x9CAB0 hides it
+    while menu+0x55 < 2 pads (`SSX3_MP_ALWAYS=1` makes it visible), but the cursor still skips it – a second
+    check elsewhere.
+  - **Spike 6 – Load game** (multi-play character select, X): lists the saves on the hard disk ("BRK",
+    UDATA/4541003c/1966902D2EA4/Data.ssx, 39797 bytes, binary, starts with the name), warns that unsaved changes
+    are lost and loads the **whole profile** into a heap object (0x82327AC0 in this run; half of its 256-byte
+    blocks equal the file, the rest is run-time state) – it is a profile load, not a per-rider import. The BRK
+    profile has no levelled Zoe (all bars 1.0), so where attributes / outfits / boards sit in the profile is still
+    open (needs a levelled save to compare). For LAN: remote riders need only their look (character = slot table
+    +8, plus outfit and board – to find); each PC simulates its own rider from its own profile; "everyone level 1"
+    can use the game's own Bragging Rights handicap "lvl 1 character".
 

@@ -51,8 +51,10 @@ Status (2026-10-19): spike 1 done (6 slots hard-wired, addresses in notes.md), s
 puppet AI rider follows a given pose with full body and animation, `src/lan/puppet.c`); rank and finish follow
 the pose as well. Spike 3 done: start hold (synchronized countdown) and finish times set from outside,
 including the results list. Spike 4 partly: riders can be spawned at run time in free roam (5, with
-their own AI); a puppet there follows its pose and is drawn (its culling box is rebuilt from the pose); spikes 5–7 open,
-memory for 12 riders open.
+their own AI); a puppet there follows its pose and is drawn (its culling box is rebuilt from the pose); spike 5 done (the dead PS2
+"Select Mode" popup can carry the LAN entry, branch on 0x368444), spike 6 partly (Load game = whole profile;
+where the rider's look sits in it is open), spike 7 done (12 visible riders ≈ 28 fps on a Ryzen 7 3800X with
+the CPU vertex path; heap: ~5.5 MB left with 12 riders).
 
 
 Each one is a short reverse-engineering spike with a yes/no result recorded in notes.md, before building on it:

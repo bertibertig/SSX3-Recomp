@@ -34,6 +34,7 @@ extern void sub_00013EA0(void);     /* create AI up to 0x367F84 */
 extern void sub_00011360(void);     /* loading step */
 extern void sub_000113A0(void);     /* every slot loaded -> al */
 extern void sub_00013930(void);     /* initialise the new riders */
+extern void sub_001ADD00(void);     /* main heap: free bytes (cdecl, no args) */
 
 #define M32(va) (*(volatile uint32_t *)((uintptr_t)(uint32_t)(va) + g_xbox_mem_offset))
 #define M8(va)  (*(volatile uint8_t *)((uintptr_t)(uint32_t)(va) + g_xbox_mem_offset))
@@ -57,13 +58,38 @@ static uint32_t guest_call(void (*fn)(void), uint32_t self)
     return ret;
 }
 
+/* SSX3_HEAP_TRACE=1: log the game's main heap (allocator 0x1A9BD0 -> 0x1ADBD0; heap object 0x3A9368,
+ * base 0x3A9334, size 0x3A9338; blocks <= 512 bytes come from a separate small-block pool, 0x1AF8D0)
+ * every ~5 s of manager updates and after a spawn. */
+static void heap_trace(const char *why)
+{
+    static int on = -1;
+    uint32_t eax = g_eax, ecx = g_ecx, edx = g_edx, freeb;
+
+    if (on < 0)
+        on = getenv("SSX3_HEAP_TRACE") != NULL;
+    if (!on)
+        return;
+    g_esp -= 4;
+    M32(g_esp) = 0;
+    sub_001ADD00();                 /* its ret pops the return address */
+    freeb = g_eax;
+    g_eax = eax; g_ecx = ecx; g_edx = edx;
+    fprintf(stderr, "  [HEAP] %s: %.2f MB free of %.2f MB (base 0x%08X)\n", why, freeb / 1048576.0,
+            M32(0x003A9338u) / 1048576.0, M32(0x003A9334u));
+}
+
 static int s_want = -1;             /* SSX3_FREEROAM_SPAWN */
 static uint32_t s_mgr;              /* manager the current spawn belongs to */
 static int s_step;                  /* 0 wait, 1 loading, 2 done */
 
 void lan_freeroam_tick(uint32_t mgr)
 {
+    static unsigned ticks;
     uint32_t slot;
+
+    if (++ticks % 300u == 0)
+        heap_trace("periodic");
 
     if (s_want < 0) {
         const char *e = getenv("SSX3_FREEROAM_SPAWN");
@@ -101,6 +127,7 @@ void lan_freeroam_tick(uint32_t mgr)
         guest_call(sub_00013930, mgr);
         M8(mgr + 0x15) = 1;
         fprintf(stderr, "  [FREEROAM] riders loaded and active\n");
+        heap_trace("after spawn");
         s_step = 2;
         return;
     default:

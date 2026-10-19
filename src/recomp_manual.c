@@ -283,6 +283,34 @@ void sub_00011E90(void)
     sub_00011E90_gen();
 }
 
+/* Main menu selection (cFEStateMainMenu), thiscall: ecx = menu, [esp+4] = item, [esp+8] = event, ret 8. */
+#include "lan/menu.h"
+
+extern void sub_0009CC70_gen(void);
+
+void sub_0009CC70(void)
+{
+    if (lan_menu_select(g_ecx, SSX3_MEM32(g_esp + 4), SSX3_MEM32(g_esp + 8))) { g_esp += 12; return; }
+    sub_0009CC70_gen();
+}
+
+/* Main menu: show or hide Multi Play by the pad count at menu+0x55 (fastcall, ret). */
+extern void sub_0009CAB0_gen(void);
+
+void sub_0009CAB0(void)
+{
+    uint32_t menu = g_ecx;
+    uint8_t pads = *(volatile uint8_t *)((uintptr_t)(menu + 0x55) + g_xbox_mem_offset);
+
+    if (!lan_menu_multiplay_pads(menu)) {
+        sub_0009CAB0_gen();
+        return;
+    }
+    *(volatile uint8_t *)((uintptr_t)(menu + 0x55) + g_xbox_mem_offset) = 2;
+    sub_0009CAB0_gen();
+    *(volatile uint8_t *)((uintptr_t)(menu + 0x55) + g_xbox_mem_offset) = pads;
+}
+
 /* GameModeMan "rider reached the finish" dispatcher, thiscall: ecx = GameModeMan, [esp+4] = slot, ret 4. */
 extern void sub_000CD550_gen(void);
 

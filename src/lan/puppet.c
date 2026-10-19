@@ -15,6 +15,8 @@
  *
  * Test mode (SSX3_PUPPET_TEST=1): the first AI rider (slot 1) rides beside the player, copying the
  * player's pose shifted sideways and ahead along the direction of travel (SSX3_PUPPET_OFFSET=side,ahead,up).
+ * SSX3_PUPPET_TEST=2: every AI slot is a puppet, fanned out around the player (slot n: alternately left and
+ * right, 150 units further out and 80 further ahead per step) – for measuring the cost of visible riders.
  */
 #include <math.h>
 #include <stddef.h>
@@ -77,12 +79,23 @@ int lan_puppet_is(uint32_t rider)
     mgr = rider_manager();
     if (mgr < 0x10000u || M32(mgr + 0x7C) < 1 || M32(mgr + 0x78) < 2)  /* a human in slot 0, a rider in 1 */
         return 0;
-    return rider != 0 && M32(mgr + 0x28 + 4) == rider;
+    if (rider == 0)
+        return 0;
+    if (s_mode == 2) {                                  /* every rider but the player's */
+        uint32_t n = M32(mgr + 0x78), i;
+        for (i = 1; i < n && i < 6; i++)
+            if (M32(mgr + 0x28 + 4 * i) == rider)
+                return 1;
+        return 0;
+    }
+    return M32(mgr + 0x28 + 4) == rider;
 }
 
 void lan_puppet_pose(uint32_t rider)
 {
     static float last[3], dir[2] = { 1.0f, 0.0f };
+    float side, ahead;
+    uint32_t slot = 1;
     static int have_last, have_off;
     static float off[3] = { 220.0f, 300.0f, 20.0f };
     uint32_t mgr = rider_manager(), src;
@@ -94,6 +107,10 @@ void lan_puppet_pose(uint32_t rider)
         return;
     for (i = 0; i < 3; i++)
         p[i] = MF(src + RIDER_POSE + 4 * i);
+    while (slot < 6 && M32(mgr + 0x28 + 4 * slot) != rider)
+        slot++;
+    if (slot > 1 && have_last && p[0] == last[0] && p[1] == last[1])
+        goto place;                                     /* direction already updated this frame */
     if (have_last) {                                    /* direction of travel, smoothed */
         vx = p[0] - last[0];
         vy = p[1] - last[1];
@@ -117,8 +134,15 @@ void lan_puppet_pose(uint32_t rider)
         if (e)
             sscanf(e, "%f,%f,%f", &off[0], &off[1], &off[2]);
     }
-    MF(rider + RIDER_POSE + 0) = p[0] + dir[0] * off[1] - dir[1] * off[0];
-    MF(rider + RIDER_POSE + 4) = p[1] + dir[1] * off[1] + dir[0] * off[0];
+place:
+    side = off[0];
+    ahead = off[1];
+    if (s_mode == 2) {                                  /* fan: 1 right, 2 left, 3 further right … */
+        side = (slot & 1 ? 1.0f : -1.0f) * 150.0f * (float)((slot + 1) / 2);
+        ahead = 80.0f * (float)slot;
+    }
+    MF(rider + RIDER_POSE + 0) = p[0] + dir[0] * ahead - dir[1] * side;
+    MF(rider + RIDER_POSE + 4) = p[1] + dir[1] * ahead + dir[0] * side;
     MF(rider + RIDER_POSE + 8) = p[2] + off[2];
     MF(rider + RIDER_POSE + 12) = 1.0f;
     for (i = 0; i < 4; i++)                             /* same orientation as the player */

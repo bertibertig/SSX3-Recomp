@@ -583,4 +583,21 @@ _(date – what was done, what was found, next step)_
     Memory: MmQueryStatistics in the runtime reports host values; the game uses its own allocator
     (0x1A9BD0, named blocks). 5 extra riders fit; whether 11 do needs the allocator's free space (open) and the
     6-slot limit lifted first. The runtime also defines a 128 MB debug-kit layout (XBOX_DEVKIT_RAM).
+  - **Spike 4 – puppet culling in free roam: fixed** (2026-10-19). Rider render = manager vtable[3] 0x12360:
+    same rider collection as the update (players; AI if mgr+0x15; actors if mgr+0x8C), then per rider
+    0x22760 = visibility test, and only if true 0x229A0 / 0x22870 / 0x24DF0 (+ model components) draw it.
+    0x22760: only if rider+0x84C set, +0x848 == 7, +0xA87 clear; renderer (0x369528) vtable +0xAC gives the
+    view, +0x174 tests the box **rider+0x460 (min) / +0x470 (max)** (vec4 each) -> **rider+0xAC4 = visible**;
+    with rider+0x1C0 set it also tests the brain's box ([+0x74C]+0xA0/+0xB0), else an occluder test (0x1E2C0,
+    world+0x8C) on rider+0x480. The box is built by **0x20F10(rider, pos|NULL)** (thiscall, ret 4) from the
+    pose rider+0x180 and the axes at rider+0x210..0x23C; callers are the brain's mode updates (via 0x2FF30 /
+    stage 0x1F450 – mode 3 does nothing) and a few movement routines (0x250D0, 0x256A0, 0x269A0, 0x48E00,
+    0x49720). For the puppet none of them ran in free roam, so its box stayed where it spawned: it was drawn
+    only while that old box was in view (at the start; "behind the player" as the user saw). Earlier
+    "rider+0xA64/+0xAC4 are not visibility flags" was wrong for +0xAC4 – it was 0 because it was culled.
+    Fix: the 0x24D50 wrapper calls 0x20F10(rider, NULL) for a puppet after the pose is applied
+    (lan_puppet_after_pose). Result: free roam with the puppet 600 ahead and 150 beside – drawn in almost
+    every frame next to/ahead of the player, +0xAC4 = 1; Snow Jam race regression: puppet visible as before.
+    (rider+0x460 is not a lighting position as guessed above: 0x24C30 passes the box min to the world query
+    0x1C0310 for the rider's light/collision lists.)
 

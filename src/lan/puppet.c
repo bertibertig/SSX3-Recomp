@@ -6,7 +6,11 @@
  * stages (vtable[2] 0x11E90). For a puppet, recomp_manual.c skips the brain stages (0x1F3F0 input,
  * 0x1F420 control-mode update, 0x1F450 post-update) and calls lan_puppet_pose() at the top of 0x24D50,
  * which then applies the pose at rider+0x180 to the model and board (0x246C0); animation (0x1F140)
- * keeps running. Do not use the rider's own "no pose" flag (byte +0xA84): it also stops animation and
+ * keeps running. Afterwards lan_puppet_after_pose() rebuilds the rider's culling box (rider+0x460 min,
+ * +0x470 max; 0x20F10, normally called by the brain's mode updates, which do not run for a puppet and
+ * not in every mode): the manager's render (vtable[3] 0x12360) draws a rider only if 0x22760 finds that
+ * box in the view (result in rider+0xAC4), so a stale box hid the puppet in free roam. Do not use the
+ * rider's own "no pose" flag (byte +0xA84): it also stops animation and
  * posing, so only the board follows. Addresses: docs/notes.md (2026-10-19, LAN phase 0).
  *
  * Test mode (SSX3_PUPPET_TEST=1): the first AI rider (slot 1) rides beside the player, copying the
@@ -21,6 +25,14 @@
 #include "puppet.h"
 
 extern ptrdiff_t g_xbox_mem_offset;
+
+#if defined(_MSC_VER)
+extern __declspec(thread) uint32_t g_eax, g_ecx, g_edx, g_esp;
+#else
+extern __thread uint32_t g_eax, g_ecx, g_edx, g_esp;
+#endif
+
+extern void sub_00020F10(void);                         /* rider culling box from its pose, thiscall(pos|0) */
 int ssx3_in_game(void);                                 /* recomp_manual.c */
 
 #define M32(va) (*(volatile uint32_t *)((uintptr_t)(uint32_t)(va) + g_xbox_mem_offset))
@@ -111,4 +123,16 @@ void lan_puppet_pose(uint32_t rider)
     MF(rider + RIDER_POSE + 12) = 1.0f;
     for (i = 0; i < 4; i++)                             /* same orientation as the player */
         M32(rider + RIDER_POSE + 16 + 4 * i) = M32(src + RIDER_POSE + 16 + 4 * i);
+}
+
+void lan_puppet_after_pose(uint32_t rider)
+{
+    uint32_t eax = g_eax, ecx = g_ecx, edx = g_edx;
+
+    g_ecx = rider;
+    g_esp -= 8;
+    M32(g_esp + 4) = 0;                                 /* pos = NULL: use the pose at rider+0x180 */
+    M32(g_esp) = 0;                                     /* return address (the callee pops it and the arg) */
+    sub_00020F10();
+    g_eax = eax; g_ecx = ecx; g_edx = edx;
 }

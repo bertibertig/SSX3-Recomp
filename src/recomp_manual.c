@@ -231,12 +231,17 @@ void sub_0001F450(void)
     sub_0001F450_gen();
 }
 
-/* pose -> model and board (0x246C0) */
+/* pose -> model and board (0x246C0); a puppet's culling box afterwards */
 void sub_00024D50(void)
 {
-    if (lan_puppet_is(g_ecx))
-        lan_puppet_pose(g_ecx);
+    uint32_t rider = g_ecx;
+    int puppet = lan_puppet_is(rider);
+
+    if (puppet)
+        lan_puppet_pose(rider);
     sub_00024D50_gen();
+    if (puppet)
+        lan_puppet_after_pose(rider);
 }
 
 /*

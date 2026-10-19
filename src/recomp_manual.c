@@ -239,6 +239,43 @@ void sub_00024D50(void)
     sub_00024D50_gen();
 }
 
+/*
+ * Race countdown update (handler vtable 0x2820D8 [2]), stdcall: [esp+4] = rider manager, ret 4.
+ * While the start is held (src/lan/race.c) the frame counter mgr+0x1C is left alone this frame.
+ */
+#include "lan/race.h"
+
+extern void sub_00015620_gen(void);
+
+void sub_00015620(void)
+{
+    uint32_t mgr = SSX3_MEM32(g_esp + 4);
+
+    if (lan_race_hold_countdown(SSX3_MEM32(mgr + 0x1C))) { g_esp += 8; return; }
+    sub_00015620_gen();
+}
+
+/* Race state change (rider manager), thiscall: ecx = manager, [esp+4] = new state, ret 4. */
+extern void sub_000155A0_gen(void);
+
+void sub_000155A0(void)
+{
+    uint32_t from = SSX3_MEM32(g_ecx + 4), to = SSX3_MEM32(g_esp + 4);
+
+    if (from != to)
+        lan_race_state_change(from, to);
+    sub_000155A0_gen();
+}
+
+/* GameModeMan "rider reached the finish" dispatcher, thiscall: ecx = GameModeMan, [esp+4] = slot, ret 4. */
+extern void sub_000CD550_gen(void);
+
+void sub_000CD550(void)
+{
+    lan_race_on_finish(SSX3_MEM32(g_esp + 4));
+    sub_000CD550_gen();
+}
+
 /* ── Manual function overrides ─────────────────────────────── */
 
 /*

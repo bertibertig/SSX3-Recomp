@@ -529,4 +529,31 @@ _(date – what was done, what was found, next step)_
     In some frames the puppet was out of view (fixed world-space offset while the camera turns). For spike 3
     this leaves: synchronized start, and taking finish times from the host rather than each PC's local copy.
     Animation is whatever state the brain left (no tricks yet): sending anim state is part of the snapshot work.
+  - **Spike 3 – race flow: start hold and finish times work** (2026-10-19, `src/lan/race.c`, wrappers in
+    `recomp_manual.c`). Race state machine = rider manager: mgr+4 state (1 GameInit, 2 Freeride, 3 PreRace,
+    4 Countdown, 5 Race, 6 EndRace, 7 Shutdown), setter 0x155A0 (thiscall, new state) -> 0x15310, handler objects
+    (enter / update / leave) at mgr+0xA8 + 4·(state−1), vtables 0x2820B4 … 0x2820FC. A race goes GameInit ->
+    Freeride -> PreRace -> Countdown -> Race -> EndRace. Countdown: enter 0x15610 sets mgr+0x1C = 180 frames,
+    update 0x15620 counts down and switches to Race (start gate, 0xD4850 "StartgateOpen"). Race update 0x15650:
+    race clock mgr+0x10 (frames), EndRace once every human's rider+0x4D0 >= 0 (0x12AA0). mgr+8 is not the
+    previous state (it follows the requested one). The ride behind the results screen runs another countdown
+    that does not go through 0x155A0.
+    Finish: rider crosses the line -> 0x23E90: rider+0x4D0 = 0 (finish clock, +1/60 per frame), rider+0x4D8 =
+    finish time = mgr+0x10 + rider+0x4DC (per-rider offset), then GameModeMan dispatcher 0xCD550 (thiscall,
+    slot; GameModeMan 0x369480, +4 = active handler index into 0x3693CC; 9 handlers "GM_Handler", vtables
+    0x299FF0 + n·0x2C, finish = entry 7: CE4F0, CEF90, CD3A0, CFB50, CF7B0, CFF50, D0360, CF320, CECE0).
+    Single race = handler 1, 0xCEF90: takes rider+0x4D8 (360000 if DNF, rider+0x4E0). Results: 0x369408[slot]
+    finish frames, 0x369458[slot] place (0-based), ranked by 0xCE070 once every human is in; riders still on
+    the course get an estimate (0x22EF0). 0x3693FC[slot] = DNF.
+    Hooks: 0x15620 holds the countdown at 180 while a start signal is missing, only for a countdown entered
+    from PreRace (seen through the 0x155A0 wrapper; SSX3_RACE_HOLD=<s> / SSX3_RACE_GO_FILE=<path>, later the
+    host's message); 0xCD550 sets a puppet's finish time (SSX3_PUPPET_FINISH=<frames>) in rider+0x4D8 and
+    the stats block before the mode handler reads it. SSX3_RACE_TRACE=1 logs the state changes.
+    Results (Snow Jam, virtual pad): the start gate stays shut with no countdown number for the hold time, then
+    3-2-1 and the race as usual; a puppet given 6000 frames tops the results list with 01:40 and everyone else
+    is ranked after it; the puppet crossed the line 5–10 frames before the player (it rides next to them).
+    Left for the netcode: the race ends when the local humans are in – with remote players still riding, the
+    host has to hold EndRace / fill in their times as they arrive.
+  - Seen once: a crash on the title screen in a guest thread (`sub_0027F718+0x29B`, fault VA 0x7FFFFF1E,
+    esi = 0xFFFFFF00; stack 0x27F851 / 0x27F965 / 0x27FC1B), not reproduced in the next 2 boots + 3 races.
 

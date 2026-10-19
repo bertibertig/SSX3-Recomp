@@ -522,8 +522,11 @@ _(date – what was done, what was found, next step)_
     and the pose is written at the top of 0x24D50. Result (Snow Jam, virtual pad): the full rider – body,
     board, shadow, crouch/jump animation – rides in a fixed offset next to the player for 3½ minutes, no crash;
     without the switch the race is unchanged.
-    Still open, for spike 3: the AI's own race state (ComputerRider part, e.g. obj+0x4A0, path follower) keeps
-    simulating unseen and decides rank and finish – the puppet "finished" at ~3:45 and was parked at the finish
-    area while still copied next to the player. A network puppet has to drive track progress / finish itself.
+    Rank and finish follow the pose too (user's observation from the same run): on the progress bar the AI's
+    red arrow sat right above the player's black one all race, and in the results the puppet finished about
+    1 s before the player (last two places) – it crossed the line just ahead, as its forward offset says.
+    obj+0x4A0 (ComputerRider part, different from the pose) is internal AI state without visible effect.
+    In some frames the puppet was out of view (fixed world-space offset while the camera turns). For spike 3
+    this leaves: synchronized start, and taking finish times from the host rather than each PC's local copy.
     Animation is whatever state the brain left (no tricks yet): sending anim state is part of the snapshot work.
 

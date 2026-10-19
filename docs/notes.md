@@ -463,3 +463,22 @@ _(date – what was done, what was found, next step)_
     menus → Snow Jam race with the rider visible, game 60 fps with 30–48 dips while frame dumps run, still running
     at 88 s. Wine – missing-files message, `run.ps1` menu saves `run.conf`, pad on port 1, menus reached, then exit
     139 when the race loads (`tiled aperture at 0xF0000000 failed (error 487)`) – same as v0.1.0, no regression.
+- 2026-10-19 – **Split-screen test** (two virtual Xbox 360 pads over uinput, `RECOMP_USB_PADS=2`,
+  `SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS=1`, 1x, 16:9 from `run.conf`, Vulkan):
+  - Host: `PAD: port 1/2 <- "Xbox 360 Controller"`; emulated bus: `[OHCI0] pad 2 arriving on port 2` ~1 s after pad 1.
+  - Main menu shows *Multi Play* ("2 player head to head competition"). Flow: Player 1 Select Character (X = Load game,
+    i.e. import a saved rider) → Setup Character → Player 2 Select Character, driven by pad 2 only → Select Peak →
+    Mode (Race / Freestyle) → Event (Snow Jam, Metro-City, Happiness) → *Bragging Rights* (per-player handicaps:
+    head start, full boost, fast recovery, no ubertricks, leaky adrenaline, lvl 1 character) → loading → flyby →
+    vertical split, two HUDs, shared race clock. Each half steers only with its own pad; pause from pad 2 works.
+    Conquer the Mountain is not offered in Multi Play.
+  - Race to the finish: *Multi Play Results*, 6 riders = the 2 humans (profile name "BRK", "PLAYER 2") + 4 AI. No
+    crash, no unresolved calls in the log.
+  - Frame rate ~26.7–27.2 fps in the race: the game asks for 30 Hz whenever more than one player is in (app+0x38,
+    0x00369588, see koen's CLAUDE.md "30 FPS MODE REMOVED"), so ~27 is a little under the original.
+  - Seen in passing: in 16:9 the pause menu panel is off-centre (race visible in a strip on the left).
+  - Without `RECOMP_USB_PADS=2` the game sees one pad and hides Multi Play (TODO: default).
+  - PS2 decomp: SSX 3 PS2 has `dirtysock`, `beintnetwork.cpp`, `main/inputsync.cpp` (online play), all still
+    unmatched stubs; the Xbox XBE links no XNet/XOnline library (only leftover strings `BENetworkInt`,
+    `kT_CMNQuitToOnline`). A LAN mode needs its own netcode on the host side.
+

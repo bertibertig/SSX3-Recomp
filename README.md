@@ -33,7 +33,7 @@ build 2003-09-19; English, French, German, Spanish). Other versions are not supp
 | Start-up menu for renderer, monitor, display mode, resolution, aspect ratio, frame rate, v-sync | ✅ |
 | Windows build | ⚠️ experimental: menus work, software renderer only (slow); crashes when a race loads – only tested on Linux with Wine and Proton |
 | Full run through the game (all peaks, Conquer the Mountain, saving) | ⬜ not verified |
-| Split screen | ⬜ untested |
+| Split screen (two pads, `RECOMP_USB_PADS=2`) | ✅ Linux: menus, race, results; ~27 fps (the game itself caps split screen at 30) |
 | Steady 60 fps everywhere (the pre-race screen drops to ~40) | ⬜ in progress |
 | Anti-aliasing, HD textures | ⬜ planned |
 | Steam Deck test, macOS | ⬜ planned |

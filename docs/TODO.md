@@ -137,7 +137,26 @@ Order follows `CLAUDE.md` / `xboxrecomp/docs/GETTING_STARTED.md`. Details and fi
 - [x] **Rumble.** Runtime patch forwards the game's output reports (SSX 3: HID SET_REPORT on the control pipe) to
       `xbox_InputSetState()`; SDL rumble held until the game changes it. Seen in a race (`SSX3_PAD_TRACE=1`).
 - [ ] Rumble on a real pad: feel-check with the 8BitDo / an Xbox pad (strength, whether "low" = big motor feels right).
-- [ ] **Split screen**: test `RECOMP_USB_PADS=2` with two pads; maybe make it the default.
+- [x] **Split screen**: `RECOMP_USB_PADS=2` with two pads works (menus, Snow Jam race, results; 2026-10-19).
+- [ ] Split screen: make 2+ emulated pads the default (today Multi Play stays hidden unless `RECOMP_USB_PADS=2`
+      is set), and reach the game's 30 fps cap (measured ~27).
+- [ ] Widescreen: the pause menu panel sits off-centre in 16:9 (race visible in a strip on the left).
+
+## LAN multiplayer (new feature, plan: [lan-multiplayer.md](lan-multiplayer.md))
+
+- [ ] Phase 0 spikes: rider manager / 6 race slots, puppet hook on AI riders, race start/finish/results,
+      spawning riders in free roam + guest memory, frontend menu entry, save import (*Load game*), 12-rider perf
+- [ ] Net core (`src/net/`, ENet): protocol + versioning, LAN discovery, direct IP, clock sync, headless test clients
+- [ ] Lobby: LAN entry in Multi Play, host/join/browse, name + character + leveled-rider import, ready check, kick,
+      text chat, host rules (leveled vs. level 1, Bragging Rights, AI fill-in, collisions, max players)
+- [ ] Race up to 6 players: remote players in the AI slots, AI fill-in, synced countdown, results, session scoreboard
+- [ ] Name tags over riders (colours, distance fade, toggle, off-screen arrows)
+- [ ] Conquer the Mountain free roam, 12 players from the start; late join + reconnect
+- [ ] Collision toggle (ghost / bumping with knockdown events)
+- [ ] Spectators
+- [ ] Direct IP / internet hardening (loss, jitter, timeouts; NAT via port forwarding or VPN)
+- [ ] Freestyle events: 6 players, then 12
+- [ ] 12-player races (raise the engine's 6-rider limit)
 
 ## Open
 - Which XBE is the base? `default.xbe` = original + region/media patch + 1-byte code patch (see notes.md).

@@ -5,7 +5,8 @@
 # Results in logs/release-test-<version>/: summary.txt, *.log, frame dumps and contact sheets
 # (linux_frames.png, windows_frames.png) to look at.
 #
-# Linux:   missing-game-files check; run.sh with the start-up menu forced on (SSX3_MENU=1, Enter x4) in a pty,
+# Linux:   missing-game-files check; run.sh with the start-up menu forced on (SSX3_MENU=1, Enter x7: renderer,
+#          monitor (only with 2+), display mode, resolution, aspect ratio, frame rate, v-sync) in a pty,
 #          virtual pad: intro -> title -> menus -> race, Vulkan frame dumps.
 # Windows: missing-game-files check through pwsh; run.ps1's start-up menu (SSX3_RENDERER=vulkan, saves run.conf);
 #          the default flow (run.ps1, CPU renderer) under Wine with the virtual pad, CPU frame dumps.
@@ -60,7 +61,7 @@ if [ "${SKIP_LINUX:-0}" != 1 ]; then
   mkdir -p "$OUT/linux_dumps" "$OUT/linux_cfg"
   set +e
   XDG_CONFIG_HOME="$OUT/linux_cfg" SSX3_MENU=1 SSX3_VK_DUMP="$OUT/linux_dumps/f" SSX3_VK_DUMP_EVERY=300 \
-    python3 -I "$T/drive.py" --log "$OUT/linux.log" --seconds "$LINUX_SECS" --keys '\r' '\r' '\r' '\r' --pad linux \
+    python3 -I "$T/drive.py" --log "$OUT/linux.log" --seconds "$LINUX_SECS" --keys '\r' '\r' '\r' '\r' '\r' '\r' '\r' --pad linux \
     -- bash -c "cd '$P' && exec ./run.sh"
   set -e
   say "  start-up menu: $(plain "$OUT/linux.log" | grep -a -o 'run.sh: Vulkan.*' | head -1)"
@@ -78,10 +79,12 @@ if [ "${SKIP_WINDOWS:-0}" != 1 ]; then
   if pwsh -NoProfile -File "$P/run.ps1" > "$OUT/win_nofiles.log" 2>&1 < /dev/null; then say "  FAIL: run.ps1 started without game files"
   else say "  missing game files: $(grep -q 'default.xbe missing' "$OUT/win_nofiles.log" && echo 'stops with the message (ok)' || echo 'FAIL, see win_nofiles.log')"; fi
   link_game_files "$P"
+  wineboot -i >/dev/null 2>&1 || true   # create the prefix now: run.ps1 calls the exe before its menu shows
   set +e
-  # run.ps1's start-up menu: only offered for the Vulkan renderer; down + Enter, down + Enter, Enter
-  SSX3_RENDERER=vulkan python3 -I "$T/drive.py" --log "$OUT/win_menu.log" --seconds 25 \
-    --keys '\x1b[B' '\r' '\x1b[B' '\r' '\r' -- pwsh -NoProfile -File "$P/run.ps1"
+  # run.ps1's start-up menu: only offered for the Vulkan renderer; questions: monitor (only with 2+), display
+  # mode, resolution, aspect ratio, frame rate, v-sync -> down + Enter, then Enter for the rest
+  SSX3_RENDERER=vulkan python3 -I "$T/drive.py" --log "$OUT/win_menu.log" --seconds 45 --key-delay 12 \
+    --keys '\x1b[B' '\r' '\r' '\r' '\r' '\r' '\r' -- pwsh -NoProfile -File "$P/run.ps1"
   say "  start-up menu: $(plain "$OUT/win_menu.log" | grep -a -o 'run.ps1: Vulkan.*' | head -1)"
   say "  saved: $(grep -v '^#' "$OUT/win_appdata/ssx3-recomp/run.conf" 2>/dev/null | tr -d '\r' | tr '\n' ' ' || echo 'no run.conf (FAIL)')"
   # the default flow: run.ps1 without a menu (CPU renderer), pad into a race

@@ -6,7 +6,7 @@ SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS=1 (set by the caller) to read it while unfo
   drive.py --log out.log --seconds 85 [--keys '\\r' '\\r' '\\r'] [--pad linux|windows|none] -- <command> [args]
 
 --keys     sent to the terminal one by one (Python escapes, e.g. '\\x1b[B' = down arrow), 1.5 s apart, after a
-           start-up delay -- answers the start-up menu.
+           start-up delay -- answers the start-up menu. The pad schedule's clock starts after the last key.
 --pad      button schedule: 'linux' (Vulkan, fast) or 'windows' (CPU renderer, slow): Start to skip the intro,
            Start on the title, then A repeatedly through the menus into a race.
 Answers the terminal's cursor-position queries (ESC[6n) like a real terminal -- PowerShell waits for them.
@@ -15,7 +15,7 @@ Exit code: the command's exit status (killed at --seconds counts as 0 = still ru
 import argparse, fcntl, os, pty, select, signal, struct, sys, termios, time
 
 PAD_PLANS = {
-    "linux":   [(22, "START"), (30, "START")] + [(32 + 1.5 * i, "A") for i in range(24)],
+    "linux":   [(13.5, "START"), (21.5, "START")] + [(23.5 + 1.5 * i, "A") for i in range(24)],
     "windows": [(40, "START"), (60, "START")] + [(70 + 4.0 * i, "A") for i in range(16)],
     "none":    [],
 }
@@ -65,6 +65,7 @@ def main():
     out = open(a.log, "wb")
     t0 = time.time()
     next_key = t0 + a.key_delay
+    pad_t0 = t0                              # pad schedule clock: restarts when the last menu key is sent
     status = None
     while time.time() - t0 < a.seconds:
         r, _, _ = select.select([fd], [], [], 0.1)
@@ -81,7 +82,8 @@ def main():
         now = time.time()
         if keys and now >= next_key:
             os.write(fd, keys.pop(0)); next_key = now + 1.5
-        while plan and now - t0 >= plan[0][0]:
+            pad_t0 = now
+        while plan and not keys and now - pad_t0 >= plan[0][0]:
             press(plan.pop(0)[1])
         done, st = os.waitpid(pid, os.WNOHANG)
         if done:

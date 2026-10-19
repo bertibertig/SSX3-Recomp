@@ -28,7 +28,7 @@ build 2003-09-19; English, French, German, Spanish). Other versions are not supp
 | Internal resolution 1x–5x (up to 3200x2400) | ✅ Linux |
 | Controllers (XInput/SDL pads, hotplug, rumble), keyboard as player 1 | ✅ |
 | Start-up menu for resolution, frame rate, v-sync | ✅ |
-| Windows build | ⚠️ experimental: menus work, software renderer only (slow); under Proton it crashes when a race loads |
+| Windows build | ⚠️ experimental: menus work, software renderer only (slow); crashes when a race loads – only tested on Linux with Wine and Proton |
 | Full run through the game (all peaks, Conquer the Mountain, saving) | ⬜ not verified |
 | Split screen | ⬜ untested |
 | Steady 60 fps everywhere (the pre-race screen drops to ~40) | ⬜ in progress |
@@ -46,7 +46,7 @@ textures). Full list: [docs/TODO.md](docs/TODO.md).
 |---|---|
 | **Linux** x86-64 | Main platform. Vulkan renderer, SDL2 window and controllers. |
 | **Steam Deck** | The main target; should work like any Linux PC, not tested on a Deck yet. |
-| **Windows** 10/11 x86-64 | Experimental, not playable yet: intro and menus run with the software (CPU) renderer; under Proton it crashes when a race loads. Not tested on real Windows yet. |
+| **Windows** 10/11 x86-64 | Experimental, not playable yet: intro and menus run with the software (CPU) renderer, then it crashes when a race loads. So far only tested on Linux with Wine and Proton, not on real Windows. |
 | **macOS** | Not started. |
 
 ## Playing a release

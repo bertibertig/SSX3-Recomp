@@ -512,4 +512,18 @@ _(date – what was done, what was found, next step)_
     (The player's wipe-outs in those runs were obstacles – no steering input – not rider collisions.)
   - Seen: single-player *My Rules* screen (Super AI, AI headstart, full/unlimited/no boost, KO boost only, no uber
     tricks / rails, no knockdowns, leaky adrenaline) – candidates for lobby rules; results menu has Replay.
+  - **Spike 2 – puppet hook: works for the pose** (2026-10-19, `src/lan/puppet.c`, wrappers in `recomp_manual.c`,
+    `SSX3_PUPPET_TEST=1`). Correction to the entry above: 0x1F140 is the **animation step** (anim sequencer
+    rider+0x754: 0x1A7DA0 advance by dt, 0x1A7B90 evaluate), 0x246C0 applies the pose rider+0x180 to the model
+    node (+0x750, 0x1A53A0) and board/feet (+0x8A0/+0x8D0) – neither is physics. Byte +0xA84 = "do not animate or
+    pose" (that is why only the board followed). The AI's driving is the brain object rider+0x74C (control mode
+    +0xE60, cases 0–5; stages 0x1F3F0 input, 0x1F420 mode update, 0x1F450 post-update + tint).
+    Hook: for AI slot 1, the three brain stages are skipped (`g_esp += 4`, the callee pops its return address)
+    and the pose is written at the top of 0x24D50. Result (Snow Jam, virtual pad): the full rider – body,
+    board, shadow, crouch/jump animation – rides in a fixed offset next to the player for 3½ minutes, no crash;
+    without the switch the race is unchanged.
+    Still open, for spike 3: the AI's own race state (ComputerRider part, e.g. obj+0x4A0, path follower) keeps
+    simulating unseen and decides rank and finish – the puppet "finished" at ~3:45 and was parked at the finish
+    area while still copied next to the player. A network puppet has to drive track progress / finish itself.
+    Animation is whatever state the brain left (no tricks yet): sending anim state is part of the snapshot work.
 

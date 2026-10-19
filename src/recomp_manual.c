@@ -188,6 +188,57 @@ void sub_00212C18(void)
     g_esp += 4;
 }
 
+/* ── LAN multiplayer: puppet riders ─────────────────────────── */
+
+/*
+ * Rider update stages of the rider manager (vtable[2] 0x11E90), all fastcall with ecx = rider part.
+ * For a puppet (src/lan/puppet.c) the brain stages are skipped -- each pops its own return address,
+ * so a skip is esp += 4 -- and the pose is written right before 0x24D50 applies it. Wrappers rather
+ * than entry hooks: the generated bodies stay as sub_X_gen (scripts/run_pipeline.sh regenerates
+ * them after this list changes).
+ */
+#include "lan/puppet.h"
+
+#if defined(_MSC_VER)
+extern __declspec(thread) uint32_t g_ecx;
+#else
+extern __thread uint32_t g_ecx;
+#endif
+
+extern void sub_0001F3F0_gen(void);
+extern void sub_0001F420_gen(void);
+extern void sub_0001F450_gen(void);
+extern void sub_00024D50_gen(void);
+
+/* brain input */
+void sub_0001F3F0(void)
+{
+    if (lan_puppet_is(g_ecx)) { g_esp += 4; return; }
+    sub_0001F3F0_gen();
+}
+
+/* brain control-mode update */
+void sub_0001F420(void)
+{
+    if (lan_puppet_is(g_ecx)) { g_esp += 4; return; }
+    sub_0001F420_gen();
+}
+
+/* brain post-update, model tint */
+void sub_0001F450(void)
+{
+    if (lan_puppet_is(g_ecx)) { g_esp += 4; return; }
+    sub_0001F450_gen();
+}
+
+/* pose -> model and board (0x246C0) */
+void sub_00024D50(void)
+{
+    if (lan_puppet_is(g_ecx))
+        lan_puppet_pose(g_ecx);
+    sub_00024D50_gen();
+}
+
 /* ── Manual function overrides ─────────────────────────────── */
 
 /*

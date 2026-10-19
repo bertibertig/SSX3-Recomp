@@ -667,6 +667,20 @@ _(date – what was done, what was found, next step)_
   the order 1,3,0,4,6,5,2 (table 0x2934D4) via 0x56600; buying (0x4E570) costs table 0x300CDC[value/5 − 1]
   (250, 500, 750 … 2500, 5000) and checks the bank. The save diff matches exactly: attribute 4 5 → 9, total
   5 → 1018, bank 5 → 18 (4 × 250 spent). Also changed in Zoe's record: +0xDC 0 → 2 and +0xE0 0 → 3 (no direct
-  references; not gear – the user only bought attribute points, so likely counters of that session – open).
-  Where the equipped outfit and board sit needs a save diff after changing only those. Static analysis plus the save diff only; not yet checked in a
+  references; not gear – the user only bought attribute points; +0xDC = 2 is probably the two snowflakes
+  collected, per the user). Static analysis plus the save diff only; not yet checked in a
   running game. For LAN: `lan_profile.attrib[7]` carries the raw bytes; "equal stats" sets them all to 5.
+- 2026-10-20 – **Spike 6: equipped gear** (user's save "BRK2" = BRK with only Zoe's outfit changed from *Blacked
+  Out* to *Junker*). Each rider record holds an **inventory list**: +0x298 count (Zoe 466, Mac/record 0 503),
+  +0x29C entries of (u16 item id, u16 flags), room for 0x20D entries (0x834 bytes, the rest 0xFFFF/0), up to
+  +0xAD0; +0x288 is a run-time pointer to an item id -> list index table (s16, < 0 = not in the list).
+  Flags: 0x02 owned, **0x10 equipped** (set/cleared by the equip function 0x4D2B0(player, char, item, on), which
+  checks the loadout through the catalogue object at 0x3469F0 + record), 0x04 = the equipped bit as of the last
+  commit (0x4D210 copies 0x10 -> 0x04 for every entry), 0x20 not known yet. The diff: Blacked Out = items 0x34,
+  0x37, 0x4A lost 0x14; Junker = 0x2E, 0x31 gained it (and kept 0x20); nothing else in the record changed (only
+  the name "BRK" -> "BRK2" in record 0 and the tail). Zoe has 20 equipped items before, 19 after; Mac 23 – so a
+  loadout is a list of item ids (outfit pieces, board, ... – categories still open), not an outfit/board pair.
+  Item ids are global (0x2E and 0x31 are equipped for Mac too). 0x4D560 sums a field (+0xC of 0x38-byte entries of
+  the item catalogue at 0x346498) over the equipped items: gear seems to carry stat values as well – to check
+  before "equal stats" also has to cover gear. For LAN: `lan_profile.gear[32]` carries the equipped item ids;
+  a remote rider's look = character + that list.

@@ -124,6 +124,12 @@ static lan_session *join_bot(const char *name, int spectator, uint32_t game_id, 
     p.level = 7;
     memset(p.attrib, LAN_ATTRIB_BASE, sizeof p.attrib);
     p.attrib[4] = 9;                    /* like the user's Zoe: 4 points in attribute 4 */
+    {   /* and her 19 equipped items with Junker (save "BRK2") */
+        static const uint16_t zoe[] = { 0x54, 0x1CA, 0x2E, 0x4D, 0x8A, 0x55, 0x89, 0x279, 0xBF, 0xBE, 0x31,
+                                        0x203, 0x57, 0x275, 0x80, 0x1C7, 0x8B, 0xCA, 0x25F };
+        p.gear_count = (uint8_t)(sizeof zoe / sizeof zoe[0]);
+        memcpy(p.gear, zoe, sizeof zoe);
+    }
     p.spectator = (uint8_t)spectator;
     c.game_id = game_id;
     c.clock_skew_ms = skew;
@@ -179,6 +185,8 @@ static int selftest(void)
     check(ok, "a client sees the same list, names made unique (Zoe, Zoe2 .. Zoe11)");
     check(l->members[4].profile.level == 1 && l->members[4].profile.attrib[4] == LAN_ATTRIB_BASE,
           "equal stats rule: a leveled rider joins at level 1, one bar everywhere");
+    check(l->members[4].profile.gear_count == 19 && l->members[4].profile.gear[2] == 0x2E
+          && l->members[4].profile.gear[18] == 0x25F, "the equipped gear list arrives complete");
 
     printf("more members\n");
     g_bots[NBOTS].s = join_bot("Late", 0, DEFAULT_GAME_ID, 0);

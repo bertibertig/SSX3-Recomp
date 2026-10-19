@@ -53,7 +53,7 @@ the pose as well. Spike 3 done: start hold (synchronized countdown) and finish t
 including the results list. Spike 4 partly: riders can be spawned at run time in free roam (5, with
 their own AI); a puppet there follows its pose and is drawn (its culling box is rebuilt from the pose); spike 5 done (the dead PS2
 "Select Mode" popup can carry the LAN entry, branch on 0x368444), spike 6 done for the stats (2026-10-20: one 0xF88-byte record per rider, 7 attribute bytes at +0xBEB,
-bank +0xAD0; outfit/board still open), spike 7 done (12 visible riders ≈ 28 fps on a Ryzen 7 3800X with
+bank +0xAD0, equipped gear = the inventory items with flag 0x10), spike 7 done (12 visible riders ≈ 28 fps on a Ryzen 7 3800X with
 the CPU vertex path; heap: ~5.5 MB left with 12 riders).
 
 

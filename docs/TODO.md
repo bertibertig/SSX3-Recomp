@@ -146,7 +146,7 @@ Order follows `CLAUDE.md` / `xboxrecomp/docs/GETTING_STARTED.md`. Details and fi
 
 - [x] Phase 0 spikes: rider manager / 6 race slots, puppet hook on AI riders, race start/finish/results,
       spawning riders in free roam + guest memory, frontend menu entry, save import (*Load game*), 12-rider perf
-      (open from them: popup label for entry 1, Multi Play cursor with one pad, outfit/board in the profile)
+      (open from them: popup label for entry 1, Multi Play cursor with one pad, gear categories and gear stats)
 - [x] Net core (`src/net/`, ENet): protocol + versioning, LAN discovery, direct IP, clock sync, headless test clients
       (`ssx3_lanbot selftest`); open: a real build/XBE hash as the game id, Windows-native token RNG
 - [ ] Lobby: LAN entry in Multi Play, host/join/browse, name + character + leveled-rider import, ready check, kick,

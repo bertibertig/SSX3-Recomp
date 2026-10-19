@@ -260,21 +260,31 @@ static void put_profile(net_writer *w, const lan_profile *p)
 {
     int i;
     nw_str(w, p->name, LAN_NAME_MAX);
-    nw_u8(w, p->character); nw_u8(w, p->outfit); nw_u8(w, p->board); nw_u8(w, p->level);
+    nw_u8(w, p->character); nw_u8(w, p->level);
     for (i = 0; i < LAN_ATTRIBS; i++)
         nw_u8(w, p->attrib[i]);
+    nw_u8(w, p->gear_count > LAN_GEAR_MAX ? LAN_GEAR_MAX : p->gear_count);
+    for (i = 0; i < p->gear_count && i < LAN_GEAR_MAX; i++)
+        nw_u16(w, p->gear[i]);
     nw_u8(w, p->handicaps); nw_u8(w, p->spectator);
 }
 
 static void get_profile(net_reader *r, lan_profile *p)
 {
     int i;
+    uint32_t n;
     memset(p, 0, sizeof *p);
     nr_str(r, p->name, sizeof p->name);
-    p->character = (uint8_t)nr_u8(r); p->outfit = (uint8_t)nr_u8(r);
-    p->board = (uint8_t)nr_u8(r); p->level = (uint8_t)nr_u8(r);
+    p->character = (uint8_t)nr_u8(r); p->level = (uint8_t)nr_u8(r);
     for (i = 0; i < LAN_ATTRIBS; i++)
         p->attrib[i] = (uint8_t)nr_u8(r);
+    n = nr_u8(r);
+    for (i = 0; i < (int)n; i++) {
+        uint32_t item = nr_u16(r);
+        if (i < LAN_GEAR_MAX)
+            p->gear[i] = (uint16_t)item;
+    }
+    p->gear_count = (uint8_t)(n > LAN_GEAR_MAX ? LAN_GEAR_MAX : n);
     p->handicaps = (uint8_t)nr_u8(r); p->spectator = (uint8_t)nr_u8(r) ? 1 : 0;
 }
 
@@ -415,7 +425,7 @@ static void send_reject(lan_session *s, ENetPeer *peer, int type, int reason)
 
 static void host_flush_lobby(lan_session *s)
 {
-    uint8_t buf[2048];
+    uint8_t buf[4096];                              /* 16 members with full gear lists: ~1.8 KB */
     size_t len;
     if (!s->lobby_dirty)
         return;
@@ -758,7 +768,7 @@ static void host_discovery(lan_session *s)
 
 static void client_send_hello(lan_session *s)
 {
-    uint8_t buf[96];
+    uint8_t buf[160];
     net_writer w;
     nw_init(&w, buf, sizeof buf);
     nw_u8(&w, C_HELLO); nw_u32(&w, HELLO_MAGIC); nw_u16(&w, LAN_PROTOCOL_VERSION);
@@ -1117,7 +1127,7 @@ void lan_set_profile(lan_session *s, const lan_profile *p)
         unique_name(&s->lobby, m->profile.name, 0);
         s->lobby_dirty = 1;
     } else if (s->joined) {
-        uint8_t buf[64];
+        uint8_t buf[160];
         net_writer w;
         nw_init(&w, buf, sizeof buf);
         nw_u8(&w, C_PROFILE);

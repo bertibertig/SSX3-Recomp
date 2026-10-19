@@ -33,6 +33,7 @@
 #define LAN_NO_PLAYER        0xFFu
 #define LAN_ATTRIBS          7          /* rider attributes in the profile */
 #define LAN_ATTRIB_BASE      5          /* an unleveled attribute (one bar) */
+#define LAN_GEAR_MAX         32         /* equipped items in a profile (the user's Zoe: 19) */
 #define LAN_RECONNECT_MS     30000u     /* a dropped player keeps its place this long */
 
 typedef enum {
@@ -67,7 +68,8 @@ typedef enum {
 typedef struct {
     char    name[LAN_NAME_MAX + 1];
     uint8_t character;                  /* the game's character index */
-    uint8_t outfit, board;
+    uint8_t gear_count;
+    uint16_t gear[LAN_GEAR_MAX];        /* equipped item ids (inventory flag 0x10): outfit pieces, board, ... */
     uint8_t level;                      /* 1 = unleveled */
     uint8_t attrib[LAN_ATTRIBS];        /* the save's attribute bytes: 5 per bar, 5 .. 55 (notes.md, spike 6) */
     uint8_t handicaps;                  /* Bragging Rights bits */

@@ -86,4 +86,6 @@ Verified: Linux build + Windows cross build (MinGW) compile; own decoder test (8
   Win32 backend already did (`translate_obj_path`). XAPI opens a save game's files relative to the save directory;
   through the path table alone the bare `Data.ssx` failed with STATUS_OBJECT_PATH_NOT_FOUND and SSX 3 showed
   "Unable to save" when overwriting an existing save (Linux only; the Windows build was not affected).
+  Proposed upstream with a test (`tests/kernel_file_relative`): https://github.com/sp00nznet/xboxrecomp/pull/237 –
+  drop this part once it is in a release we update to.
 

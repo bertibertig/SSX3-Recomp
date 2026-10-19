@@ -213,21 +213,21 @@ extern void sub_00024D50_gen(void);
 /* brain input */
 void sub_0001F3F0(void)
 {
-    if (lan_puppet_is(g_ecx)) { g_esp += 4; return; }
+    if (lan_puppet_skip_brain(g_ecx)) { g_esp += 4; return; }
     sub_0001F3F0_gen();
 }
 
 /* brain control-mode update */
 void sub_0001F420(void)
 {
-    if (lan_puppet_is(g_ecx)) { g_esp += 4; return; }
+    if (lan_puppet_skip_brain(g_ecx)) { g_esp += 4; return; }
     sub_0001F420_gen();
 }
 
 /* brain post-update, model tint */
 void sub_0001F450(void)
 {
-    if (lan_puppet_is(g_ecx)) { g_esp += 4; return; }
+    if (lan_puppet_skip_brain(g_ecx)) { g_esp += 4; return; }
     sub_0001F450_gen();
 }
 
@@ -265,6 +265,17 @@ void sub_000155A0(void)
     if (from != to)
         lan_race_state_change(from, to);
     sub_000155A0_gen();
+}
+
+/* Rider manager update (vtable 0x28216C [2]), thiscall: ecx = manager, ret. Free-roam spawning first. */
+#include "lan/freeroam.h"
+
+extern void sub_00011E90_gen(void);
+
+void sub_00011E90(void)
+{
+    lan_freeroam_tick(g_ecx);
+    sub_00011E90_gen();
 }
 
 /* GameModeMan "rider reached the finish" dispatcher, thiscall: ecx = GameModeMan, [esp+4] = slot, ret 4. */

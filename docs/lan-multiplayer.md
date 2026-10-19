@@ -50,7 +50,8 @@ objects whose state is written from the network instead of from a pad or the AI.
 Status (2026-10-19): spike 1 done (6 slots hard-wired, addresses in notes.md), spike 2 done for the pose (a
 puppet AI rider follows a given pose with full body and animation, `src/lan/puppet.c`); rank and finish follow
 the pose as well. Spike 3 done: start hold (synchronized countdown) and finish times set from outside,
-including the results list; spikes 4–7 open.
+including the results list. Spike 4 partly: riders can be spawned at run time in free roam (5, with
+their own AI); a puppet there follows its pose but is often not drawn (culling, open); spikes 5–7 open.
 
 
 Each one is a short reverse-engineering spike with a yes/no result recorded in notes.md, before building on it:

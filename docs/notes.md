@@ -556,4 +556,31 @@ _(date – what was done, what was found, next step)_
     host has to hold EndRace / fill in their times as they arrive.
   - Seen once: a crash on the title screen in a guest thread (`sub_0027F718+0x29B`, fault VA 0x7FFFFF1E,
     esi = 0xFFFFFF00; stack 0x27F851 / 0x27F965 / 0x27FC1B), not reproduced in the next 2 boots + 3 races.
+  - **Spike 4 – riders in free roam (Conquer the Mountain): spawning works, puppet visibility open**
+    (2026-10-19, `src/lan/freeroam.c`, wrapper on the manager update 0x11E90; tests drive the menu: main menu
+    item 2, A on the character, then ~2 s straight and only a slight left, or the rider ends in the lodge
+    prompt / off limits – user's route tip; Back resets the rider).
+    Free roam: race setup mode byte 4, players byte 0, event 0x0C; total 2 riders = player + 1 "actor" count,
+    no AI (0x367F84 = 0); the manager holds only slot 0 (Player at +0x40), the AI/actor lists hold stale
+    memory (UTF-16 text); race state Freeride/PreRace/Race as the game goes (GameInit -> Freeride -> Race).
+    0x3680DC is the **replay** flag (setting it loads the mountain as a replay viewer), not "spawn AI".
+    Run-time spawn = the in-game event state 0xD54D0 (events on the mountain): when 0x11410 (all AI slots
+    ready) -> 0x11630 (clear AI; +0x11620 if more than one) -> 0x13EA0 (create 0x367F84 ComputerRiders,
+    characters from the slot table byte +8) -> pump 0x11360 until 0x113A0 (all slots loaded) -> 0x13930
+    (init) -> mgr+0x15 = 1 (AI updates on). All thiscall ecx = manager. lan_freeroam_tick() runs this from
+    the manager update with SSX3_FREEROAM_SPAWN=<1..5>: 5 riders are created, load and ride around the
+    mountain with their own AI, no crash (several runs). Once mgr+0x15 was found 0 again a few seconds
+    later (cause unknown); the tick switches it back on.
+    Puppet in free roam (SSX3_PUPPET_TEST=1, new SSX3_PUPPET_OFFSET=side,ahead,up): its pose follows the
+    player exactly (measured: 600 ahead / 120 beside along the real direction of travel) and a cluster of
+    vectors next to that pose at 0x82F5B5xx looks like its posed skeleton, but it is drawn only sometimes –
+    next to the player right after the spawn and while turning slowly, and (user) as a second rider just
+    behind the player; at 600 ahead never. Not the brain stages (SSX3_PUPPET_KEEP_BRAIN=1: same), not the
+    ComputerRider position obj+0x4A0 (pinning it to the pose: same); rider+0x830 (collision cell) unchanged
+    between visible and hidden; rider+0xA64/+0xAC4 are not visibility flags. Next: the rider draw path and
+    its culling (scene node rider+0x750 / 0x1A54D0, world sectors) – suspected: the puppet stays registered
+    in the world sector it was spawned in.
+    Memory: MmQueryStatistics in the runtime reports host values; the game uses its own allocator
+    (0x1A9BD0, named blocks). 5 extra riders fit; whether 11 do needs the allocator's free space (open) and the
+    6-slot limit lifted first. The runtime also defines a 128 MB debug-kit layout (XBOX_DEVKIT_RAM).
 

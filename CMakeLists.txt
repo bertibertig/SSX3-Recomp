@@ -61,6 +61,7 @@ set(GAME_SOURCES
     src/recomp_manual.c
     src/lan/puppet.c
     src/lan/race.c
+    src/lan/freeroam.c
     # Add game-specific sources here, e.g.:
     # src/asset_loader.c
     # src/custom_renderer.c

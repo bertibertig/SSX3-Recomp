@@ -10,7 +10,7 @@
  * posing, so only the board follows. Addresses: docs/notes.md (2026-10-19, LAN phase 0).
  *
  * Test mode (SSX3_PUPPET_TEST=1): the first AI rider (slot 1) rides beside the player, copying the
- * player's pose shifted sideways and ahead along the direction of travel.
+ * player's pose shifted sideways and ahead along the direction of travel (SSX3_PUPPET_OFFSET=side,ahead,up).
  */
 #include <math.h>
 #include <stddef.h>
@@ -30,6 +30,7 @@ int ssx3_in_game(void);                                 /* recomp_manual.c */
 #define RIDER_POSE   0x180      /* position x, y, z, 1 (z up), then orientation quaternion x, y, z, w */
 
 static int s_mode = -1;         /* SSX3_PUPPET_TEST: 0 off, 1 beside the player */
+static int s_keep_brain;        /* SSX3_PUPPET_KEEP_BRAIN=1: run the brain stages anyway (diagnostics) */
 
 static uint32_t rider_manager(void)
 {
@@ -43,6 +44,11 @@ static uint32_t rider_manager(void)
     return M32(world + 0x0C);
 }
 
+int lan_puppet_skip_brain(uint32_t rider)
+{
+    return lan_puppet_is(rider) && !s_keep_brain;
+}
+
 int lan_puppet_is(uint32_t rider)
 {
     uint32_t mgr;
@@ -50,6 +56,7 @@ int lan_puppet_is(uint32_t rider)
     if (s_mode < 0) {
         const char *e = getenv("SSX3_PUPPET_TEST");
         s_mode = e ? atoi(e) : 0;
+        s_keep_brain = getenv("SSX3_PUPPET_KEEP_BRAIN") != NULL;
         if (s_mode > 0)
             fprintf(stderr, "  [PUPPET] test mode %d: AI slot 1 follows the player\n", s_mode);
     }
@@ -64,7 +71,8 @@ int lan_puppet_is(uint32_t rider)
 void lan_puppet_pose(uint32_t rider)
 {
     static float last[3], dir[2] = { 1.0f, 0.0f };
-    static int have_last;
+    static int have_last, have_off;
+    static float off[3] = { 220.0f, 300.0f, 20.0f };
     uint32_t mgr = rider_manager(), src;
     float p[3], vx, vy, len;
     int i;
@@ -89,10 +97,17 @@ void lan_puppet_pose(uint32_t rider)
     last[0] = p[0]; last[1] = p[1]; last[2] = p[2];
     have_last = 1;
 
-    /* 220 units (~3 m) to the side, 300 ahead, 20 up so it does not sink into the slope */
-    MF(rider + RIDER_POSE + 0) = p[0] + dir[0] * 300.0f - dir[1] * 220.0f;
-    MF(rider + RIDER_POSE + 4) = p[1] + dir[1] * 300.0f + dir[0] * 220.0f;
-    MF(rider + RIDER_POSE + 8) = p[2] + 20.0f;
+    /* default: 220 units (~3 m) to the side, 300 ahead, 20 up so it does not sink into the slope;
+     * SSX3_PUPPET_OFFSET=<side>,<ahead>,<up> */
+    if (!have_off) {
+        const char *e = getenv("SSX3_PUPPET_OFFSET");
+        have_off = 1;
+        if (e)
+            sscanf(e, "%f,%f,%f", &off[0], &off[1], &off[2]);
+    }
+    MF(rider + RIDER_POSE + 0) = p[0] + dir[0] * off[1] - dir[1] * off[0];
+    MF(rider + RIDER_POSE + 4) = p[1] + dir[1] * off[1] + dir[0] * off[0];
+    MF(rider + RIDER_POSE + 8) = p[2] + off[2];
     MF(rider + RIDER_POSE + 12) = 1.0f;
     for (i = 0; i < 4; i++)                             /* same orientation as the player */
         M32(rider + RIDER_POSE + 16 + 4 * i) = M32(src + RIDER_POSE + 16 + 4 * i);

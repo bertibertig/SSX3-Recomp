@@ -274,11 +274,13 @@ void sub_000155A0(void)
 
 /* Rider manager update (vtable 0x28216C [2]), thiscall: ecx = manager, ret. Free-roam spawning first. */
 #include "lan/freeroam.h"
+#include "lan/lan_game.h"
 
 extern void sub_00011E90_gen(void);
 
 void sub_00011E90(void)
 {
+    lan_game_tick(g_ecx);
     lan_freeroam_tick(g_ecx);
     sub_00011E90_gen();
 }

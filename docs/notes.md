@@ -684,3 +684,23 @@ _(date – what was done, what was found, next step)_
   the item catalogue at 0x346498) over the equipped items: gear seems to carry stat values as well – to check
   before "equal stats" also has to cover gear. For LAN: `lan_profile.gear[32]` carries the equipped item ids;
   a remote rider's look = character + that list.
+- 2026-10-20 – **First LAN race between two game instances** (phase 3, first cut; `src/lan/lan_game.c`, session from
+  `SSX3_LAN_HOST=1` / `SSX3_LAN_JOIN=<addr>`, no lobby UI yet). Game id = FNV-1a of the XBE (main.c
+  `g_ssx3_xbe_hash`) mixed with the protocol version. A network thread services the session (2 ms); the hooks
+  lock briefly. The countdown hold reads the profile (spike 6 offsets) and reports ready; the host starts when
+  `SSX3_LAN_PLAYERS` (default 2) are ready; our rider = game slot 0 everywhere, the others take slots 1.. as
+  puppets driven by `lan_remote_state(now − 100 ms)`; our pose goes out at 30 Hz from the 0x11E90 update; finish
+  times go to the host, a puppet's local crossing takes its player's own time.
+  Test on one machine: two `guest_probe.py` instances, each with its own virtual pad (`HPAD_PRODUCT=0x028e` /
+  `0x02ea`, each instance ignores the other's id with `SDL_GAMECONTROLLER_IGNORE_DEVICES`), its own
+  `RECOMP_SAVE_DIR`, both through Single Event → Peak 1 → Snow Jam race with the default rules. Result: both
+  joined, GO released 4 ms apart (host clock), race clocks equal on screen; each puppet within ~300 units (≈ the
+  100 ms delay at speed) of the other instance's rider; host finished 223.37 s, guest 221.83 s, and both results
+  screens list the remote player with its own time (host: "Kaori 3:41", guest: "Viggo 3:43"). Gaps found:
+  - The puppet keeps the look (and name in the results) of the AI character in its slot: the remote player's
+    character and gear are sent but not applied yet.
+  - AI riders in the other slots are local to each PC (different places 1–4 on the two screens).
+  - The race clock counts frames: the guest's local view of the host crossing the line was 13311 frames against
+    the host's own 13401 – under load (two instances on one CPU) the PCs' frame counts drift apart, so finish
+    times are each PC's own game time; the results use those.
+  - The finish dispatcher runs once more for the puppet on the results screen ("locally 0"); harmless so far.

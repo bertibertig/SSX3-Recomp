@@ -88,6 +88,7 @@ set(GAME_SOURCES
     src/lan/race.c
     src/lan/freeroam.c
     src/lan/menu.c
+    src/lan/lan_game.c
     # Add game-specific sources here, e.g.:
     # src/asset_loader.c
     # src/custom_renderer.c
@@ -106,7 +107,7 @@ add_executable(${PROJECT_NAME} WIN32
 )
 
 # Link against the xboxrecomp umbrella target (all 6 runtime libraries)
-target_link_libraries(${PROJECT_NAME} PRIVATE xboxrecomp)
+target_link_libraries(${PROJECT_NAME} PRIVATE xboxrecomp ssx3_net)
 
 # Include paths for generated recomp headers
 target_include_directories(${PROJECT_NAME} PRIVATE

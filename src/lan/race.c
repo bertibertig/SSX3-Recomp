@@ -36,6 +36,7 @@
 
 #include "race.h"
 #include "puppet.h"
+#include "lan_game.h"
 
 extern ptrdiff_t g_xbox_mem_offset;
 
@@ -93,10 +94,12 @@ void lan_race_state_change(uint32_t from, uint32_t to)
 int lan_race_hold_countdown(uint32_t counter)
 {
     double held;
+    int lan;
 
     if (!s_init)
         init();
-    if (s_hold_s < 0.0 && !s_go_file)
+    lan = lan_game_active();
+    if (!lan && s_hold_s < 0.0 && !s_go_file)
         return 0;
     if (counter < 180u)                         /* already counting: never stop half-way */
         return 0;
@@ -106,6 +109,8 @@ int lan_race_hold_countdown(uint32_t counter)
             fprintf(stderr, "  [RACE] countdown after state %u: not held\n", s_countdown_from);
         return 0;
     }
+    if (lan)                                    /* the host's start time (lan_game.c) */
+        return lan_game_hold() == 1;
     if (s_held_since < 0.0) {
         s_held_since = now_s();
         fprintf(stderr, "  [RACE] countdown held\n");
@@ -148,6 +153,15 @@ void lan_race_on_finish(uint32_t slot)
         forced = e ? atol(e) : -1;
     }
     st = stats_time_va(rider);
+    if (lan_game_active()) {
+        uint32_t t = lan_game_finish(slot, M32(rider + 0x4D8));
+        if (t != M32(rider + 0x4D8)) {
+            M32(rider + 0x4D8) = t;
+            if (st)
+                M32(st) = t;
+        }
+        return;
+    }
     if (forced >= 0 && lan_puppet_is(rider)) {
         fprintf(stderr, "  [RACE] slot %u finish %u -> %ld frames (set from outside)\n", slot, M32(rider + 0x4D8),
                 forced);

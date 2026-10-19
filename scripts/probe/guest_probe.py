@@ -6,6 +6,8 @@
 #   python3 scripts/probe/guest_probe.py <dir>      # env: HPADS=<n> virtual pads (default 2); game env as usual,
 #                                                   # e.g. RECOMP_USB_PADS=2 SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS=1
 #   echo "pad 1 START" > <dir>/h.fifo
+#   HPAD_PRODUCT=0x02ea: another USB product id for the virtual pads, so two probes (two game instances, e.g. a
+#   LAN test) can each ignore the other's pads with SDL_GAMECONTROLLER_IGNORE_DEVICES
 #
 # Commands, one per line:
 #   pad <n> A|B|X|Y|START|BACK|LB|RB|UP|DOWN|LEFT|RIGHT [hold_s]
@@ -26,7 +28,7 @@ cap = {e.EV_KEY: [e.BTN_A, e.BTN_B, e.BTN_X, e.BTN_Y, e.BTN_START, e.BTN_SELECT,
        e.EV_ABS: [(a, AbsInfo(0, -32768, 32767, 16, 128, 0)) for a in (e.ABS_X, e.ABS_Y, e.ABS_RX, e.ABS_RY)] +
                  [(a, AbsInfo(0, 0, 255, 0, 0, 0)) for a in (e.ABS_Z, e.ABS_RZ)] + [(a, AbsInfo(0, -1, 1, 0, 0, 0)) for a in (e.ABS_HAT0X, e.ABS_HAT0Y)]}
 npads = int(os.environ.get("HPADS", "2"))
-pads = [UInput(cap, name="Microsoft X-Box 360 pad", vendor=0x045e, product=0x028e, version=0x110, bustype=e.BUS_USB, phys=f"vpad{i}") for i in range(npads)]
+pads = [UInput(cap, name="Microsoft X-Box 360 pad", vendor=0x045e, product=int(os.environ.get("HPAD_PRODUCT", "0x028e"), 0), version=0x110, bustype=e.BUS_USB, phys=f"vpad{i}") for i in range(npads)]
 keys = dict(A=e.BTN_A, B=e.BTN_B, X=e.BTN_X, Y=e.BTN_Y, START=e.BTN_START, BACK=e.BTN_SELECT, LB=e.BTN_TL, RB=e.BTN_TR)
 hats = dict(UP=(e.ABS_HAT0Y, -1), DOWN=(e.ABS_HAT0Y, 1), LEFT=(e.ABS_HAT0X, -1), RIGHT=(e.ABS_HAT0X, 1))
 axes = dict(LX=e.ABS_X, LY=e.ABS_Y, RX=e.ABS_RX, RY=e.ABS_RY, LT=e.ABS_Z, RT=e.ABS_RZ)

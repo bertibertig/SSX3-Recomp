@@ -445,6 +445,9 @@ static void install_posix_fault_handler(void)
 static void  *s_xbe_data;
 static size_t s_xbe_size;
 
+/* FNV-1a of the XBE: part of the LAN game id (src/lan/lan_game.c), so only identical XBEs play together. */
+uint32_t g_ssx3_xbe_hash;
+
 /* Steps 1-2: load the XBE and map the guest address space.
  *
  * Separate from boot_and_run because it has to happen before anything else
@@ -471,6 +474,14 @@ static int boot_memory(void)
         return 1;
     }
     printf("XBE loaded: %zu bytes\n", xbe_size);
+    {
+        const unsigned char *b = (const unsigned char *)xbe_data;
+        uint32_t h = 2166136261u;
+        size_t i;
+        for (i = 0; i < xbe_size; i++)
+            h = (h ^ b[i]) * 16777619u;
+        g_ssx3_xbe_hash = h;
+    }
 
     /* Step 2: Initialize Xbox memory layout */
     printf("Initializing Xbox memory layout...\n");

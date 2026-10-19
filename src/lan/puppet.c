@@ -25,6 +25,7 @@
 #include <stdlib.h>
 
 #include "puppet.h"
+#include "lan_game.h"
 
 extern ptrdiff_t g_xbox_mem_offset;
 
@@ -67,6 +68,9 @@ int lan_puppet_is(uint32_t rider)
 {
     uint32_t mgr;
 
+    if (lan_game_active())                              /* a LAN session: the remote players' riders */
+        return ssx3_in_game() && lan_game_puppet_member(rider) >= 0;
+
     if (s_mode < 0) {
         const char *e = getenv("SSX3_PUPPET_TEST");
         s_mode = e ? atoi(e) : 0;
@@ -101,6 +105,11 @@ void lan_puppet_pose(uint32_t rider)
     uint32_t mgr = rider_manager(), src;
     float p[3], vx, vy, len;
     int i;
+
+    if (lan_game_active()) {
+        lan_game_pose(rider);
+        return;
+    }
 
     src = M32(mgr + 0x28);                              /* the player's rider part (slot 0) */
     if (src < 0x10000u)

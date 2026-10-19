@@ -2,7 +2,8 @@
 
 A feature the original game never had: online-style multiplayer over LAN (and direct IP) with a lobby, up to
 **6 players per race** at first (the engine's rider limit) and **12 in free roam** (Conquer the Mountain) from the
-start; 12-player races and Freestyle later. Status: phase 0 done, **phase 1 (net core) done** (2026-10-20). Findings go to `docs/notes.md`.
+start; 12-player races and Freestyle later. Status: phase 0 done, **phase 1 (net core) done**, phase 3 started: a first race between two game
+instances works (2026-10-20, env-driven session, notes.md). Findings go to `docs/notes.md`.
 
 ## What the game gives us (verified 2026-10-19, see notes.md)
 

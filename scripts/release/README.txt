@@ -47,8 +47,10 @@ Linux (x86-64, glibc 2.39 or newer: Ubuntu 24.04+, Fedora 40+, Arch, SteamOS 3.6
     Arch:          sudo pacman -S sdl2 openssl libepoxy vulkan-icd-loader  (+ your GPU's Vulkan driver)
     Fedora:        sudo dnf install SDL2 openssl-libs libepoxy mesa-vulkan-drivers
 
-  Started from a terminal, run.sh first shows a menu for the internal resolution
-  (1x-5x), the frame rate and v-sync. The choice is saved in
+  Started from a terminal, run.sh first shows a menu for the renderer, the
+  monitor, the display mode (windowed, borderless, fullscreen), the internal
+  resolution (1x-5x), the aspect ratio (4:3, 16:9, 16:10, 21:9, auto), the frame
+  rate and v-sync. The choice is saved in
   ~/.config/ssx3-recomp/run.conf and reused, also without a terminal (e.g. as a
   Steam shortcut). SSX3_MENU=1 ./run.sh shows the menu again.
 
@@ -76,14 +78,19 @@ Keyboard (player 1):
   1 / 3 = left / right trigger
   W A S D = left stick  I J K L = right stick   Shift / Ctrl = stick clicks
   F10 = cycle the internal resolution (Vulkan)
+  F11 or Alt+Enter = toggle windowed / full screen (Vulkan)
 
 
 4. Options (environment variables)
 ----------------------------------
 
-The resolution, frame rate and v-sync options belong to the Vulkan renderer (Linux).
+All options except the logo/intro ones belong to the Vulkan renderer (Linux).
 
+  SSX3_MONITOR=primary|<number>|<name>  monitor (default: the desktop's main one;
+                        ./ssx3_recomp --list-displays lists them)
+  SSX3_WINDOW=windowed|borderless|fullscreen   display mode
   SSX3_RES_SCALE=1..5   internal resolution, multiple of 640x480
+  SSX3_ASPECT=4:3|16:9|16:10|21:9|W:H|auto     widescreen in races (menus stay 4:3)
   SSX3_FPS_LIMIT=<n>    frame cap with interpolation (default: display refresh, 0 = uncapped)
   SSX3_INTERP=0         no frame interpolation, show the game's own 60 fps
   SSX3_VSYNC=1          v-sync on
@@ -101,6 +108,8 @@ The resolution, frame rate and v-sync options belong to the Vulkan renderer (Lin
 - An occasional crash right after the intro movie starts; just start again.
 - Some screens (e.g. before a race) run below 60 fps.
 - Some rare graphics effects are not implemented in the Vulkan renderer yet.
+- The rider's shadow occasionally glitches.
+- Widescreen is not checked in split screen and replays yet.
 
 Bug reports: https://github.com/bertibertig/SSX3-Recomp/issues
 Please attach the console output (./run.sh 2>&1 | tee run.log).

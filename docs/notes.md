@@ -452,3 +452,14 @@ _(date – what was done, what was found, next step)_
     – the known CPU-bound vertex interpreter, slightly more work now that the rider is really drawn (screen + six
     shadow maps). Still open: occasional shadow glitches (user), the lighter rectangle under the rider at ~0:21 –
     compare with xemu.
+- 2026-10-19 – **Release v0.2.0** (`/release`): widescreen, display modes, monitor and renderer choice, rider /
+  shadow-map fixes; notes in `docs/release-notes/v0.2.0.md`, player README updated (new options, F11/Alt+Enter).
+  Packages: Linux 9.3 MB (Docker, GLIBC ≤ 2.38), Windows 7.8 MB (MinGW, XINPUT1_4, UCRT, no MinGW DLLs); no game data.
+  - `test_release.sh` was written for the 3–4 question menu and failed on the new one: Linux sent 4 Enters (menu
+    now up to 7 questions; stuck at "Aspect ratio"), Windows sent its keys while `run.ps1` was still running the
+    exe through Wine to list renderers/monitors in a fresh prefix. Now: 7 Enters on Linux, the pad schedule's clock
+    starts after the last menu key (`drive.py`), `wineboot -i` before the Windows menu, which gets 7 keys after 12 s.
+  - Results: Linux – whiptail menu answered, `run.conf` saved (16:9, windowed), pad on port 1, intro → title →
+    menus → Snow Jam race with the rider visible, game 60 fps with 30–48 dips while frame dumps run, still running
+    at 88 s. Wine – missing-files message, `run.ps1` menu saves `run.conf`, pad on port 1, menus reached, then exit
+    139 when the race loads (`tiled aperture at 0xF0000000 failed (error 487)`) – same as v0.1.0, no regression.

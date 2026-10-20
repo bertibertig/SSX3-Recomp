@@ -186,6 +186,35 @@ The result is `build-win/ssx3_recomp.exe` (container: `build-docker-win/`). Copy
 your `game_files/` to a Windows PC and start `run.ps1`, or run it under Proton on Linux with `scripts/run_win.sh`.
 A native MSVC build is untested.
 
+### Unit tests and CI
+
+The host unit tests in [tests/](tests/) need neither game data nor generated code: on a fresh clone, CMake
+builds the runtime, the LAN net core and our host sources (the game executable only once `src/recomp/gen/`
+exists) and `ctest` runs the tests – the packet reader/writer, the LAN net core on loopback
+(`ssx3_lanbot selftest`), and on Linux the x86-64 MMIO decoder and the controller layer on a virtual pad.
+
+```bash
+cmake -S . -B build-test -G Ninja -DCMAKE_BUILD_TYPE=Release
+```
+
+```bash
+cmake --build build-test
+```
+
+```bash
+ctest --test-dir build-test --output-on-failure
+```
+
+On a fresh clone, apply the runtime patches first (`scripts/build.sh` does it for you):
+
+```bash
+for p in patches/xboxrecomp/*.patch; do git -C xboxrecomp apply "../$p"; done
+```
+
+GitHub Actions
+([.github/workflows/ci.yml](.github/workflows/ci.yml)) does the same on every push, on Ubuntu 24.04 (GCC) and
+natively on Windows (MSYS2 MinGW-w64).
+
 ### Release packages
 
 `scripts/package_release.sh v0.1.0` builds both packages into `dist/` (Linux in the container for

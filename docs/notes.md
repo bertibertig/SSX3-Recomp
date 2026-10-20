@@ -785,3 +785,12 @@ _(date – what was done, what was found, next step)_
   - Infra: two probes must never read the same command FIFO (an old probe kept reading B's path after its
     folder was moved and swallowed the presses), and a stale virtual pad can take port 1 (the game listens to
     port 1 only) – restart the instance then.
+- 2026-10-20 – **CI (GitHub Actions) with unit tests** (`.github/workflows/ci.yml`): Linux (Ubuntu 24.04, GCC,
+  Ninja) and Windows (windows-latest, MSYS2 MINGW64 – the toolchain the releases use, native instead of cross).
+  CI has no XBE, so `CMakeLists.txt` now builds `ssx3_recomp` as an OBJECT library (compile check of our host
+  sources, no link) when `src/recomp/gen/` is empty; with generated code it is the executable as before. Tests
+  under `tests/` via ctest (`SSX3_TESTS`, default ON): `net_wire` (new: byte order, round trip, string cuts,
+  overruns), `lanbot_selftest`, Linux x86-64 only `mmio_decode_x64`, POSIX + SDL2 only `pad_virtual`. The
+  runtime patches are applied with `git apply` in CI (fails hard, unlike `apply_runtime_patches`); the Windows
+  job turns off `core.autocrlf` so they apply byte for byte (`.gitattributes`: `*.patch eol=lf` too).
+  Verified locally on a fresh clone: Linux 4/4, MinGW cross build + Wine 2/2.

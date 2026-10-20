@@ -100,11 +100,19 @@ set(GAME_SOURCES
 #   src/recomp/recomp_dispatch.h     - binary search dispatch table
 #   src/recomp/recomp_types.h        - register model, ICALL macros, MEM helpers
 
-# WIN32 = GUI subsystem on Windows (WinMain); ignored elsewhere.
-add_executable(${PROJECT_NAME} WIN32
-    ${GAME_SOURCES}
-    ${RECOMP_GEN_SOURCES}
-)
+if(RECOMP_GEN_SOURCES)
+    # WIN32 = GUI subsystem on Windows (WinMain); ignored elsewhere.
+    add_executable(${PROJECT_NAME} WIN32
+        ${GAME_SOURCES}
+        ${RECOMP_GEN_SOURCES}
+    )
+else()
+    # A fresh clone (and CI) has no generated code: compile our host sources
+    # with the same settings as a check, but do not link a game executable.
+    message(STATUS "No generated code in src/recomp/gen/: ${PROJECT_NAME} is a compile check only "
+                   "(scripts/run_pipeline.sh generates the game)")
+    add_library(${PROJECT_NAME} OBJECT ${GAME_SOURCES})
+endif()
 
 # Link against the xboxrecomp umbrella target (all 6 runtime libraries)
 target_link_libraries(${PROJECT_NAME} PRIVATE xboxrecomp ssx3_net)
@@ -230,3 +238,10 @@ endif()
 #     ENABLE_ICALL_TRACE=1
 #     VERBOSE_KERNEL_LOG=1
 # )
+
+# ── Unit tests (tests/, run with ctest) ─────────────────────────
+option(SSX3_TESTS "Build the host unit tests" ON)
+if(SSX3_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()

@@ -20,7 +20,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define LAN_PROTOCOL_VERSION 1u
+#define LAN_PROTOCOL_VERSION 2u          /* 2: snapshots carry the control input */
 #define LAN_DEFAULT_PORT     27215u     /* game sessions (ENet) */
 #define LAN_DISCOVERY_PORT   27216u     /* lobby browser queries (plain UDP) */
 
@@ -120,6 +120,7 @@ typedef struct {
     uint16_t flags;
     float    boost;
     float    progress;                  /* track progress (race rank) */
+    uint32_t input[2];                  /* the rider's control input this frame (game: 8 bytes, see lan_game.c) */
 } lan_snapshot;
 
 typedef enum {

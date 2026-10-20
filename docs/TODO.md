@@ -153,7 +153,7 @@ Order follows `CLAUDE.md` / `xboxrecomp/docs/GETTING_STARTED.md`. Details and fi
       text chat, host rules (leveled vs. level 1, Bragging Rights, AI fill-in, collisions, max players)
 - [ ] Race up to 6 players: remote players in the AI slots, AI fill-in, synced countdown, results, session scoreboard
       (done, env-driven: 2-instance race with puppets, synced start, own finish times in the results;
-      character and name done; open: puppet animation freezes, gear on the puppet, start-list names,
+      character, name and input-driven animation done; open: gear on the puppet, start-list names,
       host-simulated AI, more than 2 players)
 - [ ] Name tags over riders (colours, distance fade, toggle, off-screen arrows)
 - [ ] Conquer the Mountain free roam, 12 players from the start; late join + reconnect

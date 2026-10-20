@@ -22,6 +22,12 @@
  *   - Our rider's pose (rider+0x180) goes out at 30 Hz from the rider-manager update.
  *   - Finish: our time goes to the host; a puppet that crosses the line takes its player's own time from
  *     the lobby when it is there already.
+ *   - Animation: a rider's brain (rider+0x74C) fills an 8-byte control input each frame (vtable[0], from the
+ *     pad or the AI) and hands it to its current control mode (0x30970: riding, air, grind ...): dword 0 bits
+ *     26-31 / 20-25 = left stick, bits 8-19 buttons, dword 1 another axis. Our rider's input goes out with
+ *     every snapshot; a puppet's brain keeps running, but 0x30970 gets the remote player's input instead of
+ *     its AI's, so crouch, carve, jumps and tricks animate as on the other PC, while the pose (0x24D50) still
+ *     comes from the network.
  *   - End: the game ends the race once its humans are through (0x12AA0); lan_game_wait_end() keeps it going
  *     until every remote player in it has finished on their own PC (or left) and their puppet has crossed the
  *     line here (up to 3 s later, it rides 100 ms behind), so the results list real times, not estimates.
@@ -109,6 +115,7 @@ static uint32_t     s_next_profile_poll;
 static uint8_t      s_crossed[6];               /* game slot: the puppet crossed the line here */
 static uint32_t     s_wait_since, s_seen_finished[6];
 static int          s_we_finished;              /* our rider is through: the results are finalized */
+static uint32_t     s_local_input[2];           /* our rider's control input this frame */
 
 static void sleep_ms(unsigned ms)
 {
@@ -440,6 +447,8 @@ void lan_game_tick(uint32_t mgr)
         if (s_last_pos_time && now != s_last_pos_time)    /* units per second, for extrapolation */
             for (i = 0; i < 3; i++)
                 sn.vel[i] = (sn.pos[i] - s_last_pos[i]) * 1000.0f / (float)(now - s_last_pos_time);
+        sn.input[0] = s_local_input[0];
+        sn.input[1] = s_local_input[1];
         for (i = 0; i < 3; i++)
             s_last_pos[i] = sn.pos[i];
         s_last_pos_time = now;
@@ -582,4 +591,35 @@ void lan_game_after_finish(uint32_t slot)
     g_eax = eax; g_ecx = ecx; g_edx = edx;
     fprintf(stderr, "  [LAN] results: slot %u now %u frames, place %u\n", slot, M32(0x00369408u + 4 * slot),
             M32(0x00369458u + 4 * slot) + 1);
+}
+
+void lan_game_input(uint32_t brain, uint32_t input)
+{
+    uint32_t game, world, mgr, slot, n;
+    if (s_state <= 0 || brain < 0x10000u || input < 0x10000u || (game = M32(0x00369534u)) < 0x10000u
+        || (world = M32(game + 0x74)) < 0x10000u || (mgr = M32(world + 0x0C)) < 0x10000u)
+        return;
+    n = M32(mgr + 0x78);
+    for (slot = 0; slot < n && slot < 6; slot++) {
+        uint32_t rider = M32(mgr + 0x28 + 4 * slot);
+        if (rider < 0x10000u || M32(rider + 0x74C) != brain)
+            continue;
+        if (slot == 0) {                                /* ours: goes out with the next snapshot */
+            s_local_input[0] = M32(input);
+            s_local_input[1] = M32(input + 4);
+        } else {
+            int member;
+            lan_snapshot sn;
+            LOCK();
+            member = race_running(lan_get_lobby(s_session)) ? s_slot_member[slot] : -1;
+            if (member >= 0) {
+                if (!lan_remote_state(s_session, member, lan_time(s_session) - RENDER_DELAY_MS, &sn))
+                    sn.input[0] = sn.input[1] = 0;
+                M32(input) = sn.input[0];               /* the remote player's input, not its AI's */
+                M32(input + 4) = sn.input[1];
+            }
+            UNLOCK();
+        }
+        return;
+    }
 }

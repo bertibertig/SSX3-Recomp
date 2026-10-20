@@ -61,6 +61,8 @@ static uint32_t rider_manager(void)
 
 int lan_puppet_skip_brain(uint32_t rider)
 {
+    if (lan_game_active())      /* LAN: the brain runs on the remote player's input (lan_game_input) */
+        return 0;
     return lan_puppet_is(rider) && !s_keep_brain;
 }
 

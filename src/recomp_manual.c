@@ -292,6 +292,18 @@ void sub_00012AA0(void)
         g_eax &= ~0xFFu;
 }
 
+#include "lan/lan_game.h"
+
+/* A rider brain's control input goes to its current control mode (thiscall: ecx = brain rider+0x74C,
+ * [esp+4] = 8-byte input, ret 4). LAN: record ours, give a puppet its remote player's input. */
+extern void sub_00030970_gen(void);
+
+void sub_00030970(void)
+{
+    lan_game_input(g_ecx, SSX3_MEM32(g_esp + 4));
+    sub_00030970_gen();
+}
+
 /* Rider manager update (vtable 0x28216C [2]), thiscall: ecx = manager, ret. Free-roam spawning first. */
 #include "lan/freeroam.h"
 #include "lan/lan_game.h"

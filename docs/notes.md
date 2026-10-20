@@ -733,3 +733,15 @@ _(date – what was done, what was found, next step)_
     3 = Edging, 4 = Spin (the one the user's Zoe got), 5 = Toughness, 6 = Stability.
   - `scripts/ghidra/Decomp.java` now creates a function for this run when Ghidra never made one at an address
     (0xA4620 was such a case); the project is opened read-only, nothing is saved.
+- 2026-10-20 – **LAN: puppet animation from the remote player's input** (user report: guests froze at the start
+  and whenever visible). Cause: the puppet skipped its brain stages, so its control state machine (and with it
+  crouch/carve/jump/trick animation) never got input. The brain (rider+0x74C) fills an **8-byte control input**
+  each frame in 0x1F3F0 (vtable[0]: pad or AI) and passes it to 0x30970 (thiscall brain, &input, ret 4), which
+  hands it to the current control mode (brain+0xE64: 0 riding 0x38700, 1 … 0xC; the riding mode reads dword 0
+  bits 26–31 / 20–25 as the left stick (6-bit signed, / scale 0x282268), bits 8–19 buttons, dword 1 bits 0–5
+  another axis). Now our rider's input goes out with every snapshot (`lan_snapshot.input`, protocol version 2),
+  puppets keep all brain stages in LAN mode, and a wrapper on 0x30970 replaces a puppet's AI input with its
+  player's (from the snapshot 100 ms back; zero before the first one). The pose is still written at 0x24D50.
+  Check (two instances): the puppets' control modes follow the remote riders' with the expected lag (A 0 → 7 seen
+  as 0 → 7 on B's puppet, B 8 → 0 on A's puppet), the race ran through, both results screens right (host 3:47,
+  guest 4:19). Not yet checked by eye: the riders were far apart in the frames captured.

@@ -314,6 +314,7 @@ static void put_snap(net_writer *w, const lan_snapshot *s)
     for (i = 0; i < 3; i++) nw_f32(w, s->vel[i]);
     nw_u16(w, s->anim); nw_u16(w, s->flags);
     nw_f32(w, s->boost); nw_f32(w, s->progress);
+    nw_u32(w, s->input[0]); nw_u32(w, s->input[1]);
 }
 
 static void get_snap(net_reader *r, lan_snapshot *s)
@@ -325,6 +326,7 @@ static void get_snap(net_reader *r, lan_snapshot *s)
     for (i = 0; i < 3; i++) s->vel[i] = nr_f32(r);
     s->anim = (uint16_t)nr_u16(r); s->flags = (uint16_t)nr_u16(r);
     s->boost = nr_f32(r); s->progress = nr_f32(r);
+    s->input[0] = nr_u32(r); s->input[1] = nr_u32(r);
 }
 
 static size_t put_lobby(uint8_t *buf, size_t cap, const lan_lobby *l)
@@ -591,7 +593,7 @@ static void store_snap(lan_session *s, int id, const lan_snapshot *snap)
 
 static void host_relay_snap(lan_session *s, int id, const lan_snapshot *snap)
 {
-    uint8_t buf[80];
+    uint8_t buf[96];
     net_writer w;
     store_snap(s, id, snap);
     nw_init(&w, buf, sizeof buf);
@@ -1168,7 +1170,7 @@ void lan_send_snapshot(lan_session *s, const lan_snapshot *snap)
     if (s->host) {
         host_relay_snap(s, 0, &v);
     } else if (s->joined) {
-        uint8_t buf[80];
+        uint8_t buf[96];
         net_writer w;
         nw_init(&w, buf, sizeof buf);
         nw_u8(&w, C_SNAP);

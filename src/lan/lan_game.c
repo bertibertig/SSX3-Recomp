@@ -25,8 +25,9 @@
  *   - Animation: a rider's brain (rider+0x74C) fills an 8-byte control input each frame (vtable[0], from the
  *     pad or the AI) and hands it to its current control mode (0x30970: riding, air, grind ...): dword 0 bits
  *     26-31 / 20-25 = left stick, bits 8-19 buttons, dword 1 another axis. Our rider's input goes out with
- *     every snapshot; a puppet's brain keeps running, but 0x30970 gets the remote player's input instead of
- *     its AI's, so crouch, carve, jumps and tricks animate as on the other PC, while the pose (0x24D50) still
+ *     every snapshot with the control mode it was made for; a puppet's brain keeps running, and 0x30970 gets
+ *     the remote player's input instead of its AI's whenever the puppet is in that same mode (the bits mean
+ *     different things per mode), so crouch, carve, jumps and tricks animate as on the other PC, while the pose (0x24D50) still
  *     comes from the network.
  *   - End: the game ends the race once its humans are through (0x12AA0); lan_game_wait_end() keeps it going
  *     until every remote player in it has finished on their own PC (or left) and their puppet has crossed the
@@ -85,6 +86,7 @@ extern __thread uint32_t g_eax, g_ecx, g_edx, g_esp;
 #define SLOT_NAME_MAX    11u
 #define RIDER_POSE       0x180u
 #define RENDER_DELAY_MS  100u
+#define BRAIN_MODE       0xE64u          /* rider brain (rider+0x74C): current control mode, 0x30970 */
 
 #if defined(_WIN32)
 static CRITICAL_SECTION s_lock;
@@ -116,6 +118,7 @@ static uint8_t      s_crossed[6];               /* game slot: the puppet crossed
 static uint32_t     s_wait_since, s_seen_finished[6];
 static int          s_we_finished;              /* our rider is through: the results are finalized */
 static uint32_t     s_local_input[2];           /* our rider's control input this frame */
+static uint32_t     s_local_mode;               /* ... and the control mode it was made for (brain+0xE64) */
 
 static void sleep_ms(unsigned ms)
 {
@@ -449,6 +452,7 @@ void lan_game_tick(uint32_t mgr)
                 sn.vel[i] = (sn.pos[i] - s_last_pos[i]) * 1000.0f / (float)(now - s_last_pos_time);
         sn.input[0] = s_local_input[0];
         sn.input[1] = s_local_input[1];
+        sn.flags = (uint16_t)(s_local_mode & 0xFF);     /* the control mode the input belongs to */
         for (i = 0; i < 3; i++)
             s_last_pos[i] = sn.pos[i];
         s_last_pos_time = now;
@@ -607,14 +611,19 @@ void lan_game_input(uint32_t brain, uint32_t input)
         if (slot == 0) {                                /* ours: goes out with the next snapshot */
             s_local_input[0] = M32(input);
             s_local_input[1] = M32(input + 4);
+            s_local_mode = M32(brain + BRAIN_MODE);
         } else {
             int member;
             lan_snapshot sn;
             LOCK();
             member = race_running(lan_get_lobby(s_session)) ? s_slot_member[slot] : -1;
-            if (member >= 0) {
-                if (!lan_remote_state(s_session, member, lan_time(s_session) - RENDER_DELAY_MS, &sn))
-                    sn.input[0] = sn.input[1] = 0;
+            /* The input's bits mean different things per control mode (dword 0 byte 2: buttons when riding,
+             * the trick number in mode 5, used unchecked as an index into the trick table 0x285590). The
+             * puppet runs 100 ms behind and can be in another mode than the input was made for: then a
+             * button pattern became a trick number, a wild animation id and a crash (seen in 0x1A7960).
+             * So the remote input is only used in the same mode; otherwise the AI's own input stays. */
+            if (member >= 0 && lan_remote_state(s_session, member, lan_time(s_session) - RENDER_DELAY_MS, &sn)
+                && (sn.flags & 0xFF) == (M32(brain + BRAIN_MODE) & 0xFF)) {
                 M32(input) = sn.input[0];               /* the remote player's input, not its AI's */
                 M32(input + 4) = sn.input[1];
             }

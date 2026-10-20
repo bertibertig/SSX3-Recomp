@@ -745,3 +745,18 @@ _(date – what was done, what was found, next step)_
   Check (two instances): the puppets' control modes follow the remote riders' with the expected lag (A 0 → 7 seen
   as 0 → 7 on B's puppet, B 8 → 0 on A's puppet), the race ran through, both results screens right (host 3:47,
   guest 4:19). Not yet checked by eye: the riders were far apart in the frames captured.
+- 2026-10-20 – **Crash with input-driven puppets, fixed.** First test with the user on A (8BitDo) and B on a virtual
+  pad doing turns, jumps and tricks: B crashed after ~1½ min in 0x1A7960 (play animation id, wild read) <- 0x3CD30
+  <- control mode 5 (0x3D6C0) in the input stage. Mode 5 takes the **trick number from byte 2 of the input**
+  (`movsx ebp, byte [input+2]`, 0x3D79F) and looks up its animation in the global trick table 0x285590 (0x14 bytes
+  per trick, 0x4C720 / 0x4C740, no bounds check); in riding mode the same byte holds button bits 16–23. The
+  puppet runs 100 ms behind and was in mode 5 while the remote input was a riding-mode one -> button bits used as
+  a trick number. Fix: the snapshot carries the control mode the input was made for (`flags` low byte); a puppet
+  only takes the remote input while its own brain+0xE64 matches, otherwise its AI's own input stays.
+  Stress test: both instances on virtual pads tricking non-stop through a whole race (≈ 10 min incl. wipe-outs),
+  no crash, finish times and results right on both. Because the trick number travels in the input, a puppet plays
+  the remote player's own (custom, per character) uber tricks, not the local profile's (user: uber tricks are
+  customisable per character).
+  Also seen: when the host reaches the start first, its race loads with whatever character the guest had under
+  the cursor at that moment (the guest was still on Select Character: "character 0" instead of Psymon) – the
+  lobby needs a "characters chosen" step before anyone loads (phase 2).

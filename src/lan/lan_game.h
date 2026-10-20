@@ -11,9 +11,9 @@ int      lan_game_pose(uint32_t rider);         /* 1: the rider is a remote play
 void     lan_game_tick(uint32_t mgr);           /* each rider-manager update: send our pose */
 uint32_t lan_game_finish(uint32_t slot, uint32_t frames);   /* a rider finished: the time to use */
 void     lan_game_before_ai(uint32_t mgr);      /* the race creates its AI riders (0x13C60): remote looks in */
-uint32_t lan_game_result_name(uint32_t slot);
-int      lan_game_wait_end(void);
-void     lan_game_after_finish(uint32_t slot);
-void     lan_game_input(uint32_t brain, uint32_t input); /* 0x30970: record ours / give a puppet its player's */  /* after the mode handler took a finish: re-rank a late puppet */               /* 1: our humans are through, but remote players still ride */   /* results row of a remote player: guest VA of its name, or 0 */
+uint32_t lan_game_result_name(uint32_t slot);   /* results row of a remote player: guest VA of its name, or 0 */
+int      lan_game_wait_end(void);               /* 1: our humans are through, but remote players still ride */
+void     lan_game_after_finish(uint32_t slot);  /* after the mode handler took a finish: re-rank a late puppet */
+void     lan_game_input(uint32_t brain, uint32_t input); /* 0x30970: record ours / give a puppet its player's */
 
 #endif

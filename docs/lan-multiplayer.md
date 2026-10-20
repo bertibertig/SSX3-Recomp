@@ -2,7 +2,8 @@
 
 A feature the original game never had: online-style multiplayer over LAN (and direct IP) with a lobby, up to
 **6 players per race** at first (the engine's rider limit) and **12 in free roam** (Conquer the Mountain) from the
-start; 12-player races and Freestyle later. Status: **planning** (2026-10-19). Findings go to `docs/notes.md`.
+start; 12-player races and Freestyle later. Status: phase 0 done, **phase 1 (net core) done**, phase 3 started: a first race between two game
+instances works (2026-10-20, env-driven session, notes.md). Findings go to `docs/notes.md`.
 
 ## What the game gives us (verified 2026-10-19, see notes.md)
 
@@ -47,6 +48,16 @@ objects whose state is written from the network instead of from a pad or the AI.
 
 ## Risks to settle first (phase 0 spikes)
 
+Status (2026-10-19): spike 1 done (6 slots hard-wired, addresses in notes.md), spike 2 done for the pose (a
+puppet AI rider follows a given pose with full body and animation, `src/lan/puppet.c`); rank and finish follow
+the pose as well. Spike 3 done: start hold (synchronized countdown) and finish times set from outside,
+including the results list. Spike 4 partly: riders can be spawned at run time in free roam (5, with
+their own AI); a puppet there follows its pose and is drawn (its culling box is rebuilt from the pose); spike 5 done (the dead PS2
+"Select Mode" popup can carry the LAN entry, branch on 0x368444), spike 6 done for the stats (2026-10-20: one 0xF88-byte record per rider, 7 attribute bytes at +0xBEB,
+bank +0xAD0, equipped gear = the inventory items with flag 0x10), spike 7 done (12 visible riders ≈ 28 fps on a Ryzen 7 3800X with
+the CPU vertex path; heap: ~5.5 MB left with 12 riders).
+
+
 Each one is a short reverse-engineering spike with a yes/no result recorded in notes.md, before building on it:
 
 1. **Rider manager:** where the 6 race slots live (arrays, counts, HUD "x/6", start grid), how AI and human
@@ -66,6 +77,13 @@ Each one is a short reverse-engineering spike with a yes/no result recorded in n
    programs (koen's `src/vk/` has them) are probably needed before 12-rider free roam is playable.
 
 ## Phases
+
+Phase 1 status (2026-10-20): `src/net/` (net.h, net_session.c, net_wire.h) on ENet 1.3.18 (submodule
+`third_party/enet`), library `ssx3_net`, test tool `tools/lanbot` (`ssx3_lanbot selftest | host | bots N ADDR |
+browse`). The self-test (host + 11 players + a spectator + a wrong build, in one process, clocks skewed by ±5 s)
+passes 27/27 checks on Linux and under Wine; host and bots also work as separate processes and across
+Linux/Windows (Wine). Not done yet: `tc netem` (phase 8), the game id as a real build + XBE hash, using the
+library from the game (phase 2).
 
 1. **Net core (no game needed):** `src/net/` with ENet, protocol and versioning, LAN discovery, direct IP,
    clock sync, the lobby state machine, plus a headless test client so 11 fake players can join from one machine.

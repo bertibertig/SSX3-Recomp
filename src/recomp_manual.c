@@ -47,7 +47,11 @@ typedef void (*recomp_func_t)(void);
 
 /* ── Register state (defined in xbox_memory_layout.c) ──────── */
 
-extern uint32_t g_eax;
+#if defined(_MSC_VER)
+extern __declspec(thread) uint32_t g_eax;   /* thread-local like the other registers (RECOMP_TLS) */
+#else
+extern __thread uint32_t g_eax;
+#endif
 extern ptrdiff_t g_xbox_mem_offset;
 
 /* ── Game clock for frame interpolation ─────────────────────── */
@@ -186,6 +190,209 @@ void sub_00212C18(void)
 {
     fp_push_result(fmod(guest_double(g_esp + 4), guest_double(g_esp + 12)));
     g_esp += 4;
+}
+
+/* ── LAN multiplayer: puppet riders ─────────────────────────── */
+
+/*
+ * Rider update stages of the rider manager (vtable[2] 0x11E90), all fastcall with ecx = rider part.
+ * For a puppet (src/lan/puppet.c) the brain stages are skipped -- each pops its own return address,
+ * so a skip is esp += 4 -- and the pose is written right before 0x24D50 applies it. Wrappers rather
+ * than entry hooks: the generated bodies stay as sub_X_gen (scripts/run_pipeline.sh regenerates
+ * them after this list changes).
+ */
+#include "lan/puppet.h"
+
+#if defined(_MSC_VER)
+extern __declspec(thread) uint32_t g_ecx;
+#else
+extern __thread uint32_t g_ecx;
+#endif
+
+extern void sub_0001F3F0_gen(void);
+extern void sub_0001F420_gen(void);
+extern void sub_0001F450_gen(void);
+extern void sub_00024D50_gen(void);
+
+/* brain input */
+void sub_0001F3F0(void)
+{
+    if (lan_puppet_skip_brain(g_ecx)) { g_esp += 4; return; }
+    sub_0001F3F0_gen();
+}
+
+/* brain control-mode update */
+void sub_0001F420(void)
+{
+    if (lan_puppet_skip_brain(g_ecx)) { g_esp += 4; return; }
+    sub_0001F420_gen();
+}
+
+/* brain post-update, model tint */
+void sub_0001F450(void)
+{
+    if (lan_puppet_skip_brain(g_ecx)) { g_esp += 4; return; }
+    sub_0001F450_gen();
+}
+
+/* pose -> model and board (0x246C0); a puppet's culling box afterwards */
+void sub_00024D50(void)
+{
+    uint32_t rider = g_ecx;
+    int puppet = lan_puppet_is(rider);
+
+    if (puppet)
+        lan_puppet_pose(rider);
+    sub_00024D50_gen();
+    if (puppet)
+        lan_puppet_after_pose(rider);
+}
+
+/*
+ * Race countdown update (handler vtable 0x2820D8 [2]), stdcall: [esp+4] = rider manager, ret 4.
+ * While the start is held (src/lan/race.c) the frame counter mgr+0x1C is left alone this frame.
+ */
+#include "lan/race.h"
+
+extern void sub_00015620_gen(void);
+
+void sub_00015620(void)
+{
+    uint32_t mgr = SSX3_MEM32(g_esp + 4);
+
+    if (lan_race_hold_countdown(SSX3_MEM32(mgr + 0x1C))) { g_esp += 8; return; }
+    sub_00015620_gen();
+}
+
+/* Race state change (rider manager), thiscall: ecx = manager, [esp+4] = new state, ret 4. */
+extern void sub_000155A0_gen(void);
+
+void sub_000155A0(void)
+{
+    uint32_t from = SSX3_MEM32(g_ecx + 4), to = SSX3_MEM32(g_esp + 4);
+
+    if (from != to)
+        lan_race_state_change(from, to);
+    sub_000155A0_gen();
+}
+
+/* "Every human finished" (fastcall: ecx = rider manager -> al = 1). The race update 0x15650 asks it each frame
+ * before it ends the race (return address 0x15663); the mode handlers ask it to finalize the results. LAN: the
+ * race update hears "not yet" while remote players are still on the course; the mode handlers keep the real
+ * answer (they finalize only when a human finishes, so a later "yes" from a puppet's finish would never come). */
+extern void sub_00012AA0_gen(void);
+int lan_game_wait_end(void);
+
+void sub_00012AA0(void)
+{
+    int race_update = SSX3_MEM32(g_esp) == 0x00015663u;
+
+    sub_00012AA0_gen();
+    if (race_update && (g_eax & 0xFF) == 1 && lan_game_wait_end())
+        g_eax &= ~0xFFu;
+}
+
+#include "lan/lan_game.h"
+
+/* A rider brain's control input goes to its current control mode (thiscall: ecx = brain rider+0x74C,
+ * [esp+4] = 8-byte input, ret 4). LAN: record ours, give a puppet its remote player's input. */
+extern void sub_00030970_gen(void);
+
+void sub_00030970(void)
+{
+    lan_game_input(g_ecx, SSX3_MEM32(g_esp + 4));
+    sub_00030970_gen();
+}
+
+/* Rider manager update (vtable 0x28216C [2]), thiscall: ecx = manager, ret. Free-roam spawning first. */
+#include "lan/freeroam.h"
+#include "lan/lan_game.h"
+
+extern void sub_00011E90_gen(void);
+
+void sub_00011E90(void)
+{
+    lan_game_tick(g_ecx);
+    lan_freeroam_tick(g_ecx);
+    sub_00011E90_gen();
+}
+
+/* Main menu selection (cFEStateMainMenu), thiscall: ecx = menu, [esp+4] = item, [esp+8] = event, ret 8. */
+#include "lan/menu.h"
+
+extern void sub_0009CC70_gen(void);
+
+void sub_0009CC70(void)
+{
+    if (lan_menu_select(g_ecx, SSX3_MEM32(g_esp + 4), SSX3_MEM32(g_esp + 8))) { g_esp += 12; return; }
+    sub_0009CC70_gen();
+}
+
+/* Main menu: show or hide Multi Play by the pad count at menu+0x55 (fastcall, ret). */
+extern void sub_0009CAB0_gen(void);
+
+void sub_0009CAB0(void)
+{
+    uint32_t menu = g_ecx;
+    uint8_t pads = *(volatile uint8_t *)((uintptr_t)(menu + 0x55) + g_xbox_mem_offset);
+
+    lan_game_active();          /* LAN: open the session in the main menu, so profiles are in before a race loads */
+
+    if (!lan_menu_multiplay_pads(menu)) {
+        sub_0009CAB0_gen();
+        return;
+    }
+    *(volatile uint8_t *)((uintptr_t)(menu + 0x55) + g_xbox_mem_offset) = 2;
+    sub_0009CAB0_gen();
+    *(volatile uint8_t *)((uintptr_t)(menu + 0x55) + g_xbox_mem_offset) = pads;
+}
+
+/* GameModeMan "rider reached the finish" dispatcher, thiscall: ecx = GameModeMan, [esp+4] = slot, ret 4. */
+extern void sub_000CD550_gen(void);
+
+void sub_000CD550(void)
+{
+    uint32_t slot = SSX3_MEM32(g_esp + 4);
+
+    lan_race_on_finish(slot);
+    sub_000CD550_gen();
+    lan_game_after_finish(slot);
+}
+
+/* Player creation for the race (rider manager vtable 0x28216C, thiscall: ecx = manager, ret): one Player per
+ * human (0x367F7C). LAN spectator: the watched player's character and name go into slot 0 first. */
+extern void sub_000139C0_gen(void);
+
+void sub_000139C0(void)
+{
+    lan_game_before_players(g_ecx);
+    sub_000139C0_gen();
+}
+
+/* ComputerRider creation for the race (thiscall: ecx = rider manager, ret): takes each AI slot's character
+ * from the race slot table. LAN: the remote players' characters and names go into their slots first. */
+extern void sub_00013C60_gen(void);
+
+void sub_00013C60(void)
+{
+    lan_game_before_ai(g_ecx);
+    sub_00013C60_gen();
+}
+
+/* Character name (stdcall: [esp+4] character, [esp+8] variant, ret 8 -> eax = name). The results screen
+ * (0xA4620) asks it for every AI row; its caller keeps the row's slot at [esp+0x18], which is [esp+0x24] here.
+ * LAN: a remote player's row shows the player's name. */
+extern void sub_0004DC00_gen(void);
+
+void sub_0004DC00(void)
+{
+    uint32_t name = 0;
+
+    if (SSX3_MEM32(g_esp) == 0x000A49FCu)
+        name = lan_game_result_name(SSX3_MEM32(g_esp + 0x24));
+    sub_0004DC00_gen();
+    if (name)
+        g_eax = name;
 }
 
 /* ── Manual function overrides ─────────────────────────────── */

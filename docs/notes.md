@@ -481,7 +481,159 @@ _(date – what was done, what was found, next step)_
   - PS2 decomp: SSX 3 PS2 has `dirtysock`, `beintnetwork.cpp`, `main/inputsync.cpp` (online play), all still
     unmatched stubs; the Xbox XBE links no XNet/XOnline library (only leftover strings `BENetworkInt`,
     `kT_CMNQuitToOnline`). A LAN mode needs its own netcode on the host side.
-
+- 2026-10-19 – **LAN multiplayer, phase 0 (branch `feature/lan-multiplayer`, plan: `docs/lan-multiplayer.md`)**.
+  Tools: `scripts/ghidra.sh decomp/xrefs` against the analysed project, new `scripts/probe/guest_probe.py`
+  (starts the game as its child so `/proc/<pid>/mem` is readable/writable under Yama scope 1, virtual pads,
+  FIFO commands: read/dump/write/lock guest memory). Flat image `xbe_flat.bin` offset = VA − 0x10000.
+  - **Spike 1 – rider manager: done.** Manager = `[[[0x369534]+0x74]+0x0C]` (vtable 0x28216C; game object
+    0x369550). Layout: +0x28 rider slots [6] (pointers to the rider part, humans first), +0x40 Player [2],
+    +0x48 ComputerRider [5], +0x5C ComputerActorRider [5], +0x70 MissionRider [2], +0x78 slots used,
+    +0x7C humans, +0x80 AI, +0x84 actors, +0x88 mission riders; +0x15 / +0x8C enable AI / actor updates.
+    Constructors: Player 0x139C0 (alloc 0x1980, "Player"), ComputerRider 0x13C60 (0x1AB0), ComputerActorRider
+    0x12910, MissionRider 0x127E0. Rider part = object + `[[obj+0x28]+4]` + 0x28 (Player +0xEA0, AI +0xFD0);
+    rider+0x83C = slot, +0x840 = human index (−1 AI).
+    Race setup globals: 0x367F78 total riders, 0x367F7C humans (setter 0x4FC40), 0x367F80 actors (0x4FCC0),
+    0x367F84 AI (0x4FEB0, clamped to 5; per mode/player-count table 0x302168), 0x367F90 byte0 mode / byte1 players /
+    byte2 event, per-slot table 0x367FDC + slot·0x20 (6 entries: +0 pad/owner −1 = AI, +4 flags, +8 character),
+    slot remap 0x346400. Live single race: 6 / 1 / 0 / 5, slots 1–5 owner −1, characters 5, 8, 4, 6, 0.
+    → Race = 6 slots, hard-wired in the manager layout and the slot table: 12-player races need those arrays
+    moved (as planned, last phase).
+  - **Spike 2 – puppet hook: in progress.** Manager update = vtable[2] 0x11E90: collects the active riders, then
+    runs fixed stages over all of them: 0x24C30, 0x1F3F0, 0x221D0, 0x222D0, 0x1F420, 0x1F430, 0x24D50, 0x1F450,
+    0x1F4C0, 0x24D60, 0x22550, 0x26080, the rider-model components (rider+0x74C object: +0x3D0 … +0xDA0), 0x1F3C0;
+    paused (`0x3693A8 & 1`): only 0x24C00. Physics step = 0x1F140 (from 0x1F430, dt at rider+0x36C) and 0x246C0
+    (from 0x24D50); both are skipped while byte **rider+0xA84** is set, and 0x24C30 then places the rider with
+    0x23860 from **rider+0x180 = position (x, y, z, 1) + orientation quaternion** (or a path point if +0xAAC).
+    z is up. Rider vtable [1]/[2] (Player 0x30B00 / 0x30D60) = serialize / deserialize of all components.
+    Live test (AI 1, +0xA84 = 1, +0x180 driven from the player's pose): the AI's own position follows, but only
+    its board and light trail show up near the player, the body does not – the skeleton/model is posed
+    elsewhere. Next: hook in the build (override of a stage for puppet slots) instead of external memory pokes.
+    Earlier external pokes of object+0x4A0 (a derived copy) were overwritten by the AI's own update.
+    (The player's wipe-outs in those runs were obstacles – no steering input – not rider collisions.)
+  - Seen: single-player *My Rules* screen (Super AI, AI headstart, full/unlimited/no boost, KO boost only, no uber
+    tricks / rails, no knockdowns, leaky adrenaline) – candidates for lobby rules; results menu has Replay.
+  - **Spike 2 – puppet hook: works for the pose** (2026-10-19, `src/lan/puppet.c`, wrappers in `recomp_manual.c`,
+    `SSX3_PUPPET_TEST=1`). Correction to the entry above: 0x1F140 is the **animation step** (anim sequencer
+    rider+0x754: 0x1A7DA0 advance by dt, 0x1A7B90 evaluate), 0x246C0 applies the pose rider+0x180 to the model
+    node (+0x750, 0x1A53A0) and board/feet (+0x8A0/+0x8D0) – neither is physics. Byte +0xA84 = "do not animate or
+    pose" (that is why only the board followed). The AI's driving is the brain object rider+0x74C (control mode
+    +0xE60, cases 0–5; stages 0x1F3F0 input, 0x1F420 mode update, 0x1F450 post-update + tint).
+    Hook: for AI slot 1, the three brain stages are skipped (`g_esp += 4`, the callee pops its return address)
+    and the pose is written at the top of 0x24D50. Result (Snow Jam, virtual pad): the full rider – body,
+    board, shadow, crouch/jump animation – rides in a fixed offset next to the player for 3½ minutes, no crash;
+    without the switch the race is unchanged.
+    Rank and finish follow the pose too (user's observation from the same run): on the progress bar the AI's
+    red arrow sat right above the player's black one all race, and in the results the puppet finished about
+    1 s before the player (last two places) – it crossed the line just ahead, as its forward offset says.
+    obj+0x4A0 (ComputerRider part, different from the pose) is internal AI state without visible effect.
+    In some frames the puppet was out of view (fixed world-space offset while the camera turns). For spike 3
+    this leaves: synchronized start, and taking finish times from the host rather than each PC's local copy.
+    Animation is whatever state the brain left (no tricks yet): sending anim state is part of the snapshot work.
+  - **Spike 3 – race flow: start hold and finish times work** (2026-10-19, `src/lan/race.c`, wrappers in
+    `recomp_manual.c`). Race state machine = rider manager: mgr+4 state (1 GameInit, 2 Freeride, 3 PreRace,
+    4 Countdown, 5 Race, 6 EndRace, 7 Shutdown), setter 0x155A0 (thiscall, new state) -> 0x15310, handler objects
+    (enter / update / leave) at mgr+0xA8 + 4·(state−1), vtables 0x2820B4 … 0x2820FC. A race goes GameInit ->
+    Freeride -> PreRace -> Countdown -> Race -> EndRace. Countdown: enter 0x15610 sets mgr+0x1C = 180 frames,
+    update 0x15620 counts down and switches to Race (start gate, 0xD4850 "StartgateOpen"). Race update 0x15650:
+    race clock mgr+0x10 (frames), EndRace once every human's rider+0x4D0 >= 0 (0x12AA0). mgr+8 is not the
+    previous state (it follows the requested one). The ride behind the results screen runs another countdown
+    that does not go through 0x155A0.
+    Finish: rider crosses the line -> 0x23E90: rider+0x4D0 = 0 (finish clock, +1/60 per frame), rider+0x4D8 =
+    finish time = mgr+0x10 + rider+0x4DC (per-rider offset), then GameModeMan dispatcher 0xCD550 (thiscall,
+    slot; GameModeMan 0x369480, +4 = active handler index into 0x3693CC; 9 handlers "GM_Handler", vtables
+    0x299FF0 + n·0x2C, finish = entry 7: CE4F0, CEF90, CD3A0, CFB50, CF7B0, CFF50, D0360, CF320, CECE0).
+    Single race = handler 1, 0xCEF90: takes rider+0x4D8 (360000 if DNF, rider+0x4E0). Results: 0x369408[slot]
+    finish frames, 0x369458[slot] place (0-based), ranked by 0xCE070 once every human is in; riders still on
+    the course get an estimate (0x22EF0). 0x3693FC[slot] = DNF.
+    Hooks: 0x15620 holds the countdown at 180 while a start signal is missing, only for a countdown entered
+    from PreRace (seen through the 0x155A0 wrapper; SSX3_RACE_HOLD=<s> / SSX3_RACE_GO_FILE=<path>, later the
+    host's message); 0xCD550 sets a puppet's finish time (SSX3_PUPPET_FINISH=<frames>) in rider+0x4D8 and
+    the stats block before the mode handler reads it. SSX3_RACE_TRACE=1 logs the state changes.
+    Results (Snow Jam, virtual pad): the start gate stays shut with no countdown number for the hold time, then
+    3-2-1 and the race as usual; a puppet given 6000 frames tops the results list with 01:40 and everyone else
+    is ranked after it; the puppet crossed the line 5–10 frames before the player (it rides next to them).
+    Left for the netcode: the race ends when the local humans are in – with remote players still riding, the
+    host has to hold EndRace / fill in their times as they arrive.
+  - Seen once: a crash on the title screen in a guest thread (`sub_0027F718+0x29B`, fault VA 0x7FFFFF1E,
+    esi = 0xFFFFFF00; stack 0x27F851 / 0x27F965 / 0x27FC1B), not reproduced in the next 2 boots + 3 races.
+  - **Spike 4 – riders in free roam (Conquer the Mountain): spawning works, puppet visibility open**
+    (2026-10-19, `src/lan/freeroam.c`, wrapper on the manager update 0x11E90; tests drive the menu: main menu
+    item 2, A on the character, then ~2 s straight and only a slight left, or the rider ends in the lodge
+    prompt / off limits – user's route tip; Back resets the rider).
+    Free roam: race setup mode byte 4, players byte 0, event 0x0C; total 2 riders = player + 1 "actor" count,
+    no AI (0x367F84 = 0); the manager holds only slot 0 (Player at +0x40), the AI/actor lists hold stale
+    memory (UTF-16 text); race state Freeride/PreRace/Race as the game goes (GameInit -> Freeride -> Race).
+    0x3680DC is the **replay** flag (setting it loads the mountain as a replay viewer), not "spawn AI".
+    Run-time spawn = the in-game event state 0xD54D0 (events on the mountain): when 0x11410 (all AI slots
+    ready) -> 0x11630 (clear AI; +0x11620 if more than one) -> 0x13EA0 (create 0x367F84 ComputerRiders,
+    characters from the slot table byte +8) -> pump 0x11360 until 0x113A0 (all slots loaded) -> 0x13930
+    (init) -> mgr+0x15 = 1 (AI updates on). All thiscall ecx = manager. lan_freeroam_tick() runs this from
+    the manager update with SSX3_FREEROAM_SPAWN=<1..5>: 5 riders are created, load and ride around the
+    mountain with their own AI, no crash (several runs). Once mgr+0x15 was found 0 again a few seconds
+    later (cause unknown); the tick switches it back on.
+    Puppet in free roam (SSX3_PUPPET_TEST=1, new SSX3_PUPPET_OFFSET=side,ahead,up): its pose follows the
+    player exactly (measured: 600 ahead / 120 beside along the real direction of travel) and a cluster of
+    vectors next to that pose at 0x82F5B5xx looks like its posed skeleton, but it is drawn only sometimes –
+    next to the player right after the spawn and while turning slowly, and (user) as a second rider just
+    behind the player; at 600 ahead never. Not the brain stages (SSX3_PUPPET_KEEP_BRAIN=1: same), not the
+    ComputerRider position obj+0x4A0 (pinning it to the pose: same); rider+0x830 (collision cell) unchanged
+    between visible and hidden; rider+0xA64/+0xAC4 are not visibility flags. Next: the rider draw path and
+    its culling (scene node rider+0x750 / 0x1A54D0, world sectors) – suspected: the puppet stays registered
+    in the world sector it was spawned in.
+    Memory: MmQueryStatistics in the runtime reports host values; the game uses its own allocator
+    (0x1A9BD0, named blocks). 5 extra riders fit; whether 11 do needs the allocator's free space (open) and the
+    6-slot limit lifted first. The runtime also defines a 128 MB debug-kit layout (XBOX_DEVKIT_RAM).
+  - **Spike 4 – puppet culling in free roam: fixed** (2026-10-19). Rider render = manager vtable[3] 0x12360:
+    same rider collection as the update (players; AI if mgr+0x15; actors if mgr+0x8C), then per rider
+    0x22760 = visibility test, and only if true 0x229A0 / 0x22870 / 0x24DF0 (+ model components) draw it.
+    0x22760: only if rider+0x84C set, +0x848 == 7, +0xA87 clear; renderer (0x369528) vtable +0xAC gives the
+    view, +0x174 tests the box **rider+0x460 (min) / +0x470 (max)** (vec4 each) -> **rider+0xAC4 = visible**;
+    with rider+0x1C0 set it also tests the brain's box ([+0x74C]+0xA0/+0xB0), else an occluder test (0x1E2C0,
+    world+0x8C) on rider+0x480. The box is built by **0x20F10(rider, pos|NULL)** (thiscall, ret 4) from the
+    pose rider+0x180 and the axes at rider+0x210..0x23C; callers are the brain's mode updates (via 0x2FF30 /
+    stage 0x1F450 – mode 3 does nothing) and a few movement routines (0x250D0, 0x256A0, 0x269A0, 0x48E00,
+    0x49720). For the puppet none of them ran in free roam, so its box stayed where it spawned: it was drawn
+    only while that old box was in view (at the start; "behind the player" as the user saw). Earlier
+    "rider+0xA64/+0xAC4 are not visibility flags" was wrong for +0xAC4 – it was 0 because it was culled.
+    Fix: the 0x24D50 wrapper calls 0x20F10(rider, NULL) for a puppet after the pose is applied
+    (lan_puppet_after_pose). Result: free roam with the puppet 600 ahead and 150 beside – drawn in almost
+    every frame next to/ahead of the player, +0xAC4 = 1; Snow Jam race regression: puppet visible as before.
+    (rider+0x460 is not a lighting position as guessed above: 0x24C30 passes the box min to the world query
+    0x1C0310 for the rider's light/collision lists.)
+  - **Spike 7 – cost of 12 riders** (2026-10-19, Ryzen 7 3800X, 1x, Vulkan, no frame dumps, free roam, same
+    route 40 s; `SSX3_PUPPET_TEST=2` = every AI slot a puppet fanned out around the player):
+    player only 56.7 fps (17.6 ms) · 6 riders, 5 visible next to the player 38.9 fps (25.7 ms) · 6 riders, 5 AI
+    away 49.6 fps (20.2 ms) -> ~0.5 ms per rider simulated, ~1.6 ms per visible rider; 12 visible ≈ 35 ms ≈
+    28 fps. The bottleneck is the known CPU-bound vertex interpreter: 12-player LAN on the Steam Deck needs GPU
+    vertex programs (koen has them).
+    Memory: the game's main heap (allocator 0x1A9BD0 -> 0x1ADBD0, heap object 0x3A9368, base 0x3A9334 =
+    0x81000000, size 0x3A9338 = 44.5 MB; free bytes = 0x1ADD00; blocks <= 512 B from a small-block pool
+    0x1AF8D0; `SSX3_HEAP_TRACE=1` logs it): free roam with the player only 13.45 MB free, with 5 extra riders
+    (different characters) 9.83 MB (≈ 0.72 MB per rider), a 6-rider race 9.96 MB. 11 extra riders ≈ 8 MB ->
+    ~5.5 MB left: fits (the runtime's own [HEAP] log is the Xbox allocation map, a different thing).
+  - **Spike 5 – front end: native LAN entry possible** (`src/lan/menu.c`). Main menu = cFEStateMainMenu
+    (0x289BE4); items are string hashes (0x1AAEA0, ELF-style: h = h·16 + c, fold the top nibble) of "1conquer",
+    "2quick play", "3multi play", "4bonus material", "5online"; 0x9CB40 maps them to front-end states 0x0B,
+    9, 0x16, 5, 0x31. Selection handler 0x9CC70 (thiscall item, event; 1 focus, 2 unfocus, 5 select, 6 back):
+    Multi Play sets 2 players (0x505A0(2)) and the "leaving" flag menu+0x48 *before* checking it to open
+    **cFEPopupSelectMultiplayerMode** (0x4C bytes, ctor 0x9C390, vtable 0x28EF38, layout "86multiplayermode" =
+    hash 0x0846B3A5, present in data/ui/fe.lui) – dead code on Xbox, the PS2's online/offline choice.
+    `SSX3_MP_POPUP=1` opens it the way that code would: "Select Mode" with **"Single Event"** ("2 player quick
+    competition") and a **second entry with no label**. Its handler 0x9C8F0 sets the global byte
+    **0x368444 = (entry != 0)** and pops itself; the main menu gets the selection again (menu+0x4C = the item)
+    and continues into the split-screen flow – checked for both entries (0x368444 = 0 / 1). So: Multi Play ->
+    popup -> entry 0 = split screen, entry 1 = LAN (branch on 0x368444). Open: a label for entry 1 (its text is
+    not in the Xbox locale files; needs a text-lookup hook), and Multi Play with one pad: 0x9CAB0 hides it
+    while menu+0x55 < 2 pads (`SSX3_MP_ALWAYS=1` makes it visible), but the cursor still skips it – a second
+    check elsewhere.
+  - **Spike 6 – Load game** (multi-play character select, X): lists the saves on the hard disk ("BRK",
+    UDATA/4541003c/1966902D2EA4/Data.ssx, 39797 bytes, binary, starts with the name), warns that unsaved changes
+    are lost and loads the **whole profile** into a heap object (0x82327AC0 in this run; half of its 256-byte
+    blocks equal the file, the rest is run-time state) – it is a profile load, not a per-rider import. The BRK
+    profile has no levelled Zoe (all bars 1.0), so where attributes / outfits / boards sit in the profile is still
+    open (needs a levelled save to compare). For LAN: remote riders need only their look (character = slot table
+    +8, plus outfit and board – to find); each PC simulates its own rider from its own profile; "everyone level 1"
+    can use the game's own Bragging Rights handicap "lvl 1 character".
 - 2026-10-19 – **"Unable to save" on Linux** (user report: overwriting the existing save from Options -> Save/Load ->
   Save game). Reproduced on a copy of the save folder (`RECOMP_SAVE_DIR`), the user's own save untouched: after
   `U:\1966902D2EA4\SaveMeta.xbx` the title opened `Data.ssx` **relative to a RootDirectory handle** (XAPI's save
@@ -494,3 +646,151 @@ _(date – what was done, what was found, next step)_
   - Upstream: https://github.com/sp00nznet/xboxrecomp/pull/237 (fork bertibertig/xboxrecomp, branch
     fix-posix-rootdirectory-opens, on upstream main v0.15.0, with `tests/kernel_file_relative`: 3 of 9 checks fail
     without the change – the bare name was created in the process's working directory – all 9 pass with it).
+- 2026-10-20 – **LAN phase 1: net core** (`src/net/`, `tools/lanbot/`, ENet 1.3.18 as submodule `third_party/enet`).
+  Star topology, host = player 0 owns lobby/rules/clock/start/results; channel 0 reliable (hello, profile, ready,
+  chat, finish, the whole lobby on every change), channel 1 unreliable (snapshots 56 bytes, clock pings). Clients
+  identify with a random 64-bit token: a drop keeps the place for 30 s, an orderly leave (disconnect data "LEAV")
+  frees it at once, a kick bans the token. Clock: host time = local + offset of the ping sample with the smallest
+  round trip (8 samples, 100 ms apart, then 1 s). LAN browser: UDP query on port 27216 to 255.255.255.255,
+  127.255.255.255 and 127.0.0.1 (Linux delivers the loopback broadcast to every host on the machine); one entry per
+  lobby (the LAN address wins over loopback). `ssx3_lanbot selftest`: 27/27 on Linux and under Wine (MinGW build).
+  Bug found by it: the reconnect timeout compared unsigned (`drop_time` = now | 1 can be 1 ms ahead) and dropped a
+  player at once about one run in five; now a signed compare. Separate processes (host + 11 bots + browse) and
+  Linux host with Windows bots under Wine work.
+- 2026-10-20 – **Spike 6: the profile's rider stats** (user's leveled save "BRK": Zoe got 4 attribute points).
+  `Data.ssx` (39797 bytes) = 10 rider records of **0xF88 bytes** (character 0..9, Zoe = 4) + a 37-byte tail
+  (checksum/signature, changes with every save). In memory the records are at **0x3469E4 + (player·10 + char)·0xF88**
+  (player 0/1 = split-screen side); current character of a player = 0x4AB30(p) = byte 0x34595C + [0x346400+p]·0x20.
+  Record fields: +0x0 profile name (record 0), **+0xAD0 bank** (attribute points to spend), **+0xAD4 total
+  earned** (0x4E0D0 adds to both), +0xAD8 flag bits (0x51610 tests them), **+0xBEB..+0xBF1 the 7 attributes**,
+  one byte each, 5 per bar (unleveled 5, max 55 = 11 bars). Buy screen cFEStateBuyAttrib (ctor 0xB4FE0) shows them in
+  the order 1,3,0,4,6,5,2 (table 0x2934D4) via 0x56600; buying (0x4E570) costs table 0x300CDC[value/5 − 1]
+  (250, 500, 750 … 2500, 5000) and checks the bank. The save diff matches exactly: attribute 4 5 → 9, total
+  5 → 1018, bank 5 → 18 (4 × 250 spent). Also changed in Zoe's record: +0xDC 0 → 2 and +0xE0 0 → 3 (no direct
+  references; not gear – the user only bought attribute points; +0xDC = 2 is probably the two snowflakes
+  collected, per the user). Static analysis plus the save diff only; not yet checked in a
+  running game. For LAN: `lan_profile.attrib[7]` carries the raw bytes; "equal stats" sets them all to 5.
+- 2026-10-20 – **Spike 6: equipped gear** (user's save "BRK2" = BRK with only Zoe's outfit changed from *Blacked
+  Out* to *Junker*). Each rider record holds an **inventory list**: +0x298 count (Zoe 466, Mac/record 0 503),
+  +0x29C entries of (u16 item id, u16 flags), room for 0x20D entries (0x834 bytes, the rest 0xFFFF/0), up to
+  +0xAD0; +0x288 is a run-time pointer to an item id -> list index table (s16, < 0 = not in the list).
+  Flags: 0x02 owned, **0x10 equipped** (set/cleared by the equip function 0x4D2B0(player, char, item, on), which
+  checks the loadout through the catalogue object at 0x3469F0 + record), 0x04 = the equipped bit as of the last
+  commit (0x4D210 copies 0x10 -> 0x04 for every entry), 0x20 not known yet. The diff: Blacked Out = items 0x34,
+  0x37, 0x4A lost 0x14; Junker = 0x2E, 0x31 gained it (and kept 0x20); nothing else in the record changed (only
+  the name "BRK" -> "BRK2" in record 0 and the tail). Zoe has 20 equipped items before, 19 after; Mac 23 – so a
+  loadout is a list of item ids (outfit pieces, board, ... – categories still open), not an outfit/board pair.
+  Item ids are global (0x2E and 0x31 are equipped for Mac too). 0x4D560 sums a field (+0xC of 0x38-byte entries of
+  the item catalogue at 0x346498) over the equipped items: gear seems to carry stat values as well – to check
+  before "equal stats" also has to cover gear. For LAN: `lan_profile.gear[32]` carries the equipped item ids;
+  a remote rider's look = character + that list.
+- 2026-10-20 – **First LAN race between two game instances** (phase 3, first cut; `src/lan/lan_game.c`, session from
+  `SSX3_LAN_HOST=1` / `SSX3_LAN_JOIN=<addr>`, no lobby UI yet). Game id = FNV-1a of the XBE (main.c
+  `g_ssx3_xbe_hash`) mixed with the protocol version. A network thread services the session (2 ms); the hooks
+  lock briefly. The countdown hold reads the profile (spike 6 offsets) and reports ready; the host starts when
+  `SSX3_LAN_PLAYERS` (default 2) are ready; our rider = game slot 0 everywhere, the others take slots 1.. as
+  puppets driven by `lan_remote_state(now − 100 ms)`; our pose goes out at 30 Hz from the 0x11E90 update; finish
+  times go to the host, a puppet's local crossing takes its player's own time.
+  Test on one machine: two `guest_probe.py` instances, each with its own virtual pad (`HPAD_PRODUCT=0x028e` /
+  `0x02ea`, each instance ignores the other's id with `SDL_GAMECONTROLLER_IGNORE_DEVICES`), its own
+  `RECOMP_SAVE_DIR`, both through Single Event → Peak 1 → Snow Jam race with the default rules. Result: both
+  joined, GO released 4 ms apart (host clock), race clocks equal on screen; each puppet within ~300 units (≈ the
+  100 ms delay at speed) of the other instance's rider; host finished 223.37 s, guest 221.83 s, and both results
+  screens list the remote player with its own time (host: "Kaori 3:41", guest: "Viggo 3:43"). Gaps found:
+  - The puppet keeps the look (and name in the results) of the AI character in its slot: the remote player's
+    character and gear are sent but not applied yet.
+  - AI riders in the other slots are local to each PC (different places 1–4 on the two screens).
+  - The race clock counts frames: the guest's local view of the host crossing the line was 13311 frames against
+    the host's own 13401 – under load (two instances on one CPU) the PCs' frame counts drift apart, so finish
+    times are each PC's own game time; the results use those.
+  - The finish dispatcher runs once more for the puppet on the results screen ("locally 0"); harmless so far.
+- 2026-10-20 – **LAN: remote character and name, real times for late finishers.**
+  - Race slot table = 0x367FD0 + index·0x20 (index = 0x346400[game slot]): +0 name[12], +0xC owner (−1 AI),
+    +0x10 flags, +0x14 character (setters 0x51060 / 0x51DB0, getter 0x51DF0). The race's AI riders are created by
+    0x13EA0 -> tail jump 0x13C60 (ComputerRider per slot from mgr+0x78 on, character from the table) during
+    GameInit – before the first rider-manager update, so the LAN session now opens in the main menu (0x9CAB0 hook)
+    and the network thread sends our profile whenever it changes (character select updates slot 0 at once).
+    A wrapper on 0x13C60 writes the remote players' characters and names into their slots: B (Psymon) showed the
+    host's Zoe on its start list, A the guest's Psymon.
+  - Results rows: 0xA4620 builds them; human rows use the slot name (0x51C00, "PLAYER 1"), AI rows the character
+    name 0x4DC00(character, variant) (stdcall, ret 8; the caller keeps the slot at [esp+0x18] = [esp+0x24] at
+    entry, return address 0xA49FC). The wrapper returns the slot's name for a remote player: "Guest" / "Host".
+  - Race end: 0x15650 (race update) ends the race when 0x12AA0 says every human is through (`rider+0x4F8` >=
+    threshold for the Player list). The single-race handler 0xCEF90 asks 0x12AA0 too and finalizes the results
+    (estimates 0x22E50 for riders still riding, 0x369408 times, ranking 0xCE140(10), **stdcall ret 4**) only when
+    the finishing rider is human – so a "not yet" for the handler hangs the results ("Loading…" forever, seen).
+    Now only the race update hears "not yet" (return address 0x15663) while a remote player is still riding (or
+    up to 3 s until its puppet crosses here; 120 s at most); a puppet that crosses after our finish gets its real
+    time into 0x369408[slot] and the list is ranked again (after the dispatcher, wrapper 0xCD550). A first try
+    popped 0xCE140's argument twice and crashed both instances in 0x23E90 (stack off by 4).
+    Test (host Zoe, guest Psymon): guest 254.95 s, host 282.62 s; host's results "Guest 4:14 … Zoe 4:42", guest's
+    "Psymon 4:14 … Host 4:42" (it waited 28 s for the host, then re-ranked) – both match the real times.
+  - Open: the puppets' animation freezes (user report: at the start and whenever a guest is visible) – the
+    skipped input/control stages leave the animation without input; equipped gear is sent but not applied;
+    the start list (pre-race screen) still shows the character name.
+  - Select Character shows the attributes in the order of table 0x2934D4 (ids 1,3,0,4,6,5,2): Acceleration,
+    Edging, Speed, Spin, Stability, Toughness, Tricks – so attribute id 0 = Speed, 1 = Acceleration, 2 = Tricks,
+    3 = Edging, 4 = Spin (the one the user's Zoe got), 5 = Toughness, 6 = Stability.
+  - `scripts/ghidra/Decomp.java` now creates a function for this run when Ghidra never made one at an address
+    (0xA4620 was such a case); the project is opened read-only, nothing is saved.
+- 2026-10-20 – **LAN: puppet animation from the remote player's input** (user report: guests froze at the start
+  and whenever visible). Cause: the puppet skipped its brain stages, so its control state machine (and with it
+  crouch/carve/jump/trick animation) never got input. The brain (rider+0x74C) fills an **8-byte control input**
+  each frame in 0x1F3F0 (vtable[0]: pad or AI) and passes it to 0x30970 (thiscall brain, &input, ret 4), which
+  hands it to the current control mode (brain+0xE64: 0 riding 0x38700, 1 … 0xC; the riding mode reads dword 0
+  bits 26–31 / 20–25 as the left stick (6-bit signed, / scale 0x282268), bits 8–19 buttons, dword 1 bits 0–5
+  another axis). Now our rider's input goes out with every snapshot (`lan_snapshot.input`, protocol version 2),
+  puppets keep all brain stages in LAN mode, and a wrapper on 0x30970 replaces a puppet's AI input with its
+  player's (from the snapshot 100 ms back; zero before the first one). The pose is still written at 0x24D50.
+  Check (two instances): the puppets' control modes follow the remote riders' with the expected lag (A 0 → 7 seen
+  as 0 → 7 on B's puppet, B 8 → 0 on A's puppet), the race ran through, both results screens right (host 3:47,
+  guest 4:19). Not yet checked by eye: the riders were far apart in the frames captured.
+- 2026-10-20 – **Crash with input-driven puppets, fixed.** First test with the user on A (8BitDo) and B on a virtual
+  pad doing turns, jumps and tricks: B crashed after ~1½ min in 0x1A7960 (play animation id, wild read) <- 0x3CD30
+  <- control mode 5 (0x3D6C0) in the input stage. Mode 5 takes the **trick number from byte 2 of the input**
+  (`movsx ebp, byte [input+2]`, 0x3D79F) and looks up its animation in the global trick table 0x285590 (0x14 bytes
+  per trick, 0x4C720 / 0x4C740, no bounds check); in riding mode the same byte holds button bits 16–23. The
+  puppet runs 100 ms behind and was in mode 5 while the remote input was a riding-mode one -> button bits used as
+  a trick number. Fix: the snapshot carries the control mode the input was made for (`flags` low byte); a puppet
+  only takes the remote input while its own brain+0xE64 matches, otherwise its AI's own input stays.
+  Stress test: both instances on virtual pads tricking non-stop through a whole race (≈ 10 min incl. wipe-outs),
+  no crash, finish times and results right on both. Because the trick number travels in the input, a puppet plays
+  the remote player's own (custom, per character) uber tricks, not the local profile's (user: uber tricks are
+  customisable per character).
+  Also seen: when the host reaches the start first, its race loads with whatever character the guest had under
+  the cursor at that moment (the guest was still on Select Character: "character 0" instead of Psymon) – the
+  lobby needs a "characters chosen" step before anyone loads (phase 2).
+- 2026-10-20 – **LAN spectator mode** (`SSX3_LAN_SPECTATE=1`, `SSX3_LAN_WATCH=<name>`, default the first player).
+  The spectator's own rider (game slot 0: camera, HUD, position display follow it) becomes a puppet of the
+  watched player: character and name go into slot 0 before the race creates its human rider (0x139C0, manager
+  vtable 0x28216C, one Player per 0x367F7C humans; new wrapper), pose and input come from that player's snapshots.
+  No snapshots, no finish from the spectator; it reports "ready" at the start so the host waits for it (the host
+  now starts when SSX3_LAN_PLAYERS members incl. spectators are at the start). Results: the host lists only real
+  riders; the spectator's slot 0 row shows the watched player by name with its own time ("Host 4:25" = 265.38 s).
+  Test (A host on a virtual pad riding with tricks, B spectating): B's view matched A's (same rails, jumps,
+  places, clock); speed display differs (measured locally).
+  - Local wipe-outs: a puppet can wipe out from its own local collisions while the remote rider rides on (seen
+    on B: "RECOVER – X"); its mode then differs from the input's and the remote input is ignored, so it stayed
+    down. Control mode setter = **0x31BA0** (thiscall brain, mode, ret 4: leave 0x307E0, set brain+0xE64, enter
+    0x30890); the other writes of +0xE64 are 0x26596 (= 0xD) and 0x31854 (= 0xE). Now: remote rider in riding
+    mode (0) and the puppet 0.5 s in another mode -> switched back to riding (seen for modes 3, 5, 8, no crash).
+  - Finish hang: the game lets a finished human rider coast to a stop before the results; the spectator's slot 0
+    puppet was still pushed by snapshots and never stopped -> "Loading…" forever with the picture fading to white.
+    Now every puppet is released to the game once it crossed the line here. Spectator race then ended normally.
+  - Open (user report): the "Off Limits" whiteout stayed on for the spectator without the reset – the local
+    off-limits/reset sequence of the puppet fights the network pose. The "Off Limits" HUD text is hash index 8 of
+    the table 0x3688FC (filled at 0x222C90, read through a pointer), no direct code reference found yet; a
+    measurement (rider object before/during off limits) needs a reliable place to trigger it – two tries (Snow
+    Jam hard right, CTM after the lodge gate hard left) did not.
+  - Infra: two probes must never read the same command FIFO (an old probe kept reading B's path after its
+    folder was moved and swallowed the presses), and a stale virtual pad can take port 1 (the game listens to
+    port 1 only) – restart the instance then.
+- 2026-10-20 – **CI (GitHub Actions) with unit tests** (`.github/workflows/ci.yml`): Linux (Ubuntu 24.04, GCC,
+  Ninja) and Windows (windows-latest, MSYS2 MINGW64 – the toolchain the releases use, native instead of cross).
+  CI has no XBE, so `CMakeLists.txt` now builds `ssx3_recomp` as an OBJECT library (compile check of our host
+  sources, no link) when `src/recomp/gen/` is empty; with generated code it is the executable as before. Tests
+  under `tests/` via ctest (`SSX3_TESTS`, default ON): `net_wire` (new: byte order, round trip, string cuts,
+  overruns), `lanbot_selftest`, Linux x86-64 only `mmio_decode_x64`, POSIX + SDL2 only `pad_virtual`. The
+  runtime patches are applied with `git apply` in CI (fails hard, unlike `apply_runtime_patches`); the Windows
+  job turns off `core.autocrlf` so they apply byte for byte (`.gitattributes`: `*.patch eol=lf` too).
+  Verified locally on a fresh clone: Linux 4/4, MinGW cross build + Wine 2/2.

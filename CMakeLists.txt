@@ -44,6 +44,31 @@ list(REMOVE_ITEM SSX3_INPUT_SOURCES xinput_device.c)
 set_property(TARGET xbox_input PROPERTY SOURCES
     ${SSX3_INPUT_SOURCES} ${CMAKE_CURRENT_SOURCE_DIR}/src/input/ssx3_pad.c)
 
+# ── LAN multiplayer net core (src/net, docs/lan-multiplayer.md) ─
+#
+# ENet is a pinned submodule (third_party/enet, v1.3.18, MIT). The net
+# core does not depend on the game, so ssx3_lanbot (the headless test
+# client) builds without generated code: cmake --build build --target ssx3_lanbot
+set(SSX3_ENET_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/enet)
+if(NOT EXISTS ${SSX3_ENET_DIR}/include/enet/enet.h)
+    message(FATAL_ERROR "ENet submodule missing: git submodule update --init third_party/enet")
+endif()
+add_subdirectory(${SSX3_ENET_DIR} ${CMAKE_BINARY_DIR}/enet EXCLUDE_FROM_ALL)
+target_include_directories(enet PUBLIC ${SSX3_ENET_DIR}/include)
+if(WIN32 AND NOT MINGW)
+    target_link_libraries(enet PUBLIC ws2_32 winmm)
+endif()
+
+add_library(ssx3_net STATIC src/net/net_session.c)
+target_include_directories(ssx3_net PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/net)
+target_link_libraries(ssx3_net PUBLIC enet)
+if(NOT WIN32)
+    target_link_libraries(ssx3_net PUBLIC m)
+endif()
+
+add_executable(ssx3_lanbot tools/lanbot/lanbot.c)
+target_link_libraries(ssx3_lanbot PRIVATE ssx3_net)
+
 # ── Recompiled game executable ──────────────────────────────────
 
 # Collect generated recompiled code.
@@ -59,6 +84,11 @@ file(GLOB RECOMP_GEN_SOURCES CONFIGURE_DEPENDS "src/recomp/gen/*.c")
 set(GAME_SOURCES
     src/main.c
     src/recomp_manual.c
+    src/lan/puppet.c
+    src/lan/race.c
+    src/lan/freeroam.c
+    src/lan/menu.c
+    src/lan/lan_game.c
     # Add game-specific sources here, e.g.:
     # src/asset_loader.c
     # src/custom_renderer.c
@@ -70,14 +100,22 @@ set(GAME_SOURCES
 #   src/recomp/recomp_dispatch.h     - binary search dispatch table
 #   src/recomp/recomp_types.h        - register model, ICALL macros, MEM helpers
 
-# WIN32 = GUI subsystem on Windows (WinMain); ignored elsewhere.
-add_executable(${PROJECT_NAME} WIN32
-    ${GAME_SOURCES}
-    ${RECOMP_GEN_SOURCES}
-)
+if(RECOMP_GEN_SOURCES)
+    # WIN32 = GUI subsystem on Windows (WinMain); ignored elsewhere.
+    add_executable(${PROJECT_NAME} WIN32
+        ${GAME_SOURCES}
+        ${RECOMP_GEN_SOURCES}
+    )
+else()
+    # A fresh clone (and CI) has no generated code: compile our host sources
+    # with the same settings as a check, but do not link a game executable.
+    message(STATUS "No generated code in src/recomp/gen/: ${PROJECT_NAME} is a compile check only "
+                   "(scripts/run_pipeline.sh generates the game)")
+    add_library(${PROJECT_NAME} OBJECT ${GAME_SOURCES})
+endif()
 
 # Link against the xboxrecomp umbrella target (all 6 runtime libraries)
-target_link_libraries(${PROJECT_NAME} PRIVATE xboxrecomp)
+target_link_libraries(${PROJECT_NAME} PRIVATE xboxrecomp ssx3_net)
 
 # Include paths for generated recomp headers
 target_include_directories(${PROJECT_NAME} PRIVATE
@@ -200,3 +238,10 @@ endif()
 #     ENABLE_ICALL_TRACE=1
 #     VERBOSE_KERNEL_LOG=1
 # )
+
+# ── Unit tests (tests/, run with ctest) ─────────────────────────
+option(SSX3_TESTS "Build the host unit tests" ON)
+if(SSX3_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()

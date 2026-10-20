@@ -22,6 +22,19 @@
  *   - Our rider's pose (rider+0x180) goes out at 30 Hz from the rider-manager update.
  *   - Finish: our time goes to the host; a puppet that crosses the line takes its player's own time from
  *     the lobby when it is there already.
+ *   - End: the game ends the race once its humans are through (0x12AA0); lan_game_wait_end() keeps it going
+ *     until every remote player in it has finished on their own PC (or left) and their puppet has crossed the
+ *     line here (up to 3 s later, it rides 100 ms behind), so the results list real times, not estimates.
+ *     After 120 s of waiting the race ends anyway. The results themselves are finalized by the mode handler
+ *     when our rider finishes (riders still on the course get an estimate, 0x22E50); a remote player's
+ *     puppet that crosses later gets its real time into the results (0x369408[slot]) and the list is ranked
+ *     again (0xCE140).
+ *   - Look: the network thread re-reads our profile every 500 ms (character = race slot 0 in the slot table
+ *     0x367FD0 + index·0x20: +0 name[12], +0xC owner, +0x10 flags, +0x14 character; index = 0x346400[slot])
+ *     and sends it when it changed, so the others have it before the race loads. When the race creates its
+ *     AI riders (0x13C60, which reads each slot's character), lan_game_before_ai() writes the remote players'
+ *     characters and names into their slots; the results screen asks 0x4DC00 for an AI row's character name,
+ *     and lan_game_result_name() hands it the slot's name instead. Gear is sent but not applied yet.
  */
 #include <stddef.h>
 #include <stdint.h>
@@ -41,6 +54,13 @@
 
 extern ptrdiff_t g_xbox_mem_offset;
 extern uint32_t g_ssx3_xbe_hash;                        /* main.c */
+extern void sub_000CE140(void);                         /* rank the results by 0x369408, stdcall (count), ret 4 */
+
+#if defined(_MSC_VER)
+extern __declspec(thread) uint32_t g_eax, g_ecx, g_edx, g_esp;
+#else
+extern __thread uint32_t g_eax, g_ecx, g_edx, g_esp;
+#endif
 
 #define M8(va)  (*(volatile uint8_t *)((uintptr_t)(uint32_t)(va) + g_xbox_mem_offset))
 #define M16(va) (*(volatile uint16_t *)((uintptr_t)(uint32_t)(va) + g_xbox_mem_offset))
@@ -54,8 +74,9 @@ extern uint32_t g_ssx3_xbe_hash;                        /* main.c */
 #define REC_GEAR         0x29Cu
 #define REC_ATTRIB       0xBEBu
 #define GEAR_EQUIPPED    0x10u
-#define CHAR_SLOT_INDEX  0x00346400u     /* player -> index into the slot table */
-#define CHAR_SLOT_TABLE  0x0034595Cu     /* + index·0x20: character */
+#define SLOT_INDEX       0x00346400u     /* game slot -> index into the race slot table (dwords) */
+#define SLOT_TABLE       0x00367FD0u     /* + index·0x20: +0 name[12], +0x14 character */
+#define SLOT_NAME_MAX    11u
 #define RIDER_POSE       0x180u
 #define RENDER_DELAY_MS  100u
 
@@ -84,6 +105,10 @@ static uint32_t     s_last_send;
 static float        s_last_pos[3];
 static uint32_t     s_last_pos_time;
 static int          s_holding;
+static uint32_t     s_next_profile_poll;
+static uint8_t      s_crossed[6];               /* game slot: the puppet crossed the line here */
+static uint32_t     s_wait_since, s_seen_finished[6];
+static int          s_we_finished;              /* our rider is through: the results are finalized */
 
 static void sleep_ms(unsigned ms)
 {
@@ -118,8 +143,13 @@ static void open_session(void)
 static void map_slots(const lan_lobby *l)
 {
     int i, me = lan_local_id(s_session), next = 1, k;
-    for (i = 0; i < 6; i++)
+    for (i = 0; i < 6; i++) {
         s_slot_member[i] = -1;
+        s_crossed[i] = 0;
+        s_seen_finished[i] = 0;
+    }
+    s_wait_since = 0;
+    s_we_finished = 0;
     for (k = 0; k < LAN_MAX_PLAYERS; k++)             /* lobby slot k */
         for (i = 0; i < LAN_MAX_MEMBERS; i++)
             if (l->members[i].used && l->members[i].slot == k && i != me && next < 6)
@@ -158,6 +188,28 @@ static void handle_events(void)
     }
 }
 
+static void read_profile(lan_profile *p);
+
+/* Our profile as the game has it now; sent whenever it changes (character select, Load game ...). */
+static void poll_profile(void)
+{
+    lan_profile p = s_profile;
+    uint32_t now = lan_time(s_session);
+    if ((int32_t)(now - s_next_profile_poll) < 0)
+        return;
+    s_next_profile_poll = now + 500;
+    read_profile(&p);
+    if (memcmp(&p, &s_profile, sizeof p) != 0 || !s_profile_sent) {
+        s_profile = p;
+        s_profile_sent = 1;
+        lan_set_profile(s_session, &s_profile);
+        fprintf(stderr, "  [LAN] profile: %s, character %u, attributes %u %u %u %u %u %u %u, %u items\n",
+                s_profile.name, s_profile.character, s_profile.attrib[0], s_profile.attrib[1],
+                s_profile.attrib[2], s_profile.attrib[3], s_profile.attrib[4], s_profile.attrib[5],
+                s_profile.attrib[6], s_profile.gear_count);
+    }
+}
+
 static void host_autostart(void)
 {
     const lan_lobby *l = lan_get_lobby(s_session);
@@ -186,6 +238,8 @@ static void *net_thread(void *arg)
         if (s_session) {
             lan_service(s_session, 0);
             handle_events();
+            if (lan_local_id(s_session) != LAN_NO_PLAYER)
+                poll_profile();
             host_autostart();
             if (!lan_is_host(s_session) && lan_local_id(s_session) == LAN_NO_PLAYER && s_next_retry
                 && (int32_t)(lan_time(s_session) - s_next_retry) >= 0) {
@@ -261,7 +315,7 @@ int lan_game_active(void)
 /* This PC's rider as the save has it: player 0's character, its attributes and equipped gear. */
 static void read_profile(lan_profile *p)
 {
-    uint32_t ch = M8(CHAR_SLOT_TABLE + M8(CHAR_SLOT_INDEX) * 0x20u), rec, n, i;
+    uint32_t ch = M8(SLOT_TABLE + M32(SLOT_INDEX) * 0x20u + 0x14u), rec, n, i;
     char name[16];
     if (!getenv("SSX3_LAN_NAME")) {
         for (i = 0; i < 15; i++)
@@ -294,15 +348,6 @@ int lan_game_hold(void)
     me = lan_local_id(s_session);
     if (!s_holding) {
         s_holding = 1;
-        if (!s_profile_sent) {
-            read_profile(&s_profile);
-            s_profile_sent = 1;
-            fprintf(stderr, "  [LAN] profile: %s, character %u, attributes %u %u %u %u %u %u %u, %u items\n",
-                    s_profile.name, s_profile.character, s_profile.attrib[0], s_profile.attrib[1],
-                    s_profile.attrib[2], s_profile.attrib[3], s_profile.attrib[4], s_profile.attrib[5],
-                    s_profile.attrib[6], s_profile.gear_count);
-        }
-        lan_set_profile(s_session, &s_profile);
         if (lan_is_host(s_session) && l->state == LAN_STATE_RESULTS)
             lan_end_round(s_session);                   /* a new race from the results: back to the lobby */
         fprintf(stderr, "  [LAN] at the start, waiting for the others\n");
@@ -411,10 +456,12 @@ uint32_t lan_game_finish(uint32_t slot, uint32_t frames)
         return frames;
     LOCK();
     if (slot == 0) {
+        s_we_finished = 1;
         lan_finish(s_session, frames * 1000u / 60u);
         fprintf(stderr, "  [LAN] we finished: %u.%02u s\n", frames / 60u, frames % 60u * 100u / 60u);
     } else if (slot < 6 && s_slot_member[slot] >= 0) {
         const lan_member *m = &lan_get_lobby(s_session)->members[s_slot_member[slot]];
+        s_crossed[slot] = 1;
         if (m->used && m->finished) {
             out = m->finish_ms * 60u / 1000u;
             fprintf(stderr, "  [LAN] %s finished: %u frames (own clock; locally %u)\n", m->profile.name, out, frames);
@@ -422,4 +469,117 @@ uint32_t lan_game_finish(uint32_t slot, uint32_t frames)
     }
     UNLOCK();
     return out;
+}
+
+/* The players who will ride with us, in lobby slot order (= member id order, as lan_start() assigns them). */
+static int expected_others(int *members, int max)
+{
+    const lan_lobby *l = lan_get_lobby(s_session);
+    int i, n = 0, me = lan_local_id(s_session);
+    for (i = 0; i < LAN_MAX_MEMBERS && n < max; i++)
+        if (l->members[i].used && l->members[i].connected && !l->members[i].profile.spectator && i != me)
+            members[n++] = i;
+    return n;
+}
+
+void lan_game_before_ai(uint32_t mgr)
+{
+    int others[5], n, k;
+    uint32_t first;
+    if (mgr < 0x10000u)
+        return;
+    first = M32(mgr + 0x78);                            /* the AI riders are created from this slot on */
+    if (!setup())
+        return;
+    LOCK();
+    n = expected_others(others, 5);
+    for (k = 0; k < 6; k++)
+        s_slot_member[k] = -1;
+    for (k = 0; k < n && first + (uint32_t)k < 6; k++) {
+        uint32_t slot = first + (uint32_t)k, idx = M32(SLOT_INDEX + 4 * slot), e = SLOT_TABLE + idx * 0x20u, i;
+        const lan_profile *p = &lan_get_lobby(s_session)->members[others[k]].profile;
+        if (idx > 5)
+            continue;
+        s_slot_member[slot] = others[k];
+        if (p->character <= 9)
+            M8(e + 0x14) = p->character;
+        for (i = 0; i < SLOT_NAME_MAX && p->name[i]; i++)
+            M8(e + i) = (uint8_t)p->name[i];
+        M8(e + i) = 0;
+        fprintf(stderr, "  [LAN] slot %u: %s, character %u\n", slot, p->name, p->character);
+    }
+    UNLOCK();
+}
+
+uint32_t lan_game_result_name(uint32_t slot)
+{
+    uint32_t va = 0;
+    if (s_state <= 0 || slot >= 6)
+        return 0;
+    LOCK();
+    if (s_slot_member[slot] >= 0)
+        va = SLOT_TABLE + M32(SLOT_INDEX + 4 * slot) * 0x20u;
+    UNLOCK();
+    return va;
+}
+
+int lan_game_wait_end(void)
+{
+    const lan_lobby *l;
+    uint32_t now;
+    int slot, waiting = 0;
+    if (s_state <= 0)
+        return 0;
+    LOCK();
+    l = lan_get_lobby(s_session);
+    now = lan_time(s_session);
+    if (!s_wait_since)
+        s_wait_since = now | 1;
+    for (slot = 1; slot < 6; slot++) {
+        const lan_member *m;
+        if (s_slot_member[slot] < 0 || s_crossed[slot])
+            continue;
+        m = &l->members[s_slot_member[slot]];
+        if (!m->used || !m->connected)
+            continue;                                   /* left: the game estimates its time */
+        if (!m->finished) {
+            waiting++;                                  /* still riding on its own PC */
+            continue;
+        }
+        if (!s_seen_finished[slot])
+            s_seen_finished[slot] = now | 1;
+        if ((int32_t)(now - s_seen_finished[slot]) < 3000)
+            waiting++;                                  /* finished there, its puppet is about to cross here */
+    }
+    if (waiting && (int32_t)(now - s_wait_since) > 120000) {
+        fprintf(stderr, "  [LAN] gave up waiting for %d player(s)\n", waiting);
+        waiting = 0;
+    }
+    if (!waiting)
+        s_wait_since = 0;
+    UNLOCK();
+    return waiting > 0;
+}
+
+void lan_game_after_finish(uint32_t slot)
+{
+    uint32_t game, world, mgr, rider, eax, ecx, edx;
+    int redo;
+    if (s_state <= 0 || slot == 0 || slot >= 6)
+        return;
+    LOCK();
+    redo = s_slot_member[slot] >= 0 && s_we_finished;
+    UNLOCK();
+    if (!redo || (game = M32(0x00369534u)) < 0x10000u || (world = M32(game + 0x74)) < 0x10000u
+        || (mgr = M32(world + 0x0C)) < 0x10000u || (rider = M32(mgr + 0x28 + 4 * slot)) < 0x10000u)
+        return;
+    M32(0x00369408u + 4 * slot) = M32(rider + 0x4D8);   /* its real time instead of the estimate */
+    eax = g_eax; ecx = g_ecx; edx = g_edx;
+    g_esp -= 8;
+    M32(g_esp + 4) = 10;                                /* 0xCE140(10), as the mode handler calls it */
+    M32(g_esp) = 0;                                     /* return address: its ret 4 pops it and the argument */
+    sub_000CE140();
+    g_eax = eax; g_ecx = ecx; g_edx = edx;
+    fprintf(stderr, "  [LAN] results: slot %u now %u frames, place %u\n", slot, M32(0x00369408u + 4 * slot),
+            M32(0x00369458u + 4 * slot) + 1);
 }

@@ -704,3 +704,32 @@ _(date – what was done, what was found, next step)_
     the host's own 13401 – under load (two instances on one CPU) the PCs' frame counts drift apart, so finish
     times are each PC's own game time; the results use those.
   - The finish dispatcher runs once more for the puppet on the results screen ("locally 0"); harmless so far.
+- 2026-10-20 – **LAN: remote character and name, real times for late finishers.**
+  - Race slot table = 0x367FD0 + index·0x20 (index = 0x346400[game slot]): +0 name[12], +0xC owner (−1 AI),
+    +0x10 flags, +0x14 character (setters 0x51060 / 0x51DB0, getter 0x51DF0). The race's AI riders are created by
+    0x13EA0 -> tail jump 0x13C60 (ComputerRider per slot from mgr+0x78 on, character from the table) during
+    GameInit – before the first rider-manager update, so the LAN session now opens in the main menu (0x9CAB0 hook)
+    and the network thread sends our profile whenever it changes (character select updates slot 0 at once).
+    A wrapper on 0x13C60 writes the remote players' characters and names into their slots: B (Psymon) showed the
+    host's Zoe on its start list, A the guest's Psymon.
+  - Results rows: 0xA4620 builds them; human rows use the slot name (0x51C00, "PLAYER 1"), AI rows the character
+    name 0x4DC00(character, variant) (stdcall, ret 8; the caller keeps the slot at [esp+0x18] = [esp+0x24] at
+    entry, return address 0xA49FC). The wrapper returns the slot's name for a remote player: "Guest" / "Host".
+  - Race end: 0x15650 (race update) ends the race when 0x12AA0 says every human is through (`rider+0x4F8` >=
+    threshold for the Player list). The single-race handler 0xCEF90 asks 0x12AA0 too and finalizes the results
+    (estimates 0x22E50 for riders still riding, 0x369408 times, ranking 0xCE140(10), **stdcall ret 4**) only when
+    the finishing rider is human – so a "not yet" for the handler hangs the results ("Loading…" forever, seen).
+    Now only the race update hears "not yet" (return address 0x15663) while a remote player is still riding (or
+    up to 3 s until its puppet crosses here; 120 s at most); a puppet that crosses after our finish gets its real
+    time into 0x369408[slot] and the list is ranked again (after the dispatcher, wrapper 0xCD550). A first try
+    popped 0xCE140's argument twice and crashed both instances in 0x23E90 (stack off by 4).
+    Test (host Zoe, guest Psymon): guest 254.95 s, host 282.62 s; host's results "Guest 4:14 … Zoe 4:42", guest's
+    "Psymon 4:14 … Host 4:42" (it waited 28 s for the host, then re-ranked) – both match the real times.
+  - Open: the puppets' animation freezes (user report: at the start and whenever a guest is visible) – the
+    skipped input/control stages leave the animation without input; equipped gear is sent but not applied;
+    the start list (pre-race screen) still shows the character name.
+  - Select Character shows the attributes in the order of table 0x2934D4 (ids 1,3,0,4,6,5,2): Acceleration,
+    Edging, Speed, Spin, Stability, Toughness, Tricks – so attribute id 0 = Speed, 1 = Acceleration, 2 = Tricks,
+    3 = Edging, 4 = Spin (the one the user's Zoe got), 5 = Toughness, 6 = Stability.
+  - `scripts/ghidra/Decomp.java` now creates a function for this run when Ghidra never made one at an address
+    (0xA4620 was such a case); the project is opened read-only, nothing is saved.

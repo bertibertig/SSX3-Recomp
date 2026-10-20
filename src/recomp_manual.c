@@ -47,7 +47,11 @@ typedef void (*recomp_func_t)(void);
 
 /* ── Register state (defined in xbox_memory_layout.c) ──────── */
 
-extern uint32_t g_eax;
+#if defined(_MSC_VER)
+extern __declspec(thread) uint32_t g_eax;   /* thread-local like the other registers (RECOMP_TLS) */
+#else
+extern __thread uint32_t g_eax;
+#endif
 extern ptrdiff_t g_xbox_mem_offset;
 
 /* ── Game clock for frame interpolation ─────────────────────── */
@@ -272,6 +276,22 @@ void sub_000155A0(void)
     sub_000155A0_gen();
 }
 
+/* "Every human finished" (fastcall: ecx = rider manager -> al = 1). The race update 0x15650 asks it each frame
+ * before it ends the race (return address 0x15663); the mode handlers ask it to finalize the results. LAN: the
+ * race update hears "not yet" while remote players are still on the course; the mode handlers keep the real
+ * answer (they finalize only when a human finishes, so a later "yes" from a puppet's finish would never come). */
+extern void sub_00012AA0_gen(void);
+int lan_game_wait_end(void);
+
+void sub_00012AA0(void)
+{
+    int race_update = SSX3_MEM32(g_esp) == 0x00015663u;
+
+    sub_00012AA0_gen();
+    if (race_update && (g_eax & 0xFF) == 1 && lan_game_wait_end())
+        g_eax &= ~0xFFu;
+}
+
 /* Rider manager update (vtable 0x28216C [2]), thiscall: ecx = manager, ret. Free-roam spawning first. */
 #include "lan/freeroam.h"
 #include "lan/lan_game.h"
@@ -304,6 +324,8 @@ void sub_0009CAB0(void)
     uint32_t menu = g_ecx;
     uint8_t pads = *(volatile uint8_t *)((uintptr_t)(menu + 0x55) + g_xbox_mem_offset);
 
+    lan_game_active();          /* LAN: open the session in the main menu, so profiles are in before a race loads */
+
     if (!lan_menu_multiplay_pads(menu)) {
         sub_0009CAB0_gen();
         return;
@@ -318,8 +340,37 @@ extern void sub_000CD550_gen(void);
 
 void sub_000CD550(void)
 {
-    lan_race_on_finish(SSX3_MEM32(g_esp + 4));
+    uint32_t slot = SSX3_MEM32(g_esp + 4);
+
+    lan_race_on_finish(slot);
     sub_000CD550_gen();
+    lan_game_after_finish(slot);
+}
+
+/* ComputerRider creation for the race (thiscall: ecx = rider manager, ret): takes each AI slot's character
+ * from the race slot table. LAN: the remote players' characters and names go into their slots first. */
+extern void sub_00013C60_gen(void);
+
+void sub_00013C60(void)
+{
+    lan_game_before_ai(g_ecx);
+    sub_00013C60_gen();
+}
+
+/* Character name (stdcall: [esp+4] character, [esp+8] variant, ret 8 -> eax = name). The results screen
+ * (0xA4620) asks it for every AI row; its caller keeps the row's slot at [esp+0x18], which is [esp+0x24] here.
+ * LAN: a remote player's row shows the player's name. */
+extern void sub_0004DC00_gen(void);
+
+void sub_0004DC00(void)
+{
+    uint32_t name = 0;
+
+    if (SSX3_MEM32(g_esp) == 0x000A49FCu)
+        name = lan_game_result_name(SSX3_MEM32(g_esp + 0x24));
+    sub_0004DC00_gen();
+    if (name)
+        g_eax = name;
 }
 
 /* ── Manual function overrides ─────────────────────────────── */

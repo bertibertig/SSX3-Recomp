@@ -359,6 +359,16 @@ void sub_000CD550(void)
     lan_game_after_finish(slot);
 }
 
+/* Player creation for the race (rider manager vtable 0x28216C, thiscall: ecx = manager, ret): one Player per
+ * human (0x367F7C). LAN spectator: the watched player's character and name go into slot 0 first. */
+extern void sub_000139C0_gen(void);
+
+void sub_000139C0(void)
+{
+    lan_game_before_players(g_ecx);
+    sub_000139C0_gen();
+}
+
 /* ComputerRider creation for the race (thiscall: ecx = rider manager, ret): takes each AI slot's character
  * from the race slot table. LAN: the remote players' characters and names go into their slots first. */
 extern void sub_00013C60_gen(void);

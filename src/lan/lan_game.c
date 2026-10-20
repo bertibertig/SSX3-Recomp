@@ -5,7 +5,10 @@
  *   SSX3_LAN_HOST=1               open a lobby (port SSX3_LAN_PORT, default 27215)
  *   SSX3_LAN_JOIN=<addr>[:port]   join one (retried every 2 s until the host answers)
  *   SSX3_LAN_NAME=<name>          name shown to the others (default: the save's profile name)
- *   SSX3_LAN_PLAYERS=<n>          host: start once n players (with the host) are ready (default 2)
+ *   SSX3_LAN_PLAYERS=<n>          host: start once n members (with the host, spectators count) are at the
+ *                                 start (default 2)
+ *   SSX3_LAN_SPECTATE=1           join as a spectator: no rider of our own, we watch a player
+ *   SSX3_LAN_WATCH=<name>         spectator: the player to watch (default: the first player, i.e. the host)
  * Every player picks the same event in the game's own menus (Single Event, same peak and course); the
  * lobby rules do not drive the menus yet.
  *
@@ -27,8 +30,17 @@
  *     26-31 / 20-25 = left stick, bits 8-19 buttons, dword 1 another axis. Our rider's input goes out with
  *     every snapshot with the control mode it was made for; a puppet's brain keeps running, and 0x30970 gets
  *     the remote player's input instead of its AI's whenever the puppet is in that same mode (the bits mean
- *     different things per mode), so crouch, carve, jumps and tricks animate as on the other PC, while the pose (0x24D50) still
+ *     different things per mode). A puppet can still wipe out on its own (its local collisions): when the
+ *     remote rider rides on in the riding mode (0) and the puppet has been in another mode for 0.5 s, it is
+ *     switched back to riding (0x31BA0: leave mode, set brain+0xE64, enter) instead of waiting for a recovery
+ *     input that never comes, so crouch, carve, jumps and tricks animate as on the other PC, while the pose (0x24D50) still
  *     comes from the network.
+ *   - Spectator: our own rider (game slot 0, the one the camera, HUD and position display follow) becomes
+ *     a puppet of the watched player: its character and name go into slot 0 before the race creates its
+ *     human rider (0x139C0), its pose and input come from that player's snapshots, and our pad only counts
+ *     where the modes do not match. The other players take slots 1.. as usual. A spectator sends no
+ *     snapshots and no finish, is "ready" only so the host waits for it to load, and is not in the results
+ *     (slot 0 there shows the watched player under its own name).
  *   - End: the game ends the race once its humans are through (0x12AA0); lan_game_wait_end() keeps it going
  *     until every remote player in it has finished on their own PC (or left) and their puppet has crossed the
  *     line here (up to 3 s later, it rides 100 ms behind), so the results list real times, not estimates.
@@ -62,6 +74,7 @@
 extern ptrdiff_t g_xbox_mem_offset;
 extern uint32_t g_ssx3_xbe_hash;                        /* main.c */
 extern void sub_000CE140(void);                         /* rank the results by 0x369408, stdcall (count), ret 4 */
+extern void sub_00031BA0(void);                         /* brain: switch control mode, thiscall (mode), ret 4 */
 
 #if defined(_MSC_VER)
 extern __declspec(thread) uint32_t g_eax, g_ecx, g_edx, g_esp;
@@ -119,6 +132,9 @@ static uint32_t     s_wait_since, s_seen_finished[6];
 static int          s_we_finished;              /* our rider is through: the results are finalized */
 static uint32_t     s_local_input[2];           /* our rider's control input this frame */
 static uint32_t     s_local_mode;               /* ... and the control mode it was made for (brain+0xE64) */
+static int          s_spectate;                 /* SSX3_LAN_SPECTATE: no rider of our own */
+static uint32_t     s_mode_off_since[6];        /* game slot: since when the puppet's mode differs (host clock) */
+static char         s_watch_name[LAN_NAME_MAX + 1];
 
 static void sleep_ms(unsigned ms)
 {
@@ -149,6 +165,22 @@ static void open_session(void)
     }
 }
 
+/* Spectator: the player we watch (by SSX3_LAN_WATCH, else the first player by id), -1 if none. */
+static int watched_member(const lan_lobby *l)
+{
+    int i, first = -1;
+    for (i = 0; i < LAN_MAX_MEMBERS; i++) {
+        const lan_member *m = &l->members[i];
+        if (!m->used || !m->connected || m->profile.spectator || i == lan_local_id(s_session))
+            continue;
+        if (s_watch_name[0] && !strcmp(m->profile.name, s_watch_name))
+            return i;
+        if (first < 0)
+            first = i;
+    }
+    return first;
+}
+
 /* Game slots for the round that just started: the others in lobby slot order behind our slot 0. */
 static void map_slots(const lan_lobby *l)
 {
@@ -160,12 +192,14 @@ static void map_slots(const lan_lobby *l)
     }
     s_wait_since = 0;
     s_we_finished = 0;
+    if (s_spectate)
+        s_slot_member[0] = watched_member(l);           /* our slot 0 shows the watched player */
     for (k = 0; k < LAN_MAX_PLAYERS; k++)             /* lobby slot k */
         for (i = 0; i < LAN_MAX_MEMBERS; i++)
-            if (l->members[i].used && l->members[i].slot == k && i != me && next < 6)
+            if (l->members[i].used && l->members[i].slot == k && i != me && i != s_slot_member[0] && next < 6)
                 s_slot_member[next++] = i;
     s_mapped_round = l->round;
-    for (i = 1; i < next; i++)
+    for (i = s_spectate ? 0 : 1; i < next; i++)
         fprintf(stderr, "  [LAN] game slot %d = %s (player %d)\n", i,
                 l->members[s_slot_member[i]].profile.name, s_slot_member[i]);
 }
@@ -227,13 +261,13 @@ static void host_autostart(void)
     if (!lan_is_host(s_session) || l->state != LAN_STATE_LOBBY)
         return;
     for (i = 0; i < LAN_MAX_MEMBERS; i++)
-        if (l->members[i].used && l->members[i].connected && !l->members[i].profile.spectator) {
+        if (l->members[i].used && l->members[i].connected) {
             if (!l->members[i].ready)
-                return;
+                return;                                 /* spectators too: they must be at the start */
             ready++;
         }
     if (ready >= s_want_players && lan_start(s_session, 1500))
-        fprintf(stderr, "  [LAN] %d players ready, starting\n", ready);
+        fprintf(stderr, "  [LAN] %d at the start, starting\n", ready);
 }
 
 #if defined(_WIN32)
@@ -291,6 +325,10 @@ static int setup(void)
     }
     memset(&s_profile, 0, sizeof s_profile);
     snprintf(s_profile.name, sizeof s_profile.name, "%s", (e = getenv("SSX3_LAN_NAME")) ? e : "Rider");
+    s_spectate = (e = getenv("SSX3_LAN_SPECTATE")) != NULL && atoi(e) != 0 && join && join[0];
+    s_profile.spectator = (uint8_t)s_spectate;
+    if ((e = getenv("SSX3_LAN_WATCH")) != NULL)
+        snprintf(s_watch_name, sizeof s_watch_name, "%s", e);
     if (lan_net_init() != 0)
         return 0;
 #if defined(_WIN32)
@@ -313,7 +351,8 @@ static int setup(void)
 #endif
     }
     s_state = 1;
-    fprintf(stderr, "  [LAN] %s, game id %08X\n", s_join_addr[0] ? "client" : "host", s_cfg.game_id);
+    fprintf(stderr, "  [LAN] %s, game id %08X\n", s_spectate ? "spectator" : s_join_addr[0] ? "client" : "host",
+            s_cfg.game_id);
     return 1;
 }
 
@@ -366,7 +405,8 @@ int lan_game_hold(void)
         if (l->state == LAN_STATE_LOBBY && !l->members[me].ready)
             lan_set_ready(s_session, 1);                /* again after a reconnect or a new round */
         if ((l->state == LAN_STATE_COUNTDOWN || l->state == LAN_STATE_RUNNING)
-            && l->members[me].slot != LAN_NO_PLAYER && (int32_t)(lan_time(s_session) - l->start_time) >= 0) {
+            && (l->members[me].slot != LAN_NO_PLAYER || l->members[me].profile.spectator)
+            && (int32_t)(lan_time(s_session) - l->start_time) >= 0) {
             if (s_mapped_round != l->round)
                 map_slots(l);
             hold = 0;
@@ -397,10 +437,13 @@ int lan_game_puppet_member(uint32_t rider)
     int slot, member = -1;
     if (s_state <= 0 || rider < 0x10000u || (mgr = rider_manager()) < 0x10000u)
         return -1;
-    for (slot = 1; slot < 6 && slot < (int)M32(mgr + 0x78); slot++)
+    for (slot = s_spectate ? 0 : 1; slot < 6 && slot < (int)M32(mgr + 0x78); slot++)
         if (M32(mgr + 0x28 + 4 * slot) == rider) {
             LOCK();
-            if (race_running(lan_get_lobby(s_session)))
+            /* after it crossed the line here the game takes over again: it lets a finished rider coast
+             * to a stop before the results, and a puppet still pushed by snapshots never stopped (the
+             * spectator hung on "Loading..." with the picture fading to white) */
+            if (race_running(lan_get_lobby(s_session)) && !s_crossed[slot])
                 member = s_slot_member[slot];
             UNLOCK();
             break;
@@ -439,7 +482,7 @@ void lan_game_tick(uint32_t mgr)
         return;
     LOCK();
     now = lan_time(s_session);
-    if (lan_local_id(s_session) != LAN_NO_PLAYER && race_running(lan_get_lobby(s_session))
+    if (!s_spectate && lan_local_id(s_session) != LAN_NO_PLAYER && race_running(lan_get_lobby(s_session))
         && now - s_last_send >= 33) {
         memset(&sn, 0, sizeof sn);
         sn.time = now;
@@ -468,7 +511,14 @@ uint32_t lan_game_finish(uint32_t slot, uint32_t frames)
     if (s_state <= 0)
         return frames;
     LOCK();
-    if (slot == 0) {
+    if (slot == 0 && s_spectate) {                      /* the watched player's puppet: its own time */
+        const lan_member *m = s_slot_member[0] >= 0 ? &lan_get_lobby(s_session)->members[s_slot_member[0]] : NULL;
+        s_we_finished = 1;
+        s_crossed[0] = 1;
+        if (m && m->used && m->finished)
+            out = m->finish_ms * 60u / 1000u;
+        fprintf(stderr, "  [LAN] watched player finished: %u frames (locally %u)\n", out, frames);
+    } else if (slot == 0) {
         s_we_finished = 1;
         lan_finish(s_session, frames * 1000u / 60u);
         fprintf(stderr, "  [LAN] we finished: %u.%02u s\n", frames / 60u, frames % 60u * 100u / 60u);
@@ -488,11 +538,40 @@ uint32_t lan_game_finish(uint32_t slot, uint32_t frames)
 static int expected_others(int *members, int max)
 {
     const lan_lobby *l = lan_get_lobby(s_session);
-    int i, n = 0, me = lan_local_id(s_session);
+    int i, n = 0, me = lan_local_id(s_session), watched = s_spectate ? watched_member(l) : -1;
     for (i = 0; i < LAN_MAX_MEMBERS && n < max; i++)
-        if (l->members[i].used && l->members[i].connected && !l->members[i].profile.spectator && i != me)
+        if (l->members[i].used && l->members[i].connected && !l->members[i].profile.spectator && i != me
+            && i != watched)
             members[n++] = i;
     return n;
+}
+
+/* Character and name of a remote player into a race slot (before the race creates that slot's rider). */
+static void put_slot_look(uint32_t slot, const lan_profile *p)
+{
+    uint32_t idx = M32(SLOT_INDEX + 4 * slot), e = SLOT_TABLE + idx * 0x20u, i;
+    if (idx > 5)
+        return;
+    if (p->character <= 9)
+        M8(e + 0x14) = p->character;
+    for (i = 0; i < SLOT_NAME_MAX && p->name[i]; i++)
+        M8(e + i) = (uint8_t)p->name[i];
+    M8(e + i) = 0;
+    fprintf(stderr, "  [LAN] slot %u: %s, character %u\n", slot, p->name, p->character);
+}
+
+void lan_game_before_players(uint32_t mgr)
+{
+    int w;
+    if (mgr < 0x10000u || !setup() || !s_spectate)
+        return;
+    LOCK();
+    w = watched_member(lan_get_lobby(s_session));
+    if (w >= 0)
+        put_slot_look(0, &lan_get_lobby(s_session)->members[w].profile);
+    else
+        fprintf(stderr, "  [LAN] spectator: nobody to watch yet\n");
+    UNLOCK();
 }
 
 void lan_game_before_ai(uint32_t mgr)
@@ -509,17 +588,9 @@ void lan_game_before_ai(uint32_t mgr)
     for (k = 0; k < 6; k++)
         s_slot_member[k] = -1;
     for (k = 0; k < n && first + (uint32_t)k < 6; k++) {
-        uint32_t slot = first + (uint32_t)k, idx = M32(SLOT_INDEX + 4 * slot), e = SLOT_TABLE + idx * 0x20u, i;
-        const lan_profile *p = &lan_get_lobby(s_session)->members[others[k]].profile;
-        if (idx > 5)
-            continue;
+        uint32_t slot = first + (uint32_t)k;
         s_slot_member[slot] = others[k];
-        if (p->character <= 9)
-            M8(e + 0x14) = p->character;
-        for (i = 0; i < SLOT_NAME_MAX && p->name[i]; i++)
-            M8(e + i) = (uint8_t)p->name[i];
-        M8(e + i) = 0;
-        fprintf(stderr, "  [LAN] slot %u: %s, character %u\n", slot, p->name, p->character);
+        put_slot_look(slot, &lan_get_lobby(s_session)->members[others[k]].profile);
     }
     UNLOCK();
 }
@@ -608,7 +679,7 @@ void lan_game_input(uint32_t brain, uint32_t input)
         uint32_t rider = M32(mgr + 0x28 + 4 * slot);
         if (rider < 0x10000u || M32(rider + 0x74C) != brain)
             continue;
-        if (slot == 0) {                                /* ours: goes out with the next snapshot */
+        if (slot == 0 && !s_spectate) {                 /* ours: goes out with the next snapshot */
             s_local_input[0] = M32(input);
             s_local_input[1] = M32(input + 4);
             s_local_mode = M32(brain + BRAIN_MODE);
@@ -622,10 +693,29 @@ void lan_game_input(uint32_t brain, uint32_t input)
              * puppet runs 100 ms behind and can be in another mode than the input was made for: then a
              * button pattern became a trick number, a wild animation id and a crash (seen in 0x1A7960).
              * So the remote input is only used in the same mode; otherwise the AI's own input stays. */
-            if (member >= 0 && lan_remote_state(s_session, member, lan_time(s_session) - RENDER_DELAY_MS, &sn)
-                && (sn.flags & 0xFF) == (M32(brain + BRAIN_MODE) & 0xFF)) {
-                M32(input) = sn.input[0];               /* the remote player's input, not its AI's */
-                M32(input + 4) = sn.input[1];
+            if (member >= 0 && lan_remote_state(s_session, member, lan_time(s_session) - RENDER_DELAY_MS, &sn)) {
+                uint32_t mode = M32(brain + BRAIN_MODE), now = lan_time(s_session);
+                if ((sn.flags & 0xFF) == (mode & 0xFF))
+                    s_mode_off_since[slot] = 0;
+                else if (!s_mode_off_since[slot])
+                    s_mode_off_since[slot] = now | 1;
+                if ((sn.flags & 0xFF) == 0 && mode != 0 && s_mode_off_since[slot]
+                    && (int32_t)(now - s_mode_off_since[slot]) > 500) {
+                    uint32_t eax = g_eax, ecx = g_ecx, edx = g_edx;
+                    fprintf(stderr, "  [LAN] slot %u: mode %u -> riding (the remote rider rides on)\n", slot, mode);
+                    g_esp -= 8;
+                    M32(g_esp + 4) = 0;                 /* riding */
+                    M32(g_esp) = 0;                     /* return address: ret 4 pops it and the argument */
+                    g_ecx = brain;
+                    sub_00031BA0();
+                    g_eax = eax; g_ecx = ecx; g_edx = edx;
+                    s_mode_off_since[slot] = 0;
+                    mode = 0;
+                }
+                if ((sn.flags & 0xFF) == (mode & 0xFF)) {
+                    M32(input) = sn.input[0];           /* the remote player's input, not its AI's */
+                    M32(input + 4) = sn.input[1];
+                }
             }
             UNLOCK();
         }

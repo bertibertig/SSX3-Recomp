@@ -760,3 +760,28 @@ _(date – what was done, what was found, next step)_
   Also seen: when the host reaches the start first, its race loads with whatever character the guest had under
   the cursor at that moment (the guest was still on Select Character: "character 0" instead of Psymon) – the
   lobby needs a "characters chosen" step before anyone loads (phase 2).
+- 2026-10-20 – **LAN spectator mode** (`SSX3_LAN_SPECTATE=1`, `SSX3_LAN_WATCH=<name>`, default the first player).
+  The spectator's own rider (game slot 0: camera, HUD, position display follow it) becomes a puppet of the
+  watched player: character and name go into slot 0 before the race creates its human rider (0x139C0, manager
+  vtable 0x28216C, one Player per 0x367F7C humans; new wrapper), pose and input come from that player's snapshots.
+  No snapshots, no finish from the spectator; it reports "ready" at the start so the host waits for it (the host
+  now starts when SSX3_LAN_PLAYERS members incl. spectators are at the start). Results: the host lists only real
+  riders; the spectator's slot 0 row shows the watched player by name with its own time ("Host 4:25" = 265.38 s).
+  Test (A host on a virtual pad riding with tricks, B spectating): B's view matched A's (same rails, jumps,
+  places, clock); speed display differs (measured locally).
+  - Local wipe-outs: a puppet can wipe out from its own local collisions while the remote rider rides on (seen
+    on B: "RECOVER – X"); its mode then differs from the input's and the remote input is ignored, so it stayed
+    down. Control mode setter = **0x31BA0** (thiscall brain, mode, ret 4: leave 0x307E0, set brain+0xE64, enter
+    0x30890); the other writes of +0xE64 are 0x26596 (= 0xD) and 0x31854 (= 0xE). Now: remote rider in riding
+    mode (0) and the puppet 0.5 s in another mode -> switched back to riding (seen for modes 3, 5, 8, no crash).
+  - Finish hang: the game lets a finished human rider coast to a stop before the results; the spectator's slot 0
+    puppet was still pushed by snapshots and never stopped -> "Loading…" forever with the picture fading to white.
+    Now every puppet is released to the game once it crossed the line here. Spectator race then ended normally.
+  - Open (user report): the "Off Limits" whiteout stayed on for the spectator without the reset – the local
+    off-limits/reset sequence of the puppet fights the network pose. The "Off Limits" HUD text is hash index 8 of
+    the table 0x3688FC (filled at 0x222C90, read through a pointer), no direct code reference found yet; a
+    measurement (rider object before/during off limits) needs a reliable place to trigger it – two tries (Snow
+    Jam hard right, CTM after the lodge gate hard left) did not.
+  - Infra: two probes must never read the same command FIFO (an old probe kept reading B's path after its
+    folder was moved and swallowed the presses), and a stale virtual pad can take port 1 (the game listens to
+    port 1 only) – restart the instance then.

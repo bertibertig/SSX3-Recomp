@@ -158,7 +158,8 @@ Order follows `CLAUDE.md` / `xboxrecomp/docs/GETTING_STARTED.md`. Details and fi
 - [ ] Name tags over riders (colours, distance fade, toggle, off-screen arrows)
 - [ ] Conquer the Mountain free roam, 12 players from the start; late join + reconnect
 - [ ] Collision toggle (ghost / bumping with knockdown events)
-- [ ] Spectators
+- [ ] Spectators (first cut done: `SSX3_LAN_SPECTATE=1` watches one player; open: Off Limits whiteout desync,
+      switching the watched player, joining a running race)
 - [ ] Direct IP / internet hardening (loss, jitter, timeouts; NAT via port forwarding or VPN)
 - [ ] Freestyle events: 6 players, then 12
 - [ ] 12-player races (raise the engine's 6-rider limit)

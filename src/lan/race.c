@@ -33,6 +33,9 @@
 #include <stdlib.h>
 #include <time.h>
 #include <sys/stat.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 #include "race.h"
 #include "puppet.h"
@@ -48,12 +51,17 @@ static const char *s_go_file;
 static double s_held_since = -1.0;  /* host time the current hold began, < 0: not holding */
 static uint32_t s_countdown_from;   /* race state the current countdown came from */
 
+/* Monotonic seconds. Not timespec_get: MinGW's msvcrt (MSYS2 MINGW64) does not have it. */
 static double now_s(void)
 {
+#ifdef _WIN32
+    return GetTickCount64() * 1e-3;
+#else
     struct timespec ts;
 
-    timespec_get(&ts, TIME_UTC);
+    clock_gettime(CLOCK_MONOTONIC, &ts);
     return (double)ts.tv_sec + ts.tv_nsec * 1e-9;
+#endif
 }
 
 static void init(void)

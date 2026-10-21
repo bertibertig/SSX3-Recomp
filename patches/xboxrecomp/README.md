@@ -98,6 +98,28 @@ Verified: Linux build + Windows cross build (MinGW) compile; own decoder test (8
  routine but never left an idle voice in a list in our runs (menus + a 4.5-min race: 0 idle-voice traps), so this
  is a latent fix here. `RECOMP_APU_IDLE_LOG=1` prints the idle-voice traps per voice every 5 s.
 
+Ported from Amped2-Recomp (commit 277f07e, same text there):
+- `kernel_hal.c`: **dispatch lock** – DISPATCH_LEVEL now excludes DPCs, as on the Xbox's one CPU. A thread holds a
+  global lock from the moment its IRQL reaches DISPATCH_LEVEL until it drops below; a DPC (entered through
+  `xbox_IrqlEnterInterrupt(2)`) takes it too, ISRs (device IRQL) do not. DirectSound's lock is a raise to
+  DISPATCH_LEVEL: its stream DPC used to run between a game thread's SET_CURRENT_VOICE and the following volume / SSL
+  writes, so they landed on the wrong voice (Amped 2: music mono, quiet or silent, no next track, static, a crash).
+  A DPC waits at most `RECOMP_DISPATCH_LOCK_MS` (100) for a raised thread, then runs anyway with a warning and the
+  `[IRQLHOLD]` holder list; `RECOMP_DISPATCH_LOCK=0` turns it off.
+- `apu_dsp.c`: **stereo downmix of the speaker bins** – FL/FR + C and BL/BR at -3 dB to both sides, crosstalk bins
+  6..9 as their speakers, LFE left out, the I3DL2 send (10) at -6 dB to both sides; FX sends 11..31 even/odd as
+  before. The even/odd fold put LFE on the right only and the rears at full level (Amped 2's music: left 1.7x,
+  right 2.7x, clipping). `RECOMP_APU_MIXDOWN=legacy` restores the even/odd fold.
+- Audio diagnostics (`apu_vp.c`, `apu_dsp.c`, `apu_core.c`): under `RECOMP_APU_TRACE` a `[APU-VROUTE]` line per voice
+  (list, envelope, pauses, all eight bin/volume pairs; multipass voices included) and `[APU-BINS]` (RMS per mixbin,
+  samples the mixdown clamped) every second; `RECOMP_APU_TRACE_NO_MMIO=1` keeps those without the per-access register
+  log; `RECOMP_APU_SSL_LOG=1` logs every stream list set/done/starve with a timestamp; `RECOMP_APU_VOICE_LOG=<voice>`
+  logs every front-end method naming that voice (with the writer's guest stack for volume writes).
+- `apu_vp.c` (with the above, as in Amped2-Recomp): `RECOMP_APU_SSL_STATS=1` prints stream-list totals every 5 s
+  (lists set, played+notified, starved fetches). SSX 3 sets no stream lists (0/0/0 all race); its music does not
+  go through SSLs.
+  SSX 3 check: no "DPC waited" warning in any run, fps unchanged; see docs/notes.md 2026-10-21.
+
 ## 0002 – Linux installer Python prerequisites
 - `tools/linux/install_deps.sh`: include Python 3 and `venv` support in the Debian/Ubuntu package list.
 - Mark the installer and its distro-detection test executable.

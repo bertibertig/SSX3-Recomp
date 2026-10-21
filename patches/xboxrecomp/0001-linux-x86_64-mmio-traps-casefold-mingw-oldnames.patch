@@ -96,6 +96,100 @@ index 235140f..c223d57 100644
  
  #if !defined(_WIN32) && defined(__aarch64__)
  /* POSIX arm64: the same hook over sigaction + ucontext, with the A64 decoder
+diff --git a/src/apu/apu_vp.c b/src/apu/apu_vp.c
+index 128d86f..93edac7 100644
+--- a/src/apu/apu_vp.c
++++ b/src/apu/apu_vp.c
+@@ -1629,11 +1629,18 @@ static void vp_trace_positions(MCPXAPUState *d)
+     }
+ }
+ 
++static uint16_t s_idle_last = 0xFFFF;   /* the idle voice reported last */
++
+ void mcpx_apu_vp_frame(MCPXAPUState *d,
+                         float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME])
+ {
+     memset(d->vp.sample_buf, 0, sizeof(d->vp.sample_buf));
+ 
++    /* Idle voices still in a list: the first one in walk order, and the
++     * first one after the voice reported last (s_idle_last). */
++    uint16_t idle_first = 0xFFFF, idle_after = 0xFFFF;
++    bool idle_seen_last = false;
++
+     for (int list = 0; list < 3; list++) {
+         hwaddr top, current, next;
+         top = voice_list_regs[list].top;
+@@ -1654,13 +1661,13 @@ void mcpx_apu_vp_frame(MCPXAPUState *d,
+ 
+             if (!voice_get_mask(d, v, NV_PAVS_VOICE_PAR_STATE,
+                                 NV_PAVS_VOICE_PAR_STATE_ACTIVE_VOICE)) {
+-                /* One trap at a time: once the front end is trapped, a second
+-                 * idle voice in the same frame would overwrite FEDECPARAM
+-                 * before the ISR has read the first. The rest trap on later
+-                 * frames, after the ISR has resumed the front end. */
+-                if ((d->regs[NV_PAPU_FECTL] & NV_PAPU_FECTL_FEMETHMODE)
+-                        != NV_PAPU_FECTL_FEMETHMODE_TRAPPED)
+-                    fe_method(d, SE2FE_IDLE_VOICE, v);
++                /* Idle: reported after the walk, one voice per frame. */
++                if (idle_first == 0xFFFF)
++                    idle_first = v;
++                if (idle_seen_last && idle_after == 0xFFFF)
++                    idle_after = v;
++                if (v == s_idle_last)
++                    idle_seen_last = true;
+             } else {
+                 /* Process voice directly (single-threaded) */
+                 voice_process(d, mixbins, d->vp.sample_buf, v, list);
+@@ -1669,6 +1676,49 @@ void mcpx_apu_vp_frame(MCPXAPUState *d,
+         }
+     }
+ 
++    /* Report one idle voice per frame, round-robin over the idle voices.
++     *
++     * One trap at a time: once the front end is trapped, a second idle voice
++     * in the same frame would overwrite FEDECPARAM before the ISR has read
++     * the first. Which one matters, though: DirectSound's service routine
++     * (XDK 5558; Amped 2 0x002936B5, SSX 3 0x0025C569) acts only on the trap
++     * for the voice in its buffer object's current slot and ignores the
++     * others -- a buffer with several hardware voices is retired through one
++     * of them. Always reporting the first idle voice in list order meant such
++     * a buffer whose acted-on voice came later was never retired: the earlier
++     * one trapped on every frame (~1500 interrupts/s on Amped 2's results
++     * screen, v72 of v72/v73), and no other voice was ever reported, so
++     * DirectSound's waits for the voices it had stopped (Amped 2 0x00296A78)
++     * ran into their 0.5 s timeout one after another -- the game stalled for
++     * seconds. Starting after the last reported voice gives every idle voice
++     * its turn. */
++    if (idle_first != 0xFFFF
++            && (d->regs[NV_PAPU_FECTL] & NV_PAPU_FECTL_FEMETHMODE)
++               != NV_PAPU_FECTL_FEMETHMODE_TRAPPED) {
++        uint16_t v = idle_after != 0xFFFF ? idle_after : idle_first;
++        static int idle_log = -1;
++        static uint32_t idle_n[MCPX_HW_MAX_VOICES];
++        static uint64_t idle_next;
++
++        if (idle_log < 0)
++            idle_log = apu_env_on("RECOMP_APU_IDLE_LOG");
++        if (idle_log) {             /* idle-voice traps per voice, every 5 s */
++            uint64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++            idle_n[v]++;
++            if (now >= idle_next) {
++                fprintf(stderr, "[APU-IDLE] traps/5s by voice:");
++                for (int k = 0; k < MCPX_HW_MAX_VOICES; k++)
++                    if (idle_n[k])
++                        fprintf(stderr, " v%d=%u", k, idle_n[k]);
++                fprintf(stderr, "\n");
++                memset(idle_n, 0, sizeof idle_n);
++                idle_next = now + 5000000000ull;
++            }
++        }
++        s_idle_last = v;
++        fe_method(d, SE2FE_IDLE_VOICE, v);
++    }
++
+     vp_trace_positions(d);
+     vp_stat_report();
+     if (s_ring_on > 0 && ++s_ring_frames % 1500 == 0)
 diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
 index 965dd08..3176c4b 100644
 --- a/src/kernel/kernel_bridge.c

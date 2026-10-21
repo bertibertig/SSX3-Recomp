@@ -794,3 +794,21 @@ _(date – what was done, what was found, next step)_
   runtime patches are applied with `git apply` in CI (fails hard, unlike `apply_runtime_patches`); the Windows
   job turns off `core.autocrlf` so they apply byte for byte (`.gitattributes`: `*.patch eol=lf` too).
   Verified locally on a fresh clone: Linux 4/4, MinGW cross build + Wine 2/2.
+- 2026-10-21 – **APU idle-voice traps round-robin (ported from Amped2-Recomp; latent here).** Amped 2's results
+  screen ran at 5-40 fps: the runtime raised the single per-frame SE2FE_IDLE_VOICE trap always for the first idle
+  voice in list order; DirectSound retires a multi-voice buffer only through the trap of the voice in its object's
+  current slot (service routine at Amped 2 0x002936B5), so the earlier voice of an idle pair re-trapped ~1500x/s,
+  the other was never reported, and every DirectSound stop waited out its 0.5 s timeout. Fix: report the first idle
+  voice after the one reported last (runtime patch, `apu_vp.c`; Amped2-Recomp notes 2026-10-21 for the trace).
+  - Is SSX 3 affected? Same XDK (5558) DirectSound: the identical service routine is at **0x0025C569** (byte
+    pattern match with the absolute address and the call masked, PB pointer global 0x002796A8), and SSX 3 ran the
+    same unpatched upstream code. But in practice no: with `RECOMP_APU_IDLE_LOG=1` and the old rule (a temporary
+    switch in a test build), boot → title → menus → Snow Jam race, 4.5 min riding: **0 idle-voice traps**, 3 APU
+    interrupts in total – EA's engine never leaves an idle voice linked. A race finish / results screen was not
+    reached (no driving input), so that part is unchecked.
+  - With the fix (final code): the same route to the race, no crash, 0 idle traps, 55-60 fps (dips while loading /
+    with frame dumps, as before). Ported anyway to keep the runtime patches of both ports in step; with no idle voice
+    in a list the new code does nothing.
+  - Tested in a separate worktree off `main` (the main checkout has uncommitted LAN-lobby work whose generated code
+    renames sub_000E1B50/sub_000760E0 to `_gen`; the test build carried two pass-through wrappers for that, not
+    committed).

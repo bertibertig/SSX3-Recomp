@@ -88,4 +88,11 @@ Verified: Linux build + Windows cross build (MinGW) compile; own decoder test (8
   "Unable to save" when overwriting an existing save (Linux only; the Windows build was not affected).
   Proposed upstream with a test (`tests/kernel_file_relative`): https://github.com/sp00nznet/xboxrecomp/pull/237 –
   drop this part once it is in a release we update to.
-
+- `src/apu/apu_vp.c`: **idle-voice traps round-robin** (from Amped2-Recomp, 2026-10-21) – one SE2FE_IDLE_VOICE
+  trap per frame as before, but for the first idle voice *after* the one reported last instead of always the first
+  in list order. DirectSound (XDK 5558; service routine SSX 3 0x0025C569, Amped 2 0x002936B5) retires a buffer with
+  several hardware voices through the trap of one of them and ignores the others. In Amped 2 such a pair stayed
+  idle on the results screen: the ignored voice trapped on every frame (~1500/s), no other idle voice was ever
+  reported, and DirectSound's waits for stopped voices ran into their 0.5 s timeout (5-40 fps). SSX 3 has the same
+  routine but never left an idle voice in a list in our runs (menus + a 4.5-min race: 0 idle-voice traps), so this
+  is a latent fix here. `RECOMP_APU_IDLE_LOG=1` prints the idle-voice traps per voice every 5 s.

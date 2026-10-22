@@ -55,8 +55,9 @@ log_summary() {  # log_summary <log> <label>
 if [ "${SKIP_LINUX:-0}" != 1 ]; then
   say "== Linux: $(basename "$DIST/SSX3-Recomp-$VERSION-linux-x86_64.tar.gz")"
   P="$(unpack "$DIST/SSX3-Recomp-$VERSION-linux-x86_64.tar.gz")"
-  if (cd "$P" && ./run.sh) > "$OUT/linux_nofiles.log" 2>&1; then say "  FAIL: run.sh started without game files"
+  if (cd "$P" && SSX3_INSTALL=0 ./run.sh) > "$OUT/linux_nofiles.log" 2>&1; then say "  FAIL: run.sh started without game files"
   else say "  missing game files: $(grep -m1 'default.xbe missing' "$OUT/linux_nofiles.log" >/dev/null && echo 'stops with the message (ok)' || echo 'FAIL, see linux_nofiles.log')"; fi
+  say "  installer: $("$P/install_game.sh" --check "$GAME_FILES" 2>&1 | grep -a -o 'check: .*' || echo 'FAIL, no result')"
   link_game_files "$P"
   mkdir -p "$OUT/linux_dumps" "$OUT/linux_cfg"
   set +e
@@ -76,8 +77,9 @@ if [ "${SKIP_WINDOWS:-0}" != 1 ]; then
   say "== Windows (Wine): $(basename "$DIST/SSX3-Recomp-$VERSION-windows-x86_64.zip")"
   P="$(unpack "$DIST/SSX3-Recomp-$VERSION-windows-x86_64.zip")"
   export WINEPREFIX="$OUT/wineprefix" WINEDEBUG=-all APPDATA="$OUT/win_appdata"
-  if pwsh -NoProfile -File "$P/run.ps1" > "$OUT/win_nofiles.log" 2>&1 < /dev/null; then say "  FAIL: run.ps1 started without game files"
+  if SSX3_INSTALL=0 pwsh -NoProfile -File "$P/run.ps1" > "$OUT/win_nofiles.log" 2>&1 < /dev/null; then say "  FAIL: run.ps1 started without game files"
   else say "  missing game files: $(grep -q 'default.xbe missing' "$OUT/win_nofiles.log" && echo 'stops with the message (ok)' || echo 'FAIL, see win_nofiles.log')"; fi
+  say "  installer: $(pwsh -NoProfile -File "$P/install_game.ps1" -Check "$GAME_FILES" 2>&1 < /dev/null | grep -a -o 'check: .*' || echo 'FAIL, no result')"
   link_game_files "$P"
   wineboot -i >/dev/null 2>&1 || true   # create the prefix now: run.ps1 calls the exe before its menu shows
   set +e

@@ -25,6 +25,7 @@
 #   RECOMP_PB_SCAN=1 / RECOMP_PB_EXEC=1   analyse / execute the NV2A pushbuffer
 #   SSX3_PAD_TRACE=1        log every controller button change (pads: README "Controllers")
 #   RECOMP_USB_PADS=2       more emulated pads on the USB bus (split screen), default 1
+#   SSX3_INSTALL=0          without game_files/default.xbe: just stop instead of starting install_game.sh
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -x "$HERE/ssx3_recomp" ]; then
   set -euo pipefail                                   # release package: binary, scripts and game_files/ side by side
@@ -36,9 +37,14 @@ else
 fi
 source "$HERE/_launch_menu.sh"
 [ -x "$EXE" ] || { echo "No build. First run: scripts/build.sh" >&2; exit 1; }
-[ -f "$ROOT/game_files/default.xbe" ] || {
+if [ ! -f "$ROOT/game_files/default.xbe" ]; then
   echo "game_files/default.xbe missing: put the extracted contents of your SSX 3 Xbox disc (PAL) into $ROOT/game_files/" >&2
-  exit 1; }
+  [ "${SSX3_INSTALL:-1}" != 0 ] && [ -f "$HERE/install_game.sh" ] || exit 1
+  echo "run.sh: starting the game data installer (install_game.sh; SSX3_INSTALL=0 skips it)" >&2
+  rc=0; SSX3_INSTALL_FROM_RUN=1 bash "$HERE/install_game.sh" || rc=$?
+  [ "$rc" = 10 ] && exit 0                            # installed, but the player chose not to start now
+  [ "$rc" = 0 ] && [ -f "$ROOT/game_files/default.xbe" ] || exit "$((rc ? rc : 1))"
+fi
 cd "$ROOT"
 export RECOMP_TITLE_KEVENTS="${RECOMP_TITLE_KEVENTS:-1}"
 export RECOMP_VBLANK="${RECOMP_VBLANK:-1}"

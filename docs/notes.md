@@ -812,3 +812,25 @@ _(date – what was done, what was found, next step)_
   - Tested in a separate worktree off `main` (the main checkout has uncommitted LAN-lobby work whose generated code
     renames sub_000E1B50/sub_000760E0 to `_gen`; the test build carried two pass-through wrappers for that, not
     committed).
+- 2026-10-22 – **Game data installer** (`scripts/install_game.sh`, `scripts/install_game.ps1` +
+  `scripts/release/install_game.bat`; packed next to the run scripts by `package_release.sh`). Copies the player's
+  own disc into `game_files/` next to the binary (repo: `<repo>/game_files`) from a Redump `.iso`, a rebuilt
+  `.xiso` or an extracted folder. Full-screen TUI in SSX 3's look (orange/yellow slanted logo, a three-peak
+  mountain with the current step's peak lit, "PEAK 1-3" trail, boost-meter progress), plain line mode without a
+  terminal or with `--yes` / `--check`.
+  - Own XDVDFS reader in both (bash: `od`/`dd`; PowerShell: inline C# 5 so Windows PowerShell 5.1 compiles it):
+    volume descriptor "MICROSOFT*XBOX*MEDIA" at partition + 0x10000, partitions probed at 0 (xiso), 0x18300000
+    (XGD1 Redump – SSX 3), 0x0FD90000 (XGD2), 0x02080000 (XGD3); directory entries are a binary tree (left/right
+    offsets in dwords, 0xFFFF/0xFFFF = sector padding), attribute 0x10 = directory. Names are checked (printable
+    ASCII, no `/` `\` `..`), extents must lie inside the image.
+  - Identification from `default.xbe` (certificate at `[0x118] - [0x104]`: title ID +0x08, name +0x0C UTF-16,
+    region +0xA0): known SHA-1 (original / patched, see "Game version") = exact build; title 0x4541003C + PAL flag
+    = "modified, should work" – `extract-xiso -c` applies its media patch to `default.xbe` by default
+    (SHA-1 1ad088aa… for our build), only `-m` keeps it original.
+  - `run.sh` / `run.ps1` start the installer when `game_files/default.xbe` is missing (`SSX3_INSTALL=0` = old
+    behaviour, used by `test_release.sh`'s missing-files check); "Ride now" exits 0 and the launch continues,
+    "Quit" after an install exits 10 (launcher exits 0 without starting).
+  - Tested: images built with extract-xiso (`-m -c`) from our game_files, plus a Redump-layout copy (zeros up to
+    0x18300000): xiso, Redump iso and folder install byte-identical (`diff -r`) with both scripts (bash; pwsh 7 on
+    Linux), TUI screens driven in tmux, run.sh/run.ps1 → installer → launch chain. Not tested on real Windows
+    (Windows PowerShell 5.1, conhost VT mode, file dialogs) or on a Steam Deck.

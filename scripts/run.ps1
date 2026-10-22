@@ -16,6 +16,7 @@
 #                           console and not set above). The choice is saved in %APPDATA%\ssx3-recomp\run.conf
 #   SSX3_PAD_TRACE=1        log every controller button change
 #   RECOMP_USB_PADS=2       more emulated pads on the USB bus (split screen), default 1
+#   SSX3_INSTALL=0          without game_files\default.xbe: just stop instead of starting install_game.ps1
 $ErrorActionPreference = 'Stop'
 $Exe = $null
 if (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'ssx3_recomp.exe')) {
@@ -35,7 +36,16 @@ if (-not $Exe) {
 Set-Location -LiteralPath $Root
 if (-not (Test-Path -LiteralPath (Join-Path $Root 'game_files\default.xbe'))) {
     [Console]::Error.WriteLine("game_files\default.xbe missing: copy the extracted contents of your SSX 3 Xbox disc (PAL) into $(Join-Path $Root 'game_files')")
-    exit 1
+    $installer = Join-Path $PSScriptRoot 'install_game.ps1'
+    if ($env:SSX3_INSTALL -eq '0' -or -not (Test-Path -LiteralPath $installer)) { exit 1 }
+    [Console]::Error.WriteLine('run.ps1: starting the game data installer (install_game.ps1; SSX3_INSTALL=0 skips it)')
+    $env:SSX3_INSTALL_FROM_RUN = '1'
+    & $installer
+    $rc = $LASTEXITCODE
+    Remove-Item Env:SSX3_INSTALL_FROM_RUN -ErrorAction SilentlyContinue
+    if ($rc -eq 10) { exit 0 }                  # installed, but the player chose not to start now
+    if ($rc -ne 0 -or -not (Test-Path -LiteralPath (Join-Path $Root 'game_files\default.xbe'))) { exit $(if ($rc) { $rc } else { 1 }) }
+    Set-Location -LiteralPath $Root
 }
 
 function Set-EnvDefault([string]$Name, [string]$Value) {

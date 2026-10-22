@@ -56,10 +56,15 @@ textures). Full list: [docs/TODO.md](docs/TODO.md).
 
 1. Download the package for your system from the [releases page](https://github.com/bertibertig/SSX3-Recomp/releases)
    and unpack it.
-2. Put your game files into its `game_files/` folder (see [Game files](#game-files)).
+2. Put your game files into its `game_files/` folder with the installer (see [Game files](#game-files)):
+   - **Linux:** `./install_game.sh`
+   - **Windows:** double-click `install_game.bat` (it runs `install_game.ps1`)
 3. Start the game with the launcher script:
    - **Linux:** `./run.sh`
    - **Windows:** double-click `run.bat` (it runs `run.ps1`)
+
+   If `game_files/` is still empty, the launcher starts the installer by itself and goes on into the game
+   afterwards (`SSX3_INSTALL=0` turns that off).
 
 Linux packages need glibc 2.39 or newer (Ubuntu 24.04+, Fedora 40+, Arch, SteamOS 3.6+) and these libraries:
 SDL2, OpenSSL 3, libepoxy and a Vulkan driver.
@@ -73,8 +78,17 @@ sudo apt install libsdl2-2.0-0 libssl3 libepoxy0 mesa-vulkan-drivers
 The game data always comes from **your own disc**; nothing of it is ever put into this repository or a release.
 
 1. Dump your SSX 3 Xbox disc (**PAL/EU**) to an `.iso` image.
-2. Extract it into `game_files/` – in the repository root when you build from source, next to the program
-   when you use a release. Use [extract-xiso](https://github.com/XboxDev/extract-xiso) or
+2. Run the installer: `./install_game.sh` (Linux, also `scripts/install_game.sh` in the repository) or
+   `install_game.bat` (Windows). It finds disc images and extracted folders in the usual places (next to the
+   program, Downloads, Desktop, Documents, Games, SD cards) or takes a path / file dialog, checks that it is the
+   supported SSX 3 PAL build (title ID, region, `default.xbe` SHA-1) and copies everything into `game_files/` –
+   in the repository root when you build from source, next to the program when you use a release. It accepts
+   - a full Redump-style `.iso` (video + game partition) or a trimmed/rebuilt `.xiso`, read directly
+     (no extra tools needed), or
+   - an already extracted folder (the one with `default.xbe` in it).
+
+   Without menus: `./install_game.sh --yes "/path/to/SSX 3.iso"`; `--check` only identifies a source.
+   Extracting by hand works too, with [extract-xiso](https://github.com/XboxDev/extract-xiso) or
    [xdvdfs](https://github.com/antangelo/xdvdfs):
 
    ```bash
@@ -91,7 +105,8 @@ The game data always comes from **your own disc**; nothing of it is ever put int
      ...
    ```
 
-The launcher stops with a message if `game_files/default.xbe` is missing.
+If `game_files/default.xbe` is missing, the launcher starts the installer (in a terminal; otherwise it stops
+with a message).
 
 ## Building from source
 
@@ -109,11 +124,10 @@ git clone --recurse-submodules https://github.com/bertibertig/SSX3-Recomp.git
 cd SSX3-Recomp
 ```
 
-Extract your disc image into `game_files/` (needs [extract-xiso](https://github.com/XboxDev/extract-xiso) or
-[xdvdfs](https://github.com/antangelo/xdvdfs) on the host, for both build ways):
+Put your game data into `game_files/` (for both build ways; no extra tools needed):
 
 ```bash
-scripts/extract_iso.sh "/path/to/SSX 3.iso"
+scripts/install_game.sh "/path/to/SSX 3.iso"
 ```
 
 ### On your system (Linux)

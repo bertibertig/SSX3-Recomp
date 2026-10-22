@@ -11,7 +11,10 @@ After extracting the disc image this folder must look like this:
     data/
     ...
 
-To extract an .iso image use extract-xiso (https://github.com/XboxDev/extract-xiso)
+The easiest way: run install_game.sh (Linux) or install_game.bat (Windows) in the
+folder above. It reads .iso / .xiso images and extracted folders and fills this folder.
+
+To extract an .iso image by hand use extract-xiso (https://github.com/XboxDev/extract-xiso)
 or xdvdfs (https://github.com/antangelo/xdvdfs):
 
   extract-xiso -x "SSX 3.iso" -d game_files

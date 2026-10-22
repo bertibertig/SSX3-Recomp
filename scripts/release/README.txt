@@ -17,9 +17,21 @@ This package contains NO game data. You need a legally obtained SSX 3 disc for t
 original Xbox, PAL/EU version (title ID 4541003C, English/French/German/Spanish).
 Other versions (NTSC-U, NTSC-J) are not supported.
 
-Dump the disc to an .iso image, then extract it into the game_files folder next to
-this file, with extract-xiso (https://github.com/XboxDev/extract-xiso) or
-xdvdfs (https://github.com/antangelo/xdvdfs):
+Dump the disc to an .iso image, then let the installer copy it into the game_files
+folder next to this file:
+
+    Linux:    ./install_game.sh
+    Windows:  double-click install_game.bat
+
+It finds disc images (.iso, .xiso) and already extracted folders in the usual places
+or asks for a path, checks that it is the supported PAL version and copies the game
+data. No extra tools needed. run.sh / run.bat also start it by themselves when
+game_files is still empty. Without menus:
+
+    ./install_game.sh --yes "SSX 3.iso"
+
+Extracting by hand works too, with extract-xiso (https://github.com/XboxDev/extract-xiso)
+or xdvdfs (https://github.com/antangelo/xdvdfs):
 
     extract-xiso -x "SSX 3.iso" -d game_files
     xdvdfs unpack "SSX 3.iso" game_files
@@ -29,6 +41,7 @@ Afterwards the folder looks like this:
     SSX3-Recomp-.../
       ssx3_recomp          (ssx3_recomp.exe on Windows)
       run.sh               (run.ps1 / run.bat on Windows)
+      install_game.sh      (install_game.ps1 / install_game.bat on Windows)
       game_files/
         default.xbe
         data/

@@ -33,7 +33,7 @@ if [ "${SKIP_LINUX:-0}" != 1 ]; then
   PKG="$DIST/SSX3-Recomp-$VERSION-linux-x86_64"
   rm -rf "$PKG"; mkdir -p "$PKG"
   cp "$ROOT/build-release-linux/ssx3_recomp" "$PKG/"
-  cp "$ROOT/scripts/run.sh" "$ROOT/scripts/_launch_menu.sh" "$PKG/"
+  cp "$ROOT/scripts/run.sh" "$ROOT/scripts/_launch_menu.sh" "$ROOT/scripts/install_game.sh" "$PKG/"
   common_files "$PKG"
   tar -C "$DIST" -czf "$PKG.tar.gz" "$(basename "$PKG")"
   echo "Linux package: $PKG.tar.gz"
@@ -43,10 +43,11 @@ if [ "${SKIP_WINDOWS:-0}" != 1 ]; then
   JOBS="$JOBS" "$ROOT/scripts/build_win.sh"
   PKG="$DIST/SSX3-Recomp-$VERSION-windows-x86_64"
   rm -rf "$PKG"; mkdir -p "$PKG"
-  cp "$ROOT/build-win/ssx3_recomp.exe" "$ROOT/scripts/run.ps1" "$ROOT/scripts/release/run.bat" "$PKG/"
+  cp "$ROOT/build-win/ssx3_recomp.exe" "$ROOT/scripts/run.ps1" "$ROOT/scripts/release/run.bat" \
+     "$ROOT/scripts/install_game.ps1" "$ROOT/scripts/release/install_game.bat" "$PKG/"
   common_files "$PKG"
   # Windows line endings for the text files people open in Notepad
-  for f in "$PKG"/*.txt "$PKG"/licenses/*.txt "$PKG"/game_files/*.txt "$PKG"/run.bat; do sed -i 's/\r*$/\r/' "$f"; done
+  for f in "$PKG"/*.txt "$PKG"/licenses/*.txt "$PKG"/game_files/*.txt "$PKG"/*.bat; do sed -i 's/\r*$/\r/' "$f"; done
   (cd "$DIST" && rm -f "$(basename "$PKG").zip" && zip -qr "$(basename "$PKG").zip" "$(basename "$PKG")")
   echo "Windows package: $PKG.zip"
 fi

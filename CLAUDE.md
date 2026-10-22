@@ -19,13 +19,13 @@ src/recomp/gen/    GENERATED code (gitignored, from your own XBE) – never comm
 config/            Our own config, e.g. seed_functions.json (entry points the static analysis does not see)
 game_files/        Extracted copy of your own disc (gitignored): default.xbe + data
 reference/         Local read-only copies (gitignored): SSX-Tricky-PC, OpenTricky, ssx3-ps2-decomp, SSX3-recomp-koen
-scripts/           setup.sh, extract_iso.sh, run_pipeline.sh, doctor.sh, build.sh, fetch_references.sh, ghidra.sh (Ghidra names/triage, Linux)
+scripts/           setup.sh, extract_iso.sh, install_game.sh (+ .ps1: game data installer TUI, also in releases), run_pipeline.sh, doctor.sh, build.sh, fetch_references.sh, ghidra.sh (Ghidra names/triage, Linux)
 docs/notes.md      Running work log (addresses, findings, decisions) – keep adding to it
 ```
 
 ## Workflow (keep this order)
 1. `scripts/setup.sh` – venv + capstone; Linux build deps: `bash xboxrecomp/tools/linux/install_deps.sh` (sudo)
-2. `scripts/extract_iso.sh <SSX3-Xbox.iso>` → `game_files/default.xbe`
+2. `scripts/install_game.sh <SSX3-Xbox.iso>` (or `scripts/extract_iso.sh`, needs extract-xiso/xdvdfs) → `game_files/default.xbe`
 3. `scripts/run_pipeline.sh parse` – XBE header: **record entry point, base address, sections, title ID, kernel imports in docs/notes.md**
    and fill them into `src/main.c` (`YOUR_GAME_ENTRY_POINT`, `YOUR_GAME_XBE_PATH`, `YOUR_GAME_DIR`).
 4. `scripts/run_pipeline.sh` (everything) – disasm → func_id → **abi_analysis (never skip!)** → recomp (`--split 250`, not 1000: RAM/OOM).

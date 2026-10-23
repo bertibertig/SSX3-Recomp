@@ -133,12 +133,8 @@ scripts/install_game.sh "/path/to/SSX 3.iso"
 ### On your system (Linux)
 
 Needs Python 3, CMake, GCC or Clang, SDL2, libepoxy, OpenSSL, `glslc` (shaderc) and a Vulkan driver.
-`install_deps.sh` installs the libraries on Arch, Debian/Ubuntu and Fedora (asks for sudo); install `glslc`
-with your package manager (`shaderc` on Arch, `glslc` on Ubuntu, `glslc` on Fedora).
-
-```bash
-bash xboxrecomp/tools/linux/install_deps.sh
-```
+`setup.sh` installs the build packages on Debian/Ubuntu, Arch, Fedora/RHEL, openSUSE and Alpine (asks for
+sudo), then creates the Python virtual environment. Fedora may need RPM Fusion enabled for `ffmpeg-devel`.
 
 ```bash
 scripts/setup.sh

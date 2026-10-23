@@ -20,7 +20,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define LAN_PROTOCOL_VERSION 2u          /* 2: snapshots carry the control input */
+#define LAN_PROTOCOL_VERSION 3u          /* 2: snapshots carry the control input; 3: event select, loading */
 #define LAN_DEFAULT_PORT     27215u     /* game sessions (ENet) */
 #define LAN_DISCOVERY_PORT   27216u     /* lobby browser queries (plain UDP) */
 
@@ -35,6 +35,8 @@
 #define LAN_ATTRIB_BASE      5          /* an unleveled attribute (one bar) */
 #define LAN_GEAR_MAX         32         /* equipped items in a profile (the user's Zoe: 19) */
 #define LAN_RECONNECT_MS     30000u     /* a dropped player keeps its place this long */
+#define LAN_EVENT_NONE       0xFFu      /* lan_rules.peak / .event: not picked yet */
+#define LAN_EVENT_DATA       28         /* the host's event settings, game-specific bytes (lan_game.c) */
 
 typedef enum {
     LAN_MODE_RACE = 0,
@@ -47,6 +49,7 @@ typedef enum {
     LAN_STATE_COUNTDOWN = 1,            /* start time is set, everyone loads the event */
     LAN_STATE_RUNNING = 2,
     LAN_STATE_RESULTS = 3,
+    LAN_STATE_SELECT = 4,               /* the host started from the lobby: everyone picks the event in the game */
 } lan_state;
 
 typedef enum {
@@ -79,13 +82,14 @@ typedef struct {
 typedef struct {
     char    lobby_name[LAN_LOBBY_NAME_MAX + 1];
     uint8_t mode;                       /* lan_mode */
-    uint8_t peak, event;
+    uint8_t peak, event;                /* the host's event (LAN_EVENT_NONE until it picked one) */
     uint8_t max_players;                /* 2 .. LAN_MAX_PLAYERS (race: 6 for now) */
     uint8_t leveled;                    /* 1: leveled riders allowed, 0: everyone at level 1 */
     uint8_t ai_fill;
     uint8_t collide;                    /* lan_collide */
     uint8_t spectators;                 /* spectators allowed */
     uint8_t bragging;                   /* Bragging Rights allowed */
+    uint8_t event_data[LAN_EVENT_DATA]; /* with .event: the settings the others' games load it with */
 } lan_rules;
 
 typedef struct {
@@ -94,6 +98,7 @@ typedef struct {
     uint8_t     connected;              /* 0 while waiting for a reconnect */
     uint8_t     ready;
     uint8_t     finished;
+    uint8_t     loading;                /* picked character and event, its game loads the event */
     uint16_t    ping_ms;
     uint32_t    finish_ms;              /* race time, valid when finished */
     uint32_t    score;                  /* session scoreboard */
@@ -133,6 +138,7 @@ typedef enum {
     LAN_EV_START,                       /* countdown: GO at `time` (host clock) */
     LAN_EV_RESULTS,                     /* finish order changed (see members[].place) */
     LAN_EV_KICKED,                      /* client: the host removed us */
+    LAN_EV_SELECT,                      /* the host left the lobby: pick the event in the game */
 } lan_event_type;
 
 typedef struct {
@@ -180,6 +186,7 @@ void lan_set_ready(lan_session *s, int ready);
 void lan_chat(lan_session *s, const char *text);
 void lan_send_snapshot(lan_session *s, const lan_snapshot *snap);
 void lan_finish(lan_session *s, uint32_t race_ms);             /* our rider crossed the line */
+void lan_set_loading(lan_session *s, int loading);             /* our game loads the event (picks are made) */
 
 /* The state of `player` at host time `t`: interpolated between the two snapshots around it, extrapolated
  * up to 250 ms past the newest one. Returns 0 if there is nothing to show. Render remote riders at
@@ -189,8 +196,13 @@ int lan_remote_state(const lan_session *s, int player, uint32_t t, lan_snapshot 
 /* Host only (ignored on clients). */
 void lan_set_rules(lan_session *s, const lan_rules *rules);
 void lan_kick(lan_session *s, int player);
+/* lobby -> event select; 0 if players aren't ready (`force`: don't ask, e.g. the host picked a rematch) */
+int  lan_select(lan_session *s, int force);
+/* the host's pick, for the others to load: `data` (LAN_EVENT_DATA bytes) is the game's settings for it */
+void lan_set_event(lan_session *s, uint8_t peak, uint8_t event, const uint8_t *data);
 int  lan_start(lan_session *s, uint32_t delay_ms);             /* 0 if not everyone is ready */
 void lan_end_round(lan_session *s);                            /* back to the lobby, keeps the scores */
+void lan_to_lobby(lan_session *s);                             /* event select -> lobby (host gave up) */
 
 /* LAN browser: asks every host on the local networks (and 127.0.0.1) for its lobby. */
 typedef struct {

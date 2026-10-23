@@ -17,8 +17,11 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "menu.h"
+#include "lan_game.h"
+#include "lobby_ui.h"
 
 extern ptrdiff_t g_xbox_mem_offset;
 
@@ -35,8 +38,12 @@ extern void sub_00203E80(void);     /* push a screen onto the front end's stack,
 #define M32(va) (*(volatile uint32_t *)((uintptr_t)(uint32_t)(va) + g_xbox_mem_offset))
 #define M8(va)  (*(volatile uint8_t *)((uintptr_t)(uint32_t)(va) + g_xbox_mem_offset))
 
+#define ITEM_SINGLE_EVENT 9u
 #define ITEM_MULTI_PLAY 0x16u
+#define EVENT_FOCUS     1u
+#define EVENT_UNFOCUS   2u
 #define EVENT_SELECT    5u
+#define LAN_CHOICE      0x00368444u      /* byte: the popup's entry != 0 (0x9C8F0) */
 
 /* Call a guest function: ecx = self (thiscall) or 0, `n` stack arguments (first argument first), `pops`:
  * 1 if the callee removes its arguments (stdcall / thiscall), 0 for cdecl. Returns eax. */
@@ -67,23 +74,19 @@ static int env_flag(const char *name, int *cache)
     return *cache;
 }
 
-int lan_menu_select(uint32_t menu, uint32_t item, uint32_t event)
-{
-    static int popup = -1, trace = -1;
-    uint32_t args[4], obj;
+static uint32_t s_focus;                /* front-end state of the main menu's focused item, 0 = none */
+static int      s_popup_single;         /* the popup is open from Single Event */
 
-    if (env_flag("SSX3_MENU_TRACE", &trace))
-        fprintf(stderr, "  [MENU] select: menu 0x%08X item 0x%08X (state %u) event %u\n", menu, item,
-                item >= 0x10000u ? M32(item + 0x18) : 0u, event);
-    if (!env_flag("SSX3_MP_POPUP", &popup) || event != EVENT_SELECT || item < 0x10000u
-        || M32(item + 0x18) != ITEM_MULTI_PLAY)
-        return 0;
-    if (M32(menu + 0x4C) == item) {     /* the popup made its choice and hands the selection back */
-        M32(menu + 0x4C) = 0;
-        fprintf(stderr, "  [MENU] Multi Play: popup choice made, continuing\n");
-        return 0;
-    }
-    /* what 0x9CC70 does when this+0x48 is still 0 (0x9CD07 ..) */
+int lan_menu_single_focused(void)
+{
+    return s_focus == ITEM_SINGLE_EVENT;
+}
+
+/* Opens cFEPopupSelectMultiplayerMode for `item`, the way 0x9CC70 does for Multi Play when its leaving
+ * flag this+0x48 is still 0 (0x9CD07 ..). */
+static int open_popup(uint32_t menu, uint32_t item)
+{
+    uint32_t args[4], obj;
     M32(menu + 0x50) = (uint32_t)(int32_t)(int8_t)M8(menu + 0x14);
     args[0] = 0x4C; args[1] = 0x0028F11Cu; args[2] = 0; args[3] = 0;   /* "cFEPopupSelectMultiplayerMode" */
     obj = guest_call(sub_001A9BD0, 0, 4, args, 0);
@@ -95,8 +98,91 @@ int lan_menu_select(uint32_t menu, uint32_t item, uint32_t event)
     args[0] = obj;
     guest_call(sub_00203E80, M32(menu + 0x10) + 0x18, 1, args, 1);
     M32(menu + 0x4C) = item;
-    fprintf(stderr, "  [MENU] Multi Play: opened cFEPopupSelectMultiplayerMode (0x%08X)\n", obj);
     return 1;
+}
+
+int lan_menu_select(uint32_t menu, uint32_t item, uint32_t event)
+{
+    static int popup = -1, trace = -1;
+    uint32_t state;
+
+    if (item < 0x10000u)
+        return 0;
+    state = M32(item + 0x18);
+    if (env_flag("SSX3_MENU_TRACE", &trace))
+        fprintf(stderr, "  [MENU] select: menu 0x%08X item 0x%08X (state %u) event %u\n", menu, item, state, event);
+    if (event == EVENT_FOCUS)
+        s_focus = state;
+    else if (event == EVENT_UNFOCUS && s_focus == state)
+        s_focus = 0;
+    if (event != EVENT_SELECT)
+        return 0;
+
+    /* Single Event: Solo or LAN Game (the popup's second entry, LAN_TEXT_*). */
+    if (state == ITEM_SINGLE_EVENT) {
+        if (M32(menu + 0x4C) == item) {             /* the popup made its choice and hands the selection back */
+            M32(menu + 0x4C) = 0;
+            s_popup_single = 0;
+            if (M8(LAN_CHOICE)) {
+                M8(LAN_CHOICE) = 0;
+                lobby_ui_open();
+                return 1;                           /* stay in the main menu under the lobby */
+            }
+            return 0;
+        }
+        if (lan_game_in_select())
+            return 0;                               /* a LAN event select: straight on, as one player */
+        if (!open_popup(menu, item))
+            return 0;
+        s_popup_single = 1;
+        return 1;
+    }
+
+    /* Multi Play (test): SSX3_MP_POPUP=1 opens the popup the way the dead code would. */
+    if (!env_flag("SSX3_MP_POPUP", &popup) || state != ITEM_MULTI_PLAY)
+        return 0;
+    if (M32(menu + 0x4C) == item) {
+        M32(menu + 0x4C) = 0;
+        fprintf(stderr, "  [MENU] Multi Play: popup choice made, continuing\n");
+        return 0;
+    }
+    if (open_popup(menu, item))
+        fprintf(stderr, "  [MENU] Multi Play: opened cFEPopupSelectMultiplayerMode\n");
+    return 1;
+}
+
+/* Texts the Xbox locale lacks, by the string hash the front end asks 0x760E0 for (found with
+ * SSX3_TEXT_TRACE=1), and one it has but that does not fit when the popup opens from Single Event. */
+static const struct { uint32_t hash; int replace; const char *text; } k_texts[] = {
+    { 0x08349A04u, 0, "LAN Game" },                             /* the popup's entry 1 */
+    { 0x00A95544u, 0, "Race other players on your network." }, /* ... its description */
+    { 0x08814BD4u, 1, "Ride against the computer." },           /* entry 0: "2 player quick competition." */
+};
+
+uint32_t lan_menu_text(uint32_t hash, int missing)
+{
+    static int trace = -1;
+    static uint32_t guest[sizeof k_texts / sizeof k_texts[0]];
+    size_t i, k, n;
+
+    for (i = 0; i < sizeof k_texts / sizeof k_texts[0]; i++) {
+        uint32_t args[4];
+        if (k_texts[i].hash != hash || (k_texts[i].replace ? !s_popup_single : !missing))
+            continue;
+        if (!guest[i]) {        /* UTF-16 copy in guest memory, made once (heap, never freed) */
+            n = strlen(k_texts[i].text);
+            args[0] = (uint32_t)(n + 1) * 2u; args[1] = 0x0028F11Cu; args[2] = 0; args[3] = 0;
+            if ((guest[i] = guest_call(sub_001A9BD0, 0, 4, args, 0)) == 0)
+                return 0;
+            for (k = 0; k <= n; k++)
+                *(volatile uint16_t *)((uintptr_t)(guest[i] + 2u * k) + g_xbox_mem_offset) =
+                    (uint16_t)(unsigned char)k_texts[i].text[k];
+        }
+        return guest[i];
+    }
+    if (missing && env_flag("SSX3_TEXT_TRACE", &trace))
+        fprintf(stderr, "  [MENU] no text for hash 0x%08X\n", hash);
+    return 0;
 }
 
 int lan_menu_multiplay_pads(uint32_t menu)

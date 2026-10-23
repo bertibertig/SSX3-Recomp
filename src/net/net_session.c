@@ -2,7 +2,7 @@
  * LAN multiplayer – sessions, lobby, clock sync and snapshot relay over ENet (see net.h).
  *
  * Wire format (all little-endian, see net_wire.h), the first byte of every packet is its type:
- *   client -> host   C_HELLO, C_PROFILE, C_READY, C_CHAT, C_FINISH (channel 0), C_SNAP, C_PING (channel 1)
+ *   client -> host   C_HELLO, C_PROFILE, C_READY, C_CHAT, C_FINISH, C_LOADING (channel 0), C_SNAP, C_PING (1)
  *   host -> client   H_WELCOME, H_REJECT, H_KICK, H_LOBBY, H_CHAT (channel 0), H_SNAP, H_PONG (channel 1)
  * H_LOBBY always carries the whole lobby (rules, state, every member), so a client never has to merge partial
  * updates; clients derive their START and RESULTS events from the difference to the previous lobby.
@@ -25,7 +25,7 @@
 #define HELLO_MAGIC   0x4E4C3353u      /* "S3LN" */
 
 enum {
-    C_HELLO = 0x01, C_PROFILE, C_READY, C_CHAT, C_FINISH, C_SNAP, C_PING,
+    C_HELLO = 0x01, C_PROFILE, C_READY, C_CHAT, C_FINISH, C_SNAP, C_PING, C_LOADING,
     H_WELCOME = 0x81, H_REJECT, H_KICK, H_LOBBY, H_CHAT, H_SNAP, H_PONG,
 };
 
@@ -294,6 +294,8 @@ static void put_rules(net_writer *w, const lan_rules *r)
     nw_u8(w, r->mode); nw_u8(w, r->peak); nw_u8(w, r->event); nw_u8(w, r->max_players);
     nw_u8(w, r->leveled); nw_u8(w, r->ai_fill); nw_u8(w, r->collide); nw_u8(w, r->spectators);
     nw_u8(w, r->bragging);
+    for (int i = 0; i < LAN_EVENT_DATA; i++)
+        nw_u8(w, r->event_data[i]);
 }
 
 static void get_rules(net_reader *r, lan_rules *o)
@@ -303,6 +305,8 @@ static void get_rules(net_reader *r, lan_rules *o)
     o->mode = (uint8_t)nr_u8(r); o->peak = (uint8_t)nr_u8(r); o->event = (uint8_t)nr_u8(r);
     o->max_players = (uint8_t)nr_u8(r); o->leveled = (uint8_t)nr_u8(r); o->ai_fill = (uint8_t)nr_u8(r);
     o->collide = (uint8_t)nr_u8(r); o->spectators = (uint8_t)nr_u8(r); o->bragging = (uint8_t)nr_u8(r);
+    for (int i = 0; i < LAN_EVENT_DATA; i++)
+        o->event_data[i] = (uint8_t)nr_u8(r);
 }
 
 static void put_snap(net_writer *w, const lan_snapshot *s)
@@ -345,6 +349,7 @@ static size_t put_lobby(uint8_t *buf, size_t cap, const lan_lobby *l)
         if (!m->used)
             continue;
         nw_u8(&w, m->id); nw_u8(&w, m->connected); nw_u8(&w, m->ready); nw_u8(&w, m->finished);
+        nw_u8(&w, m->loading);
         nw_u16(&w, m->ping_ms); nw_u32(&w, m->finish_ms); nw_u32(&w, m->score);
         nw_u8(&w, m->place); nw_u8(&w, m->slot);
         put_profile(&w, &m->profile);
@@ -365,6 +370,7 @@ static int get_lobby(net_reader *r, lan_lobby *l)
         memset(&m, 0, sizeof m);
         m.used = 1; m.id = (uint8_t)id;
         m.connected = (uint8_t)nr_u8(r); m.ready = (uint8_t)nr_u8(r); m.finished = (uint8_t)nr_u8(r);
+        m.loading = (uint8_t)nr_u8(r);
         m.ping_ms = (uint16_t)nr_u16(r); m.finish_ms = nr_u32(r); m.score = nr_u32(r);
         m.place = (uint8_t)nr_u8(r); m.slot = (uint8_t)nr_u8(r);
         get_profile(r, &m.profile);
@@ -487,7 +493,8 @@ static void host_hello(lan_session *s, ENetPeer *peer, net_reader *r)
         host_system(s, "%s is back", m->profile.name);
     } else {
         count_members(&s->lobby, &players, &spectators);
-        if (!p.spectator && s->lobby.state != LAN_STATE_LOBBY && s->lobby.rules.mode != LAN_MODE_FREEROAM)
+        if (!p.spectator && s->lobby.state != LAN_STATE_LOBBY && s->lobby.state != LAN_STATE_SELECT
+            && s->lobby.rules.mode != LAN_MODE_FREEROAM)
             p.spectator = 1;                        /* a race is running: watch until the next one */
         if (!p.spectator && players >= s->lobby.rules.max_players)
             p.spectator = 1;
@@ -636,6 +643,10 @@ static void host_packet(lan_session *s, ENetPeer *peer, const uint8_t *data, siz
         m->ready = nr_u8(&r) ? 1 : 0;
         s->lobby_dirty = 1;
         break;
+    case C_LOADING:
+        m->loading = nr_u8(&r) ? 1 : 0;
+        s->lobby_dirty = 1;
+        break;
     case C_CHAT: {
         char text[LAN_CHAT_MAX + 1];
         nr_str(&r, text, sizeof text);
@@ -697,6 +708,7 @@ static void host_lost(lan_session *s, ENetPeer *peer, int left)
     }
     m->connected = 0;
     m->ready = 0;
+    m->loading = 0;
     h->drop_time = local_ms(s) | 1;                 /* nonzero; may be 1 ms ahead of `now`, hence signed compares */
     host_system(s, "%s lost the connection", m->profile.name);
     s->lobby_dirty = 1;
@@ -787,6 +799,8 @@ static void client_lobby(lan_session *s, net_reader *r)
         return;
     s->lobby = nl;
     push_event(s, LAN_EV_LOBBY, 0, 0, 0, NULL);
+    if (nl.state == LAN_STATE_SELECT && old.state != LAN_STATE_SELECT)
+        push_event(s, LAN_EV_SELECT, 0, 0, 0, NULL);
     if (nl.state == LAN_STATE_COUNTDOWN && (old.state != LAN_STATE_COUNTDOWN || old.round != nl.round))
         push_event(s, LAN_EV_START, 0, 0, nl.start_time, NULL);
     for (i = 0; i < LAN_MAX_MEMBERS; i++)
@@ -961,6 +975,7 @@ lan_session *lan_host(const lan_config *cfg, const lan_profile *me, const lan_ru
     }
     if (rules)
         s->lobby.rules = *rules;
+    s->lobby.rules.peak = s->lobby.rules.event = LAN_EVENT_NONE;
     clamp_rules(&s->lobby.rules);
     m = &s->lobby.members[0];
     m->used = 1; m->id = 0; m->connected = 1; m->slot = LAN_NO_PLAYER;
@@ -1149,6 +1164,17 @@ void lan_set_ready(lan_session *s, int ready)
     }
 }
 
+void lan_set_loading(lan_session *s, int loading)
+{
+    if (s->host) {
+        s->lobby.members[0].loading = loading ? 1 : 0;
+        s->lobby_dirty = 1;
+    } else if (s->joined) {
+        uint8_t buf[2] = { C_LOADING, (uint8_t)(loading ? 1 : 0) };
+        send_buf(s->server, CH_RELIABLE, buf, 2);
+    }
+}
+
 void lan_chat(lan_session *s, const char *text)
 {
     if (s->host) {
@@ -1284,10 +1310,65 @@ void lan_kick(lan_session *s, int player)
     host_system(s, "%s was kicked", name);
 }
 
+/* Clears what one pass through the event select leaves behind. */
+static void clear_picks(lan_session *s)
+{
+    int i;
+    for (i = 0; i < LAN_MAX_MEMBERS; i++) {
+        s->lobby.members[i].ready = 0;
+        s->lobby.members[i].loading = 0;
+    }
+    s->lobby.rules.peak = s->lobby.rules.event = LAN_EVENT_NONE;
+    memset(s->lobby.rules.event_data, 0, LAN_EVENT_DATA);
+}
+
+int lan_select(lan_session *s, int force)
+{
+    int i, players = 0;
+    if (!s->host || s->lobby.state != LAN_STATE_LOBBY)
+        return 0;
+    for (i = 0; i < LAN_MAX_MEMBERS; i++) {
+        const lan_member *m = &s->lobby.members[i];
+        if (!m->used || !m->connected || m->profile.spectator)
+            continue;
+        if (!m->ready && !force)
+            return 0;
+        players++;
+    }
+    if (!players)
+        return 0;
+    clear_picks(s);
+    s->lobby.state = LAN_STATE_SELECT;
+    s->lobby_dirty = 1;
+    logf_(s, "event select: %d players", players);
+    push_event(s, LAN_EV_SELECT, 0, 0, 0, NULL);
+    return 1;
+}
+
+void lan_set_event(lan_session *s, uint8_t peak, uint8_t event, const uint8_t *data)
+{
+    if (!s->host)
+        return;
+    s->lobby.rules.peak = peak;
+    s->lobby.rules.event = event;
+    if (data)
+        memcpy(s->lobby.rules.event_data, data, LAN_EVENT_DATA);
+    s->lobby_dirty = 1;
+}
+
+void lan_to_lobby(lan_session *s)
+{
+    if (!s->host || s->lobby.state != LAN_STATE_SELECT)
+        return;
+    clear_picks(s);
+    s->lobby.state = LAN_STATE_LOBBY;
+    s->lobby_dirty = 1;
+}
+
 int lan_start(lan_session *s, uint32_t delay_ms)
 {
     int i, slot = 0;
-    if (!s->host || s->lobby.state != LAN_STATE_LOBBY)
+    if (!s->host || (s->lobby.state != LAN_STATE_LOBBY && s->lobby.state != LAN_STATE_SELECT))
         return 0;
     for (i = 0; i < LAN_MAX_MEMBERS; i++) {
         const lan_member *m = &s->lobby.members[i];
@@ -1314,10 +1395,9 @@ void lan_end_round(lan_session *s)
     int i;
     if (!s->host)
         return;
-    for (i = 0; i < LAN_MAX_MEMBERS; i++) {
-        s->lobby.members[i].ready = 0;
+    for (i = 0; i < LAN_MAX_MEMBERS; i++)
         s->lobby.members[i].slot = LAN_NO_PLAYER;
-    }
+    clear_picks(s);
     s->lobby.state = LAN_STATE_LOBBY;
     s->lobby_dirty = 1;
 }

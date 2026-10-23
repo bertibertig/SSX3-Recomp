@@ -135,6 +135,12 @@ static uint32_t     s_local_mode;               /* ... and the control mode it w
 static int          s_spectate;                 /* SSX3_LAN_SPECTATE: no rider of our own */
 static uint32_t     s_mode_off_since[6];        /* game slot: since when the puppet's mode differs (host clock) */
 static char         s_watch_name[LAN_NAME_MAX + 1];
+static char         s_name[LAN_NAME_MAX + 1];       /* the name the lobby set (empty: the save's) */
+static char         s_status[96];                   /* last connection news for the lobby screen */
+static char         s_chat[LAN_UI_CHAT][LAN_UI_LINE];   /* chat and system lines, oldest first */
+static int          s_nchat;
+static int          s_thread_started;
+static char         s_wait[96];                     /* what the game waits for right now (lobby banner) */
 
 static void sleep_ms(unsigned ms)
 {
@@ -204,6 +210,15 @@ static void map_slots(const lan_lobby *l)
                 l->members[s_slot_member[i]].profile.name, s_slot_member[i]);
 }
 
+static void chat_line(const char *who, const char *text)
+{
+    if (s_nchat == LAN_UI_CHAT) {
+        memmove(s_chat[0], s_chat[1], sizeof s_chat[0] * (LAN_UI_CHAT - 1));
+        s_nchat--;
+    }
+    snprintf(s_chat[s_nchat++], LAN_UI_LINE, "%s%s%s", who ? who : "", who ? ": " : "", text);
+}
+
 static void handle_events(void)
 {
     lan_event e;
@@ -213,6 +228,17 @@ static void handle_events(void)
         case LAN_EV_CHAT:
             fprintf(stderr, "  [LAN] %s%s%s\n", e.player == LAN_NO_PLAYER ? "" : l->members[e.player].profile.name,
                     e.player == LAN_NO_PLAYER ? "" : ": ", e.text);
+            chat_line(e.player == LAN_NO_PLAYER ? NULL : l->members[e.player].profile.name, e.text);
+            break;
+        case LAN_EV_JOINED:
+            s_status[0] = 0;
+            break;
+        case LAN_EV_KICKED:
+            snprintf(s_status, sizeof s_status, "The host removed you from the lobby.");
+            s_next_retry = 0;
+            break;
+        case LAN_EV_SELECT:
+            fprintf(stderr, "  [LAN] event select\n");
             break;
         case LAN_EV_START:
             map_slots(l);
@@ -221,10 +247,14 @@ static void handle_events(void)
             break;
         case LAN_EV_REJECTED:
             fprintf(stderr, "  [LAN] refused: %s\n", lan_reject_text(e.reason));
+            snprintf(s_status, sizeof s_status, "Refused: %s.", lan_reject_text(e.reason));
+            s_next_retry = 0;
             break;
         case LAN_EV_DISCONNECTED:
-            if (!lan_is_host(s_session))
+            if (!lan_is_host(s_session) && !s_status[0]) {
+                snprintf(s_status, sizeof s_status, "Lost the host. Trying again...");
                 s_next_retry = lan_time(s_session) + 2000;
+            }
             break;
         default:
             break;
@@ -258,7 +288,7 @@ static void host_autostart(void)
 {
     const lan_lobby *l = lan_get_lobby(s_session);
     int i, ready = 0;
-    if (!lan_is_host(s_session) || l->state != LAN_STATE_LOBBY)
+    if (!lan_is_host(s_session) || l->state != LAN_STATE_SELECT)
         return;
     for (i = 0; i < LAN_MAX_MEMBERS; i++)
         if (l->members[i].used && l->members[i].connected) {
@@ -301,47 +331,43 @@ static void *net_thread(void *arg)
 #endif
 }
 
-static int setup(void)
+/* Opens a session (host, or join `addr`) and starts the network thread the first time. Caller: no lock. */
+static int open_common(int host, const char *addr, uint16_t port, const char *name, int spectate)
 {
-    const char *host = getenv("SSX3_LAN_HOST"), *join = getenv("SSX3_LAN_JOIN"), *e;
-    if (s_state)
-        return s_state > 0;
-    s_state = -1;
-    if (!(host && atoi(host)) && !(join && join[0]))
-        return 0;
+    if (s_session)
+        return 1;
     memset(&s_cfg, 0, sizeof s_cfg);
     s_cfg.game_id = g_ssx3_xbe_hash ^ (LAN_PROTOCOL_VERSION * 0x9E3779B1u);
-    if ((e = getenv("SSX3_LAN_PORT")) != NULL)
-        s_cfg.port = (uint16_t)atoi(e);
-    if ((e = getenv("SSX3_LAN_PLAYERS")) != NULL && atoi(e) >= 1)
-        s_want_players = atoi(e);
-    if (join && join[0]) {
-        char *colon;
-        snprintf(s_join_addr, sizeof s_join_addr, "%s", join);
-        if ((colon = strrchr(s_join_addr, ':')) != NULL) {
-            *colon = 0;
-            s_join_port = (uint16_t)atoi(colon + 1);
-        }
-    }
+    s_cfg.port = host ? port : 0;
+    s_join_addr[0] = 0;
+    s_join_port = port;
+    if (!host)
+        snprintf(s_join_addr, sizeof s_join_addr, "%s", addr);
     memset(&s_profile, 0, sizeof s_profile);
-    snprintf(s_profile.name, sizeof s_profile.name, "%s", (e = getenv("SSX3_LAN_NAME")) ? e : "Rider");
-    s_spectate = (e = getenv("SSX3_LAN_SPECTATE")) != NULL && atoi(e) != 0 && join && join[0];
+    snprintf(s_name, sizeof s_name, "%s", name ? name : "");
+    snprintf(s_profile.name, sizeof s_profile.name, "%s", s_name[0] ? s_name : "Rider");
+    s_spectate = spectate && !host;
     s_profile.spectator = (uint8_t)s_spectate;
-    if ((e = getenv("SSX3_LAN_WATCH")) != NULL)
-        snprintf(s_watch_name, sizeof s_watch_name, "%s", e);
+    s_profile_sent = 0;
+    s_next_retry = 0;
+    s_status[0] = 0;
+    s_nchat = 0;
+    s_mapped_round = 0;
+    s_holding = 0;
     if (lan_net_init() != 0)
         return 0;
-#if defined(_WIN32)
-    InitializeCriticalSection(&s_lock);
-#endif
     LOCK();
+    read_profile(&s_profile);
     open_session();
+    if (s_session && !host)
+        snprintf(s_status, sizeof s_status, "Connecting to %s...", s_join_addr);
     UNLOCK();
     if (!s_session) {
         fprintf(stderr, "  [LAN] no session\n");
         return 0;
     }
-    {
+    if (!s_thread_started) {
+        s_thread_started = 1;
 #if defined(_WIN32)
         CreateThread(NULL, 0, net_thread, NULL, 0, NULL);
 #else
@@ -351,14 +377,51 @@ static int setup(void)
 #endif
     }
     s_state = 1;
-    fprintf(stderr, "  [LAN] %s, game id %08X\n", s_spectate ? "spectator" : s_join_addr[0] ? "client" : "host",
-            s_cfg.game_id);
+    fprintf(stderr, "  [LAN] %s, game id %08X\n", s_spectate ? "spectator" : host ? "host" : "client", s_cfg.game_id);
     return 1;
+}
+
+/* The environment's session (tests): SSX3_LAN_HOST / SSX3_LAN_JOIN, once, from the main menu. */
+static int setup(void)
+{
+    static int tried;
+    const char *host = getenv("SSX3_LAN_HOST"), *join = getenv("SSX3_LAN_JOIN"), *e;
+    char addr[128];
+    uint16_t port = 0;
+    if (s_state > 0)
+        return 1;
+    if (tried)
+        return 0;
+    tried = 1;
+#if defined(_WIN32)
+    InitializeCriticalSection(&s_lock);
+#endif
+    if (!(host && atoi(host)) && !(join && join[0]))
+        return 0;
+    if ((e = getenv("SSX3_LAN_PLAYERS")) != NULL && atoi(e) >= 1)
+        s_want_players = atoi(e);
+    if ((e = getenv("SSX3_LAN_WATCH")) != NULL)
+        snprintf(s_watch_name, sizeof s_watch_name, "%s", e);
+    if ((e = getenv("SSX3_LAN_PORT")) != NULL)
+        port = (uint16_t)atoi(e);
+    addr[0] = 0;
+    if (join && join[0]) {
+        char *colon;
+        snprintf(addr, sizeof addr, "%s", join);
+        if ((colon = strrchr(addr, ':')) != NULL) {
+            *colon = 0;
+            port = (uint16_t)atoi(colon + 1);
+        }
+    }
+    e = getenv("SSX3_LAN_SPECTATE");
+    return open_common(!(join && join[0]), addr, port, getenv("SSX3_LAN_NAME"),
+                       e != NULL && atoi(e) != 0);
 }
 
 int lan_game_active(void)
 {
-    return setup();
+    setup();
+    return s_state > 0;
 }
 
 /* This PC's rider as the save has it: player 0's character, its attributes and equipped gear. */
@@ -366,7 +429,7 @@ static void read_profile(lan_profile *p)
 {
     uint32_t ch = M8(SLOT_TABLE + M32(SLOT_INDEX) * 0x20u + 0x14u), rec, n, i;
     char name[16];
-    if (!getenv("SSX3_LAN_NAME")) {
+    if (!s_name[0]) {
         for (i = 0; i < 15; i++)
             name[i] = (char)M8(PROFILE_RECORDS + i);
         name[15] = 0;
@@ -390,20 +453,18 @@ int lan_game_hold(void)
 {
     const lan_lobby *l;
     int hold = 1, me;
-    if (!setup())
+    if (s_state <= 0)
         return -1;
     LOCK();
     l = lan_get_lobby(s_session);
     me = lan_local_id(s_session);
     if (!s_holding) {
         s_holding = 1;
-        if (lan_is_host(s_session) && l->state == LAN_STATE_RESULTS)
-            lan_end_round(s_session);                   /* a new race from the results: back to the lobby */
         fprintf(stderr, "  [LAN] at the start, waiting for the others\n");
     }
     if (me != LAN_NO_PLAYER) {
-        if (l->state == LAN_STATE_LOBBY && !l->members[me].ready)
-            lan_set_ready(s_session, 1);                /* again after a reconnect or a new round */
+        if (l->state == LAN_STATE_SELECT && !l->members[me].ready)
+            lan_set_ready(s_session, 1);                /* again after a reconnect */
         if ((l->state == LAN_STATE_COUNTDOWN || l->state == LAN_STATE_RUNNING)
             && (l->members[me].slot != LAN_NO_PLAYER || l->members[me].profile.spectator)
             && (int32_t)(lan_time(s_session) - l->start_time) >= 0) {
@@ -560,11 +621,60 @@ static void put_slot_look(uint32_t slot, const lan_profile *p)
     fprintf(stderr, "  [LAN] slot %u: %s, character %u\n", slot, p->name, p->character);
 }
 
+/* Waits (unlocked) until every player we will ride with has picked and loads the event: then their
+ * profiles carry the characters they chose (character select comes after the event select). Gives up
+ * after LOADING_WAIT_MS. Caller: no lock. */
+#define LOADING_WAIT_MS 90000u
+
+static void wait_for_picks(const char *why)
+{
+    uint32_t start = 0;
+    int logged = 0;
+    for (;;) {
+        int others[LAN_MAX_MEMBERS], n, k, missing = 0;
+        uint32_t now;
+        LOCK();
+        now = lan_time(s_session);
+        if (!start)
+            start = now;
+        n = expected_others(others, LAN_MAX_MEMBERS);
+        for (k = 0; k < n; k++)
+            if (!lan_get_lobby(s_session)->members[others[k]].loading)
+                missing++;
+        if (s_spectate) {
+            int w = watched_member(lan_get_lobby(s_session));
+            if (w >= 0 && !lan_get_lobby(s_session)->members[w].loading)
+                missing++;
+        }
+        if (!missing)
+            s_wait[0] = 0;
+        UNLOCK();
+        if (!missing)
+            return;
+        if (!logged++) {
+            fprintf(stderr, "  [LAN] %s: waiting for %d player(s) to pick\n", why, missing);
+            LOCK();
+            snprintf(s_wait, sizeof s_wait, "Waiting for %d player%s to pick a rider...", missing,
+                     missing == 1 ? "" : "s");
+            UNLOCK();
+        }
+        if (now - start > LOADING_WAIT_MS) {
+            fprintf(stderr, "  [LAN] %s: gave up waiting\n", why);
+            LOCK();
+            s_wait[0] = 0;
+            UNLOCK();
+            return;
+        }
+        sleep_ms(10);
+    }
+}
+
 void lan_game_before_players(uint32_t mgr)
 {
     int w;
-    if (mgr < 0x10000u || !setup() || !s_spectate)
+    if (mgr < 0x10000u || s_state <= 0 || !s_spectate)
         return;
+    wait_for_picks("spectator");
     LOCK();
     w = watched_member(lan_get_lobby(s_session));
     if (w >= 0)
@@ -581,8 +691,9 @@ void lan_game_before_ai(uint32_t mgr)
     if (mgr < 0x10000u)
         return;
     first = M32(mgr + 0x78);                            /* the AI riders are created from this slot on */
-    if (!setup())
+    if (s_state <= 0)
         return;
+    wait_for_picks("riders");
     LOCK();
     n = expected_others(others, 5);
     for (k = 0; k < 6; k++)
@@ -721,4 +832,179 @@ void lan_game_input(uint32_t brain, uint32_t input)
         }
         return;
     }
+}
+
+/* The game's settings for the picked event (0x367F48 + 0x30 .. + 0x4B, see docs/notes.md): rider count,
+ * +0x40 the event id (Snow Jam 0, Metro-City 1, Happiness 14), flags. The host sends them, the others
+ * write them over their own picks before their game loads. */
+#define EVENT_SETTINGS   0x00367F78u
+#define EVENT_ID         0x00367F88u
+#define EVENT_WAIT_MS    300000u
+
+void lan_game_entering(void)
+{
+    uint8_t data[LAN_EVENT_DATA];
+    lan_profile p;
+    uint32_t start, i;
+    const lan_lobby *l;
+    if (s_state <= 0)
+        return;
+    LOCK();
+    p = s_profile;
+    read_profile(&p);                                   /* the rider just picked, sent before "loading" */
+    s_profile = p;
+    s_profile_sent = 1;
+    lan_set_profile(s_session, &s_profile);
+    l = lan_get_lobby(s_session);
+    if (lan_is_host(s_session)) {
+        if (l->state == LAN_STATE_RESULTS)
+            lan_end_round(s_session);                   /* a new event straight from the results */
+        if (l->state == LAN_STATE_LOBBY)
+            lan_select(s_session, 1);                   /* picked in the menus without the lobby's start */
+        for (i = 0; i < LAN_EVENT_DATA; i++)
+            data[i] = M8(EVENT_SETTINGS + i);
+        lan_set_event(s_session, 0, (uint8_t)M32(EVENT_ID), data);
+        lan_set_loading(s_session, 1);
+        fprintf(stderr, "  [LAN] entering event %u (sent to the others)\n", M32(EVENT_ID));
+        UNLOCK();
+        return;
+    }
+    UNLOCK();
+    /* a client: the host's event, once it picked one */
+    start = 0;
+    for (;;) {
+        int picked;
+        LOCK();
+        l = lan_get_lobby(s_session);
+        if (!start)
+            start = lan_time(s_session) | 1;
+        picked = lan_local_id(s_session) != LAN_NO_PLAYER && l->rules.event != LAN_EVENT_NONE
+                 && (l->state == LAN_STATE_SELECT || l->state == LAN_STATE_COUNTDOWN);
+        snprintf(s_wait, sizeof s_wait, "%s", picked ? "" : "Waiting for the host to pick the event...");
+        if (picked) {
+            if (M32(EVENT_ID) != l->rules.event)
+                fprintf(stderr, "  [LAN] we picked event %u, the host %u: taking the host's\n", M32(EVENT_ID),
+                        l->rules.event);
+            for (i = 0; i < LAN_EVENT_DATA; i++)
+                M8(EVENT_SETTINGS + i) = l->rules.event_data[i];
+            lan_set_loading(s_session, 1);
+            fprintf(stderr, "  [LAN] entering the host's event %u\n", l->rules.event);
+        }
+        if (picked || (int32_t)(lan_time(s_session) - start) > (int32_t)EVENT_WAIT_MS) {
+            s_wait[0] = 0;
+            UNLOCK();
+            return;
+        }
+        UNLOCK();
+        sleep_ms(10);
+    }
+}
+
+/* ---- lobby screen (src/lan/lobby_ui.c) ---------------------------------- */
+
+int lan_game_open(int host, const char *addr, uint16_t port, const char *name, int spectate)
+{
+    s_want_players = 1;                                 /* the lobby's own ready check decides */
+    return open_common(host, addr, port, name, spectate);
+}
+
+void lan_game_close(void)
+{
+    LOCK();
+    if (s_session) {
+        lan_close(s_session);
+        s_session = NULL;
+    }
+    s_state = 0;
+    UNLOCK();
+    fprintf(stderr, "  [LAN] left the session\n");
+}
+
+void lan_game_view(lan_ui_view *v)
+{
+    memset(v, 0, sizeof *v);
+    LOCK();
+    if (s_session) {
+        v->open = 1;
+        v->host = lan_is_host(s_session);
+        v->local_id = lan_local_id(s_session);
+        v->joined = v->local_id != LAN_NO_PLAYER;
+        v->spectator = s_spectate;
+        v->lobby = *lan_get_lobby(s_session);
+        v->now = lan_time(s_session);
+        snprintf(v->status, sizeof v->status, "%s", s_status);
+        snprintf(v->wait, sizeof v->wait, "%s", s_wait);
+        memcpy(v->chat, s_chat, sizeof s_chat);
+        v->nchat = s_nchat;
+    }
+    UNLOCK();
+}
+
+void lan_game_ui_ready(int on)
+{
+    LOCK();
+    if (s_session)
+        lan_set_ready(s_session, on);
+    UNLOCK();
+}
+
+void lan_game_ui_chat(const char *text)
+{
+    LOCK();
+    if (s_session && text[0])
+        lan_chat(s_session, text);
+    UNLOCK();
+}
+
+void lan_game_ui_kick(int member)
+{
+    LOCK();
+    if (s_session)
+        lan_kick(s_session, member);
+    UNLOCK();
+}
+
+int lan_game_ui_start(void)
+{
+    int ok = 0;
+    LOCK();
+    if (s_session) {
+        if (lan_get_lobby(s_session)->state == LAN_STATE_RESULTS) {
+            lan_end_round(s_session);                   /* the results stay on the scoreboard */
+            ok = 2;
+        } else {
+            ok = lan_select(s_session, 0);
+        }
+    }
+    UNLOCK();
+    return ok;
+}
+
+void lan_game_ui_rules(const lan_rules *r)
+{
+    LOCK();
+    if (s_session)
+        lan_set_rules(s_session, r);
+    UNLOCK();
+}
+
+void lan_game_save_name(char *out, int cap)
+{
+    int i;
+    char name[16];
+    for (i = 0; i < 15; i++)
+        name[i] = (char)M8(PROFILE_RECORDS + i);
+    name[15] = 0;
+    snprintf(out, (size_t)cap, "%s", name[0] ? name : "Rider");
+}
+
+int lan_game_in_select(void)
+{
+    int in = 0;
+    if (s_state <= 0)
+        return 0;
+    LOCK();
+    in = s_session && lan_get_lobby(s_session)->state == LAN_STATE_SELECT;
+    UNLOCK();
+    return in;
 }

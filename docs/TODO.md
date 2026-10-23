@@ -166,3 +166,15 @@ Order follows `CLAUDE.md` / `xboxrecomp/docs/GETTING_STARTED.md`. Details and fi
 
 ## Open
 - Which XBE is the base? `default.xbe` = original + region/media patch + 1-byte code patch (see notes.md).
+
+## Personal Noted todos:
+
+- [ ] Multiplayer Split screen 2 Players
+- [ ] Multiplayer LAN Mode up to 12 Players (Not present in original game)
+- [ ] Audio Channel Fix 2.0, 5.1, etc.
+- [ ] Sound Test Menu for Music and Sounds like in Debug tests. Also allowing to enable and disable Music channels like they are in the game if you crash or perform well.
+- [ ] Higher Frame rate videos => Videos of Xbox are lower Frame Rate then PS2 and Gamecube Videos => Option to use GC Videos.
+- [ ] GamepadSelection in TUI menu
+- [ ] Categorize TUI and keep selected options memorized like last time
+- [ ] TUI Option to enable/disable intro, THX Logo or EA Big logo on their own.
+- [ ] Quit Option in the Main Menu to close the game.

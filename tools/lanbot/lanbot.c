@@ -24,7 +24,7 @@
 
 typedef struct {
     lan_session *s;
-    int          joined, kicked, rejected, reason, disconnected, starts, results, chats;
+    int          joined, kicked, rejected, reason, disconnected, starts, results, chats, selects;
     uint32_t     start_time;
 } bot;
 
@@ -39,6 +39,7 @@ static void drain(bot *b, int verbose, const char *tag)
         case LAN_EV_DISCONNECTED: b->disconnected++; break;
         case LAN_EV_START:        b->starts++; b->start_time = e.time; break;
         case LAN_EV_RESULTS:      b->results++; break;
+        case LAN_EV_SELECT:       b->selects++; break;
         case LAN_EV_CHAT:         b->chats++; break;
         default: break;
         }
@@ -254,13 +255,39 @@ static int selftest(void)
     check(!lan_remote_state(g_bots[0].s, lan_local_id(g_bots[NBOTS].s), lan_time(g_bots[0].s), &(lan_snapshot){0}),
           "a spectator sends no rider");
 
-    printf("ready check and synchronized start\n");
-    check(!lan_start(g_host.s, 3000), "start is refused while players are not ready");
+    printf("lobby ready check, event select, synchronized start\n");
+    check(!lan_select(g_host.s, 0), "event select is refused while players are not ready");
     lan_set_ready(g_host.s, 1);
     for (i = 0; i < NBOTS; i++)
         lan_set_ready(g_bots[i].s, 1);
     pump(300, 0);
-    check(lan_start(g_host.s, 3000), "start once everyone is ready");
+    check(lan_select(g_host.s, 0), "event select once everyone is ready in the lobby");
+    pump(300, 0);
+    ok = 1;
+    for (i = 0; i < NBOTS + 1; i++)
+        ok &= g_bots[i].selects == 1;
+    l = lan_get_lobby(g_bots[3].s);
+    ok &= l->state == LAN_STATE_SELECT && !l->members[0].ready && l->rules.event == LAN_EVENT_NONE;
+    check(ok, "everyone is told, ready flags cleared, no event picked yet");
+    {
+        uint8_t data[LAN_EVENT_DATA];
+        for (i = 0; i < LAN_EVENT_DATA; i++)
+            data[i] = (uint8_t)(i * 3 + 1);
+        lan_set_event(g_host.s, 1, 7, data);
+    }
+    lan_set_loading(g_host.s, 1);
+    lan_set_loading(g_bots[2].s, 1);
+    pump(300, 0);
+    l = lan_get_lobby(g_bots[3].s);
+    check(l->rules.peak == 1 && l->rules.event == 7 && l->rules.event_data[27] == 82 && l->members[0].loading
+          && l->members[lan_local_id(g_bots[2].s)].loading && !l->members[lan_local_id(g_bots[3].s)].loading,
+          "the host's event and who is loading reach every client");
+    check(!lan_start(g_host.s, 3000), "start is refused while players are not at the start");
+    lan_set_ready(g_host.s, 1);
+    for (i = 0; i < NBOTS; i++)
+        lan_set_ready(g_bots[i].s, 1);
+    pump(300, 0);
+    check(lan_start(g_host.s, 3000), "start once everyone is at the start");
     start = lan_get_lobby(g_host.s)->start_time;
     pump(300, 0);
     ok = 1;

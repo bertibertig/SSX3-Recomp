@@ -84,7 +84,15 @@ static const uint32_t k_vert_spv[] =
 static const uint32_t k_frag_spv[] =
 #include "nv2a.frag.inc"
 ;
+static const uint32_t k_ovl_vert_spv[] =
+#include "overlay.vert.inc"
+;
+static const uint32_t k_ovl_frag_spv[] =
+#include "overlay.frag.inc"
+;
 #include "keyboard_sdl.h"     /* xboxrecomp/src/input */
+#include "xinput_xbox.h"      /* xboxrecomp/src/input */
+#include "../ui/overlay.h"
 #include "vk_backend.h"
 
 #define VKB_MAX_SURFACES    16
@@ -658,12 +666,15 @@ static int create_device(void)
     return 1;
 }
 
+static void overlay_drop_views(void);
+
 static void destroy_swapchain(void)
 {
     uint32_t i;
     if (!V.swapchain)
         return;
     device_idle();
+    overlay_drop_views();
     for (i = 0; i < V.swap_count; i++)
         vkDestroySemaphore(V.device, V.sem_render_done[i], NULL);
     vkDestroySwapchainKHR(V.device, V.swapchain, NULL);
@@ -1012,6 +1023,316 @@ static int create_pipeline(void)
     vkDestroyShaderModule(V.device, vs, NULL);
     vkDestroyShaderModule(V.device, fs, NULL);
     return 1;
+}
+
+/* ---- host overlay (src/ui/overlay.c) ------------------------------------
+ *
+ * Drawn on the swapchain image after the frame's blit: triangles in window
+ * pixels, alpha-blended, sampling the overlay's font atlas (R8). Its own
+ * pipeline (the swapchain's format, no depth), one vertex buffer per
+ * swapchain image (an image is acquired again only after its last present,
+ * so its buffer is free by then), views on the swapchain images made on
+ * first use and dropped with the swapchain. */
+#define OVL_VB_BYTES (256u << 10)
+
+static struct {
+    int                   failed;
+    VkFormat              format;          /* of the pipeline; 0 = none yet */
+    VkDescriptorSetLayout set_layout;
+    VkPipelineLayout      layout;
+    VkPipeline            pipeline;
+    VkImage               font;
+    VkDeviceMemory        font_mem;
+    VkImageView           font_view;
+    VkSampler             sampler;
+    VkbRing               font_staging;
+    int                   font_uploaded;
+    VkbRing               vb[VKB_MAX_SWAP_IMAGES];
+    VkImageView           views[VKB_MAX_SWAP_IMAGES];
+} O;
+
+static void overlay_drop_views(void)
+{
+    uint32_t i;
+    for (i = 0; i < VKB_MAX_SWAP_IMAGES; i++)
+        if (O.views[i]) {
+            vkDestroyImageView(V.device, O.views[i], NULL);
+            O.views[i] = VK_NULL_HANDLE;
+        }
+}
+
+static int overlay_pipeline(void)
+{
+    VkDescriptorSetLayoutBinding bind;
+    VkDescriptorSetLayoutCreateInfo dslci;
+    VkPushConstantRange pcr;
+    VkPipelineLayoutCreateInfo plci;
+    VkShaderModule vs, fs;
+    VkPipelineShaderStageCreateInfo stages[2];
+    VkVertexInputBindingDescription vbind;
+    VkVertexInputAttributeDescription vattr[3];
+    VkPipelineVertexInputStateCreateInfo vi;
+    VkPipelineInputAssemblyStateCreateInfo ia;
+    VkPipelineViewportStateCreateInfo vp;
+    VkPipelineRasterizationStateCreateInfo rs;
+    VkPipelineMultisampleStateCreateInfo ms;
+    VkPipelineDepthStencilStateCreateInfo ds;
+    VkPipelineColorBlendAttachmentState cba;
+    VkPipelineColorBlendStateCreateInfo cb;
+    VkPipelineDynamicStateCreateInfo dyn;
+    VkPipelineRenderingCreateInfo prci;
+    VkGraphicsPipelineCreateInfo gpci;
+    static const VkDynamicState dynamic[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+
+    if (O.pipeline) {
+        device_idle();
+        vkDestroyPipeline(V.device, O.pipeline, NULL);
+        O.pipeline = VK_NULL_HANDLE;
+    }
+    if (!O.layout) {
+        memset(&bind, 0, sizeof bind);
+        bind.binding = 0;
+        bind.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        bind.descriptorCount = 1;
+        bind.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        memset(&dslci, 0, sizeof dslci);
+        dslci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        dslci.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
+        dslci.bindingCount = 1;
+        dslci.pBindings = &bind;
+        VK_CHECK(vkCreateDescriptorSetLayout(V.device, &dslci, NULL, &O.set_layout));
+        pcr.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+        pcr.offset = 0;
+        pcr.size = 2 * sizeof(float);
+        memset(&plci, 0, sizeof plci);
+        plci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        plci.setLayoutCount = 1;
+        plci.pSetLayouts = &O.set_layout;
+        plci.pushConstantRangeCount = 1;
+        plci.pPushConstantRanges = &pcr;
+        VK_CHECK(vkCreatePipelineLayout(V.device, &plci, NULL, &O.layout));
+    }
+    vs = shader_module(k_ovl_vert_spv, sizeof k_ovl_vert_spv);
+    fs = shader_module(k_ovl_frag_spv, sizeof k_ovl_frag_spv);
+    if (!vs || !fs)
+        return 0;
+    memset(stages, 0, sizeof stages);
+    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vs;
+    stages[0].pName = "main";
+    stages[1] = stages[0];
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = fs;
+    vbind.binding = 0;
+    vbind.stride = sizeof(ovl_vertex);
+    vbind.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    vattr[0].location = 0; vattr[0].binding = 0; vattr[0].format = VK_FORMAT_R32G32_SFLOAT;
+    vattr[0].offset = (uint32_t)offsetof(ovl_vertex, x);
+    vattr[1].location = 1; vattr[1].binding = 0; vattr[1].format = VK_FORMAT_R32G32_SFLOAT;
+    vattr[1].offset = (uint32_t)offsetof(ovl_vertex, u);
+    vattr[2].location = 2; vattr[2].binding = 0; vattr[2].format = VK_FORMAT_R8G8B8A8_UNORM;
+    vattr[2].offset = (uint32_t)offsetof(ovl_vertex, rgba);
+    memset(&vi, 0, sizeof vi);
+    vi.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vi.vertexBindingDescriptionCount = 1;
+    vi.pVertexBindingDescriptions = &vbind;
+    vi.vertexAttributeDescriptionCount = 3;
+    vi.pVertexAttributeDescriptions = vattr;
+    memset(&ia, 0, sizeof ia);
+    ia.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    memset(&vp, 0, sizeof vp);
+    vp.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    vp.viewportCount = 1;
+    vp.scissorCount = 1;
+    memset(&rs, 0, sizeof rs);
+    rs.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rs.polygonMode = VK_POLYGON_MODE_FILL;
+    rs.cullMode = VK_CULL_MODE_NONE;
+    rs.lineWidth = 1.0f;
+    memset(&ms, 0, sizeof ms);
+    ms.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    memset(&ds, 0, sizeof ds);
+    ds.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    memset(&cba, 0, sizeof cba);
+    cba.blendEnable = VK_TRUE;
+    cba.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    cba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    cba.colorBlendOp = VK_BLEND_OP_ADD;
+    cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    cba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    cba.alphaBlendOp = VK_BLEND_OP_ADD;
+    cba.colorWriteMask = 0xF;
+    memset(&cb, 0, sizeof cb);
+    cb.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    cb.attachmentCount = 1;
+    cb.pAttachments = &cba;
+    memset(&dyn, 0, sizeof dyn);
+    dyn.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dyn.dynamicStateCount = 2;
+    dyn.pDynamicStates = dynamic;
+    memset(&prci, 0, sizeof prci);
+    prci.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    prci.colorAttachmentCount = 1;
+    prci.pColorAttachmentFormats = &V.swap_format;
+    memset(&gpci, 0, sizeof gpci);
+    gpci.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    gpci.pNext = &prci;
+    gpci.stageCount = 2;
+    gpci.pStages = stages;
+    gpci.pVertexInputState = &vi;
+    gpci.pInputAssemblyState = &ia;
+    gpci.pViewportState = &vp;
+    gpci.pRasterizationState = &rs;
+    gpci.pMultisampleState = &ms;
+    gpci.pDepthStencilState = &ds;
+    gpci.pColorBlendState = &cb;
+    gpci.pDynamicState = &dyn;
+    gpci.layout = O.layout;
+    VK_CHECK(vkCreateGraphicsPipelines(V.device, VK_NULL_HANDLE, 1, &gpci, NULL, &O.pipeline));
+    vkDestroyShaderModule(V.device, vs, NULL);
+    vkDestroyShaderModule(V.device, fs, NULL);
+    O.format = V.swap_format;
+    return 1;
+}
+
+/* Font image, sampler (first use), the font's upload (recorded into cmd once). */
+static int overlay_font(VkCommandBuffer cmd)
+{
+    const uint8_t *alpha;
+    int w, h;
+    if (!ovl_font_alpha(&w, &h, &alpha))
+        return 0;
+    if (!O.font) {
+        VkSamplerCreateInfo sci;
+        if (!image_create((uint32_t)w, (uint32_t)h, VK_FORMAT_R8_UNORM,
+                          VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                          VK_IMAGE_ASPECT_COLOR_BIT, &O.font, &O.font_mem, &O.font_view)
+                || !ring_create(&O.font_staging, (VkDeviceSize)w * (VkDeviceSize)h,
+                                VK_BUFFER_USAGE_TRANSFER_SRC_BIT))
+            return 0;
+        memset(&sci, 0, sizeof sci);
+        sci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        sci.magFilter = VK_FILTER_LINEAR;
+        sci.minFilter = VK_FILTER_LINEAR;
+        sci.addressModeU = sci.addressModeV = sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        VK_CHECK(vkCreateSampler(V.device, &sci, NULL, &O.sampler));
+    }
+    if (!O.font_uploaded) {
+        VkBufferImageCopy region;
+        memcpy(O.font_staging.mapped, alpha, (size_t)w * (size_t)h);
+        transition_cmd(cmd, O.font, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        memset(&region, 0, sizeof region);
+        region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        region.imageSubresource.layerCount = 1;
+        region.imageExtent.width = (uint32_t)w;
+        region.imageExtent.height = (uint32_t)h;
+        region.imageExtent.depth = 1;
+        vkCmdCopyBufferToImage(cmd, O.font_staging.buffer, O.font, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                               1, &region);
+        transition_cmd(cmd, O.font, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        O.font_uploaded = 1;
+    }
+    return 1;
+}
+
+static int overlay_view(uint32_t idx)
+{
+    VkImageViewCreateInfo vci;
+    if (O.views[idx])
+        return 1;
+    memset(&vci, 0, sizeof vci);
+    vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    vci.image = V.swap_images[idx];
+    vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vci.format = V.swap_format;
+    vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    vci.subresourceRange.levelCount = 1;
+    vci.subresourceRange.layerCount = 1;
+    VK_CHECK(vkCreateImageView(V.device, &vci, NULL, &O.views[idx]));
+    return 1;
+}
+
+/* After the frame's blit: the overlay, if a screen is up, then the image to PRESENT_SRC. `img` is in
+ * TRANSFER_DST_OPTIMAL. */
+static void overlay_finish(VkCommandBuffer cmd, VkImage img, uint32_t idx)
+{
+    const ovl_vertex *verts;
+    int n = O.failed ? 0 : ovl_build((int)V.swap_extent.width, (int)V.swap_extent.height, &verts);
+    VkDeviceSize bytes = (VkDeviceSize)n * sizeof(ovl_vertex), zero = 0;
+    VkRenderingAttachmentInfo att;
+    VkRenderingInfo ri;
+    VkViewport vpt;
+    VkRect2D sc;
+    VkDescriptorImageInfo dii;
+    VkWriteDescriptorSet w;
+    float extent[2];
+
+    if (n > 0 && bytes > OVL_VB_BYTES) {
+        n = (int)(OVL_VB_BYTES / sizeof(ovl_vertex)) / 3 * 3;
+        bytes = (VkDeviceSize)n * sizeof(ovl_vertex);
+    }
+    if (n > 0 && (O.format != V.swap_format || !O.pipeline) && !overlay_pipeline())
+        O.failed = 1, n = 0;
+    if (n > 0 && (!overlay_font(cmd) || !overlay_view(idx)
+                  || (!O.vb[idx].buffer && !ring_create(&O.vb[idx], OVL_VB_BYTES,
+                                                         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)))) {
+        fprintf(stderr, "  [VK] overlay disabled\n");
+        O.failed = 1;
+        n = 0;
+    }
+    if (n <= 0) {
+        transition_cmd(cmd, img, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                       VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+        return;
+    }
+    memcpy(O.vb[idx].mapped, verts, (size_t)bytes);
+    transition_cmd(cmd, img, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                   VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    memset(&att, 0, sizeof att);
+    att.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    att.imageView = O.views[idx];
+    att.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    att.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    memset(&ri, 0, sizeof ri);
+    ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    ri.renderArea.extent = V.swap_extent;
+    ri.layerCount = 1;
+    ri.colorAttachmentCount = 1;
+    ri.pColorAttachments = &att;
+    vkCmdBeginRendering(cmd, &ri);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, O.pipeline);
+    memset(&vpt, 0, sizeof vpt);
+    vpt.width = (float)V.swap_extent.width;
+    vpt.height = (float)V.swap_extent.height;
+    vpt.maxDepth = 1.0f;
+    vkCmdSetViewport(cmd, 0, 1, &vpt);
+    sc.offset.x = sc.offset.y = 0;
+    sc.extent = V.swap_extent;
+    vkCmdSetScissor(cmd, 0, 1, &sc);
+    extent[0] = (float)V.swap_extent.width;
+    extent[1] = (float)V.swap_extent.height;
+    vkCmdPushConstants(cmd, O.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof extent, extent);
+    dii.sampler = O.sampler;
+    dii.imageView = O.font_view;
+    dii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    memset(&w, 0, sizeof w);
+    w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    w.dstBinding = 0;
+    w.descriptorCount = 1;
+    w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    w.pImageInfo = &dii;
+    vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, O.layout, 0, 1, &w);
+    vkCmdBindVertexBuffers(cmd, 0, 1, &O.vb[idx].buffer, &zero);
+    vkCmdDraw(cmd, (uint32_t)n, 1, 0, 0);
+    vkCmdEndRendering(cmd);
+    transition_cmd(cmd, img, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                   VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 }
 
 static int init_vulkan(void)
@@ -1777,6 +2098,7 @@ static void dump_surface(VkbSurface *s)
     vkWaitForFences(V.device, 1, &V.frame_fence, VK_TRUE, UINT64_MAX);
 
     vkMapMemory(V.device, mem, 0, size, 0, (void **)&px);
+    ovl_composite_bgra(px, (int)s->img_w, (int)s->img_h);
     /* Named by flip number, so a dump can be matched to log lines. */
     snprintf(path, sizeof path, "%s%06u.bmp", V.dump_prefix, V.flips);
     f = fopen(path, "wb");
@@ -2795,8 +3117,7 @@ static int vki_present(float t)
     blit.dstOffsets[1].z = 1;
     vkCmdBlitImage(cmd, I.color.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                    img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
-    transition_cmd(cmd, img, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                   VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+    overlay_finish(cmd, img, idx);
     vkEndCommandBuffer(cmd);
 
     memset(&si, 0, sizeof si);
@@ -3436,7 +3757,8 @@ static void pump_events(void)
             V.swap_dirty = 1;
         scale_key(&ev);
         window_key(&ev);
-        xbox_InputSdlEvent(&ev);
+        if (!ovl_sdl_event(&ev))
+            xbox_InputSdlEvent(&ev);
     }
 }
 
@@ -3937,8 +4259,7 @@ static void vkb_flip(void)
                        img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
                        VK_FILTER_LINEAR);
     }
-    transition(img, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-               VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+    overlay_finish(V.cmd, img, idx);
     vkEndCommandBuffer(V.cmd);
     V.recording = 0;
 
@@ -4087,7 +4408,8 @@ int ssx3_vk_host_main(int (*guest_main)(void))
                     read_display_hz();
                 scale_key(&ev);
                 window_key(&ev);
-                xbox_InputSdlEvent(&ev);
+                if (!ovl_sdl_event(&ev))
+                    xbox_InputSdlEvent(&ev);
             } while (SDL_PollEvent(&ev));
         }
         if (V.flips)
@@ -4095,8 +4417,17 @@ int ssx3_vk_host_main(int (*guest_main)(void))
     }
 }
 
+/* The overlay reads pad port 0 while a screen holds the input (src/input/ssx3_pad.c). */
+extern int (*ssx3_pad_ui_hook)(DWORD port, WORD buttons, const BYTE analog[8], SHORT lx, SHORT ly);
+
+static int pad_ui_hook(DWORD port, WORD buttons, const BYTE analog[8], SHORT lx, SHORT ly)
+{
+    return ovl_pad_feed((uint32_t)port, (uint16_t)buttons, analog, (int16_t)lx, (int16_t)ly);
+}
+
 int ssx3_vk_register(void)
 {
+    ssx3_pad_ui_hook = pad_ui_hook;
     scale_init();
     wide_init();
     nv2a_backend_register(&s_vk_backend);

@@ -89,6 +89,8 @@ set(GAME_SOURCES
     src/lan/freeroam.c
     src/lan/menu.c
     src/lan/lan_game.c
+    src/ui/overlay.c
+    src/lan/lobby_ui.c
     # Add game-specific sources here, e.g.:
     # src/asset_loader.c
     # src/custom_renderer.c
@@ -179,7 +181,7 @@ if(SSX3_VULKAN AND NOT WIN32)
     find_program(SSX3_GLSLC glslc REQUIRED)
     set(SSX3_SHADER_OUT ${CMAKE_CURRENT_BINARY_DIR}/shaders)
     set(SSX3_SHADER_INCS)
-    foreach(sh nv2a.vert nv2a.frag)
+    foreach(sh nv2a.vert nv2a.frag overlay.vert overlay.frag)
         add_custom_command(
             OUTPUT  ${SSX3_SHADER_OUT}/${sh}.inc
             COMMAND ${CMAKE_COMMAND} -E make_directory ${SSX3_SHADER_OUT}

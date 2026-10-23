@@ -319,6 +319,7 @@ void sub_00011E90(void)
 
 /* Main menu selection (cFEStateMainMenu), thiscall: ecx = menu, [esp+4] = item, [esp+8] = event, ret 8. */
 #include "lan/menu.h"
+#include "lan/lobby_ui.h"
 
 extern void sub_0009CC70_gen(void);
 
@@ -326,6 +327,30 @@ void sub_0009CC70(void)
 {
     if (lan_menu_select(g_ecx, SSX3_MEM32(g_esp + 4), SSX3_MEM32(g_esp + 8))) { g_esp += 12; return; }
     sub_0009CC70_gen();
+}
+
+/* The app creates its GameModule (fastcall: ecx = app, ret): this player leaves the menus for an event,
+ * before it loads. LAN: the host publishes its event, the others take it over (lan_game.c). */
+extern void sub_000E1B50_gen(void);
+
+void sub_000E1B50(void)
+{
+    lan_game_entering();
+    sub_000E1B50_gen();
+}
+
+/* LocaleFile::GetString (thiscall: ecx = locale, [esp+4] = string hash, ret 4): returns the UTF-16 text,
+ * or on a miss its "?" fallback in locale+0x4A. LAN: our own texts for keys the Xbox locale lacks (the
+ * second entry of the multiplayer-mode popup). */
+extern void sub_000760E0_gen(void);
+
+void sub_000760E0(void)
+{
+    uint32_t self = g_ecx, hash = SSX3_MEM32(g_esp + 4), text;
+
+    sub_000760E0_gen();
+    if ((text = lan_menu_text(hash, g_eax == self + 0x4Au)) != 0)
+        g_eax = text;
 }
 
 /* Main menu: show or hide Multi Play by the pad count at menu+0x55 (fastcall, ret). */
@@ -337,6 +362,7 @@ void sub_0009CAB0(void)
     uint8_t pads = *(volatile uint8_t *)((uintptr_t)(menu + 0x55) + g_xbox_mem_offset);
 
     lan_game_active();          /* LAN: open the session in the main menu, so profiles are in before a race loads */
+    lobby_ui_init();            /* the LAN lobby overlay (F5 / Back + Y) */
 
     if (!lan_menu_multiplay_pads(menu)) {
         sub_0009CAB0_gen();

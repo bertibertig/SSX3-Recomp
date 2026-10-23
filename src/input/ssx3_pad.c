@@ -220,6 +220,22 @@ static void trace_state(DWORD port, const XBOX_INPUT_STATE *s)
     fflush(stderr);
 }
 
+/* The host overlay (src/ui/overlay.c, the LAN lobby) reads pad port 0 through this hook while it is
+ * open; returning 1 means it took the input and the game gets an idle pad, 2 an idle pad with A pressed
+ * (the overlay continues the game's menu for the player). Set by the game; NULL here so
+ * other users of the library need nothing. */
+int (*ssx3_pad_ui_hook)(DWORD port, WORD buttons, const BYTE analog[8], SHORT lx, SHORT ly);
+
+static void ui_filter(DWORD port, XBOX_INPUT_STATE *s)
+{
+    int r = ssx3_pad_ui_hook ? ssx3_pad_ui_hook(port, s->Gamepad.wButtons, s->Gamepad.bAnalogButtons,
+                                                s->Gamepad.sThumbLX, s->Gamepad.sThumbLY) : 0;
+    if (r)
+        memset(&s->Gamepad, 0, sizeof s->Gamepad);   /* the packet number still advances */
+    if (r == 2)
+        s->Gamepad.bAnalogButtons[XBOX_BUTTON_A] = 255;
+}
+
 /* Merge the keyboard on top of a pad on port 0 rather than only standing in
  * for a missing one (as upstream): a real pad keeps working, the keys only
  * add. Under Wine XInputGetState succeeds with nothing plugged in, so a
@@ -311,6 +327,7 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
             if (mkb_merge(dwPort, pState))
                 g_controller_connected[dwPort] = TRUE;
             if (kb || mkb_enabled()) {
+                ui_filter(dwPort, pState);
                 trace_state(dwPort, pState);
                 return ERROR_SUCCESS;
             }
@@ -326,6 +343,7 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
         /* The mouse owns the aim stick while it moves, WASD the movement. */
         mkb_merge(dwPort, pState);
     }
+    ui_filter(dwPort, pState);
     trace_state(dwPort, pState);
     return ERROR_SUCCESS;
 }
@@ -579,6 +597,7 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
 
     if (!have) {
         if (dwPort == 0 && xbox_InputKeyboardPoll(pState)) {
+            ui_filter(dwPort, pState);
             trace_state(dwPort, pState);
             return ERROR_SUCCESS;
         }
@@ -588,6 +607,7 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
     map_host_pad(&h, pState, ++g_packet[dwPort]);
     if (dwPort == 0)
         keyboard_merge(pState);
+    ui_filter(dwPort, pState);
     trace_state(dwPort, pState);
     return ERROR_SUCCESS;
 }

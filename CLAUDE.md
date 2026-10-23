@@ -24,7 +24,7 @@ docs/notes.md      Running work log (addresses, findings, decisions) – keep ad
 ```
 
 ## Workflow (keep this order)
-1. `scripts/setup.sh` – venv + capstone; Linux build deps: `bash xboxrecomp/tools/linux/install_deps.sh` (sudo)
+1. `scripts/setup.sh` – installs Linux build dependencies, creates the venv, and installs capstone/Python packages
 2. `scripts/install_game.sh <SSX3-Xbox.iso>` (or `scripts/extract_iso.sh`, needs extract-xiso/xdvdfs) → `game_files/default.xbe`
 3. `scripts/run_pipeline.sh parse` – XBE header: **record entry point, base address, sections, title ID, kernel imports in docs/notes.md**
    and fill them into `src/main.c` (`YOUR_GAME_ENTRY_POINT`, `YOUR_GAME_XBE_PATH`, `YOUR_GAME_DIR`).

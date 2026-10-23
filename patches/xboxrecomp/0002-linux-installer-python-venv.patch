@@ -1,0 +1,14 @@
+diff --git a/tools/linux/install_deps.sh b/tools/linux/install_deps.sh
+old mode 100644
+new mode 100755
+index 68087c3..014503b
+--- a/tools/linux/install_deps.sh
++++ b/tools/linux/install_deps.sh
+@@ -46,3 +46,3 @@ case "$family" in
+     debian)
+-        PKGS=(cmake build-essential pkg-config libsdl2-dev libgl1-mesa-dev
++        PKGS=(python3 python3-venv cmake build-essential pkg-config libsdl2-dev libgl1-mesa-dev
+               libepoxy-dev libssl-dev libavcodec-dev libavformat-dev
+diff --git a/tools/linux/test_install_deps.sh b/tools/linux/test_install_deps.sh
+old mode 100644
+new mode 100755

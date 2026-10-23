@@ -130,32 +130,25 @@ Put your game data into `game_files/` (for both build ways; no extra tools neede
 scripts/install_game.sh "/path/to/SSX 3.iso"
 ```
 
-### On your system (Linux)
+### Build on Linux
 
-Needs Python 3, CMake, GCC or Clang, SDL2, libepoxy, OpenSSL, `glslc` (shaderc) and a Vulkan driver.
-`setup.sh` installs the build packages on Debian/Ubuntu, Arch, Fedora/RHEL, openSUSE and Alpine (asks for
-sudo), then creates the Python virtual environment. Fedora may need RPM Fusion enabled for `ffmpeg-devel`.
+`scripts/setup.sh` installs the build toolchain and native libraries, creates the Python virtual environment,
+and installs the pipeline's Python packages. It supports Debian/Ubuntu, Arch, Fedora/RHEL, openSUSE and Alpine;
+it may prompt for your password to use `sudo`. Fedora may need RPM Fusion enabled for `ffmpeg-devel`.
+The Vulkan driver is used at runtime and is not installed by the setup script; install the driver appropriate
+for your GPU if one is not already present. On other Linux distributions, install the equivalent packages
+manually (including `glslc` from shaderc).
 
 ```bash
 scripts/setup.sh
-```
-
-```bash
 scripts/run_pipeline.sh
-```
-
-```bash
 scripts/build.sh
-```
-
-```bash
 scripts/run.sh
 ```
 
-`setup.sh` creates the Python venv for the pipeline, `run_pipeline.sh` recompiles the XBE to C (~15 min),
-`build.sh` compiles it to `build/ssx3_recomp` (~2 min with 16 cores) and `run.sh` starts the game with the
-start-up menu. Compiling the 1.4 million lines of generated C needs a lot of RAM: use `JOBS=4 scripts/build.sh`
-(or lower) if the build runs out of memory.
+`run_pipeline.sh` recompiles the XBE to C (~15 min), `build.sh` compiles it to `build/ssx3_recomp` (~2 min with
+16 cores), and `run.sh` starts the game with the start-up menu. Compiling the 1.4 million lines of generated C
+needs a lot of RAM: use `JOBS=4 scripts/build.sh` (or lower) if the build runs out of memory.
 
 ### In a Docker container
 

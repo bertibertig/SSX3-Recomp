@@ -1,12 +1,13 @@
 # Local patches for the xboxrecomp submodule
 
 The submodule (`xboxrecomp/`, v0.14.0) is not committed in modified form. Our own changes live here as a patch.
-`scripts/build.sh`, `build_win.sh` and `run_pipeline.sh` apply it automatically (`apply_runtime_patches` in
+`scripts/build.sh`, `build_win.sh` and `run_pipeline.sh` apply these automatically (`apply_runtime_patches` in
 `scripts/_common.sh`): skipped when already applied, applied on a fresh clone / after a submodule update, a warning
-when the submodule has other local edits (runtime work in progress). By hand:
+when the submodule has other local edits (runtime work in progress). By hand, apply them in order:
 
 ```bash
 git -C xboxrecomp apply ../patches/xboxrecomp/0001-linux-x86_64-mmio-traps-casefold-mingw-oldnames.patch
+git -C xboxrecomp apply ../patches/xboxrecomp/0002-linux-installer-python-venv.patch
 ```
 
 After changing the runtime, re-export the patch so the change is kept:
@@ -94,5 +95,9 @@ Verified: Linux build + Windows cross build (MinGW) compile; own decoder test (8
   several hardware voices through the trap of one of them and ignores the others. In Amped 2 such a pair stayed
   idle on the results screen: the ignored voice trapped on every frame (~1500/s), no other idle voice was ever
   reported, and DirectSound's waits for stopped voices ran into their 0.5 s timeout (5-40 fps). SSX 3 has the same
-  routine but never left an idle voice in a list in our runs (menus + a 4.5-min race: 0 idle-voice traps), so this
-  is a latent fix here. `RECOMP_APU_IDLE_LOG=1` prints the idle-voice traps per voice every 5 s.
+ routine but never left an idle voice in a list in our runs (menus + a 4.5-min race: 0 idle-voice traps), so this
+ is a latent fix here. `RECOMP_APU_IDLE_LOG=1` prints the idle-voice traps per voice every 5 s.
+
+## 0002 – Linux installer Python prerequisites
+- `tools/linux/install_deps.sh`: include Python 3 and `venv` support in the Debian/Ubuntu package list.
+- Mark the installer and its distro-detection test executable.

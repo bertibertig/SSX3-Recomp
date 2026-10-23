@@ -13,8 +13,15 @@ if [ "$(uname -s)" = "Linux" ]; then
   bash "$ROOT/scripts/install_linux_deps.sh"
 fi
 
-if [ ! -d "$VENV" ]; then
-  python3 -m venv "$VENV"
+if [ ! -x "$VENV/bin/python" ] || [ ! -f "$VENV/bin/activate" ]; then
+  echo "Creating Python virtual environment at $VENV ..."
+  if ! python3 -m venv "$VENV"; then
+    if ! python3 -m virtualenv "$VENV"; then
+      echo "Could not create the Python virtual environment." >&2
+      echo "Install Python 3's venv support (or the python3-virtualenv package) and retry." >&2
+      exit 1
+    fi
+  fi
 fi
 use_venv
 python -m pip install --upgrade pip >/dev/null

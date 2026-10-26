@@ -760,6 +760,15 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     SymInitialize(GetCurrentProcess(), NULL, TRUE);
     AddVectoredExceptionHandler(1, veh_handler);
 
+    /* Hold the whole 4 GB guest window as placeholders (VirtualAlloc2,
+     * Windows 10 1803+; the runtime falls back on older systems). Without it
+     * Wine/Proton had already placed something at host base + 0xF0000000, the
+     * tiled aperture failed to map (error 487) and entering a race faulted
+     * writing the frame buffer through it (guest 0x001F0386, VA 0xF0610000).
+     * The runtime only checks that the variable exists. */
+    if (!getenv("RECOMP_WIN_PLACEHOLDER"))
+        _putenv("RECOMP_WIN_PLACEHOLDER=1");
+
     if (boot_memory() != 0)
         return 1;
 #if defined(SSX3_HAVE_VULKAN)

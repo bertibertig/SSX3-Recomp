@@ -93,7 +93,7 @@ Order follows `CLAUDE.md` / `xboxrecomp/docs/GETTING_STARTED.md`. Details and fi
         ship Vulkan drivers for 7 on older GPU generations.
   - [ ] **Windows XP** – maybe, a stretch: no Vulkan there (and 64-bit only on XP x64), so it would need a
         D3D9 or OpenGL back end, a 32-bit or XP-x64 build and an older toolchain/CRT – evaluate after 7 works.
-- [ ] **Windows/Proton: crash when a race loads.** Release v0.1.0 exe under GE-Proton: `tiled aperture at 0xF0000000
+- [x] **Windows/Proton: crash when a race loads** (fixed 2026-10-26: `RECOMP_WIN_PLACEHOLDER=1` default in WinMain). Release v0.1.0 exe under GE-Proton: `tiled aperture at 0xF0000000
       failed (error 487)` and RAM mirrors 26/27 (0x78000000/0x7C000000) fail to map; menus work, then entering a race
       writes to Xbox VA 0xF0610000 → access violation (guest stack 0x001F0386 ← 0x000E2688). Check on real Windows;
       find what Wine has reserved there (koen's port is Windows-first – see how it maps the aperture).

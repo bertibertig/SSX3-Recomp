@@ -872,3 +872,13 @@ _(date – what was done, what was found, next step)_
     keyboard keys/F10/F11 in the Win32 window (tests do not take focus), `run.ps1` (no PowerShell in Wine), MSVC.
   - The generated code in this checkout comes from `feature/lan-lobby` (renames sub_000E1B50/sub_000760E0 to
     `_gen`); test builds used two untracked pass-through wrappers again, removed afterwards.
+- 2026-10-26 – **Windows race-load crash fixed** (tiled aperture). The runtime already had the fix as an opt-in:
+  `RECOMP_WIN_PLACEHOLDER=1` reserves the whole 4 GB guest window as one placeholder (VirtualAlloc2 +
+  MapViewOfFile3, Windows 10 1803+, Wine has both) and carves every window out of it, so nothing else lands at host
+  base + 0xF0000000. Without it Wine had something there (error 487), the aperture was missing and the race start
+  faulted writing the frame buffer through it (guest 0x001F0386, VA 0xF0610000/0xF0710000). `WinMain` now sets it
+  unless the environment has it. Log: "guest window reservation: placeholder …, 4096 MB held", "Tiled aperture
+  alias verified", mirrors 26/27 map too.
+  - Tested under Proton: menus → Snow Jam race at 1x/60 (race 51–60 fps; Linux on the same route 45–61) and with
+    `SSX3_ASPECT=16:9 SSX3_RES_SCALE=2 SSX3_FPS_LIMIT=120` (120 fps shown, game 55–58, 1707x960 widescreen frame
+    as on Linux). Not tested: real Windows.

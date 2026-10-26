@@ -1,3 +1,128 @@
+diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
+index 1f664a3..e016835 100644
+--- a/src/apu/apu_core.c
++++ b/src/apu/apu_core.c
+@@ -168,7 +168,8 @@ static int apu_mmio_trace(void)
+ {
+     static int on = -1;
+     if (on < 0)
+-        on = apu_env_on("RECOMP_APU_TRACE");
++        on = apu_env_on("RECOMP_APU_TRACE") &&
++             !apu_env_on("RECOMP_APU_TRACE_NO_MMIO");
+     return on;
+ }
+ 
+diff --git a/src/apu/apu_dsp.c b/src/apu/apu_dsp.c
+index bd36f2a..3a886cd 100644
+--- a/src/apu/apu_dsp.c
++++ b/src/apu/apu_dsp.c
+@@ -25,9 +25,15 @@
+ #include "apu_state.h"
+ #include "fpconv.h"
+ 
++#include "apu.h"
++
++#include <math.h>
++#include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+ 
++static unsigned s_bins_clamped;   /* RECOMP_APU_TRACE: samples the mixdown clamped */
++
+ /* ── DSP command doorbell acknowledgement ────────────────────────────────
+  *
+  * DirectSound does not stop at creating the device. It hands the audio DSP a
+@@ -114,6 +120,18 @@ static int mcpx_apu_mixdown_all(void)
+     return on;
+ }
+ 
++/* The speaker bins (0..9) as a stereo downmix rather than even/odd.
++ * Default ON; RECOMP_APU_MIXDOWN=legacy keeps the even/odd fold. */
++static int mcpx_apu_mixdown_speakers(void)
++{
++    static int on = -1;
++    if (on < 0) {
++        const char *e = getenv("RECOMP_APU_MIXDOWN");
++        on = !(e && !strcmp(e, "legacy"));
++    }
++    return on;
++}
++
+ /* GPRST (GP region + 0xFFFC): the GP runs only with both reset bits set, as
+  * in xemu's gp_write. Nothing else models the GP, so this is kept for the
+  * =auto ack alone. Before the first write the GP counts as running: a title
+@@ -248,6 +266,28 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d,
+ 
+     int off = (d->ep_frame_div % 8) * NUM_SAMPLES_PER_FRAME;
+ 
++    {   /* RECOMP_APU_TRACE: RMS per mixbin and clamped samples, once a second */
++        static int on = -1;
++        static double sq[NUM_MIXBINS];
++        static unsigned frames, secs;
++        if (on < 0) on = apu_env_on("RECOMP_APU_TRACE");
++        if (on) {
++            for (int b = 0; b < NUM_MIXBINS; b++)
++                for (int i = 0; i < NUM_SAMPLES_PER_FRAME; i++)
++                    sq[b] += (double)mixbins[b][i] * mixbins[b][i];
++            if (++frames == 1500) {
++                fprintf(stderr, "[APU-BINS] t=%us clamped=%u", ++secs, s_bins_clamped);
++                for (int b = 0; b < NUM_MIXBINS; b++) {
++                    double r = sqrt(sq[b] / (frames * NUM_SAMPLES_PER_FRAME)) * 32768.0;
++                    if (r >= 1.0) fprintf(stderr, " %d:%.0f", b, r);
++                    sq[b] = 0;
++                }
++                fprintf(stderr, "\n");
++                frames = 0; s_bins_clamped = 0;
++            }
++        }
++    }
++
+     if (d->monitor.point != MCPX_APU_DEBUG_MON_VP) {
+         for (int i = 0; i < NUM_SAMPLES_PER_FRAME; i++) {
+             /* Bins 2..31 used to be computed and then dropped on the floor.
+@@ -278,7 +318,32 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d,
+              * counts. This is not what a real EP does; it is the cheapest
+              * mixdown that stops discarding audio. */
+             float left, right;
+-            if (mcpx_apu_mixdown_all()) {
++            if (mcpx_apu_mixdown_all() && mcpx_apu_mixdown_speakers()) {
++                /* The speaker bins as a stereo downmix: the XDK's layout is
++                 * 0 FL, 1 FR, 2 C, 3 LFE, 4 BL, 5 BR, 6..9 crosstalk FL, FR,
++                 * BL, BR. A title spreads stereo music over all of them on a
++                 * stereo console too (Amped 2: FL, FR and LFE at 0 dB, BL/BR
++                 * at -3 dB, through a submix); folding them even/odd put
++                 * the LFE copy on the right only and added the rears at full
++                 * level -- left 1.7x, right 2.7x the music, clipping on every
++                 * loud passage. Centre and rears at -3 dB to both sides, LFE
++                 * left out (the usual ITU stereo downmix), crosstalk bins as
++                 * their speakers. Without the GP there is no effect to route
++                 * the sends through, and some titles' sounds live only there,
++                 * so they stay audible: the I3DL2 reverb send (10) at -6 dB
++                 * to both sides as a stand-in for the diffuse reverb (folded
++                 * to the left it made Amped 2's rides left-heavy and clip),
++                 * the FX sends (11..31) even/odd as before. */
++                const float g = 0.70710678f;
++                left  = mixbins[0][i] + g * (mixbins[2][i] + mixbins[4][i])
++                      + mixbins[6][i] + g * mixbins[8][i] + 0.5f * mixbins[10][i];
++                right = mixbins[1][i] + g * (mixbins[2][i] + mixbins[5][i])
++                      + mixbins[7][i] + g * mixbins[9][i] + 0.5f * mixbins[10][i];
++                for (int b = 11; b < NUM_MIXBINS; ++b) {
++                    if (b & 1) right += mixbins[b][i];
++                    else       left  += mixbins[b][i];
++                }
++            } else if (mcpx_apu_mixdown_all()) {
+                 left = 0.0f;
+                 right = 0.0f;
+                 for (int b = 0; b < NUM_MIXBINS; ++b) {
+@@ -290,6 +355,8 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d,
+                 right = mixbins[1][i];
+             }
+             /* Clamp to [-1, 1] range */
++            if (left > 1.0f || left < -1.0f || right > 1.0f || right < -1.0f)
++                s_bins_clamped++;
+             if (left > 1.0f) left = 1.0f;
+             if (left < -1.0f) left = -1.0f;
+             if (right > 1.0f) right = 1.0f;
 diff --git a/src/apu/apu_mmio_hook.c b/src/apu/apu_mmio_hook.c
 index 235140f..c223d57 100644
 --- a/src/apu/apu_mmio_hook.c
@@ -97,10 +222,208 @@ index 235140f..c223d57 100644
  #if !defined(_WIN32) && defined(__aarch64__)
  /* POSIX arm64: the same hook over sigaction + ucontext, with the A64 decoder
 diff --git a/src/apu/apu_vp.c b/src/apu/apu_vp.c
-index 128d86f..93edac7 100644
+index 128d86f..28c377e 100644
 --- a/src/apu/apu_vp.c
 +++ b/src/apu/apu_vp.c
-@@ -1629,11 +1629,18 @@ static void vp_trace_positions(MCPXAPUState *d)
+@@ -47,6 +47,32 @@ static const struct {
+  * Notify status helper
+  * ============================================================ */
+ 
++/* RECOMP_APU_SSL_STATS: stream (SSL) bookkeeping per 5 s, all voices:
++ * lists handed in by DirectSound, lists played to the end and notified, and
++ * fetches that found no list queued (the voice starved). */
++static unsigned s_ssl_set, s_ssl_done, s_ssl_starved;
++#if defined(_MSC_VER)
++extern __declspec(thread) uint32_t g_esp;
++#else
++extern __thread uint32_t g_esp;
++#endif
++extern ptrdiff_t xbox_GetMemoryOffset(void);
++
++/* RECOMP_APU_SSL_LOG=1: one line per stream-list event of each stream
++ * voice (set, done, starve start/end) with a millisecond timestamp. */
++static int ssl_log_on(void)
++{
++    static int on = -1;
++    if (on < 0) on = apu_env_on("RECOMP_APU_SSL_LOG");
++    return on;
++}
++static double ssl_log_ms(void)
++{
++    return qemu_clock_get_ns(QEMU_CLOCK_REALTIME) / 1e6;
++}
++static uint8_t s_ssl_starving[MCPX_HW_MAX_VOICES];
++static unsigned s_ssl_starve_frames[MCPX_HW_MAX_VOICES];
++
+ static void set_notify_status(MCPXAPUState *d, uint32_t v, int notifier,
+                               int status)
+ {
+@@ -187,6 +213,39 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
+ 
+     d->regs[NV_PAPU_FEDECMETH] = method;
+     d->regs[NV_PAPU_FEDECPARAM] = argument;
++    {   /* RECOMP_APU_VOICE_LOG=<voice>: every method that names that voice --
++         * while it is the current voice, or as the handle argument of the
++         * voice methods below 0x200 (ON, OFF, RELEASE, PAUSE ...). A VOLA
++         * write also lists the code addresses found on the writer's guest
++         * stack (a scan, not an unwind: stale words show up too), which is
++         * how the music voice's foreign volume writes were traced to a
++         * sound-effect call racing DirectSound's stream DPC. */
++        static int lv = -2;
++        if (lv == -2) {
++            const char *e = getenv("RECOMP_APU_VOICE_LOG");
++            lv = e && *e ? atoi(e) : -1;
++        }
++        if (lv >= 0 && ((int)d->regs[NV_PAPU_FECV] == lv ||
++                        (method != NV1BA0_PIO_SET_CURRENT_VOICE &&
++                         (int)(argument & 0xFFFF) == lv && method < 0x200) ||
++                        (method == NV1BA0_PIO_SET_CURRENT_VOICE && (int)argument == lv)))
++        {
++            fprintf(stderr, "[VLOG] %.1f FECV=%u meth=0x%03X arg=0x%08X",
++                    ssl_log_ms(), d->regs[NV_PAPU_FECV], method, argument);
++            if (method == NV1BA0_PIO_SET_VOICE_TAR_VOLA && g_esp >= 0x10000) {
++                /* code addresses on the stack (the image ends below 0x340000) */
++                const uint32_t *sp = (const uint32_t *)((uintptr_t)g_esp + xbox_GetMemoryOffset());
++                int shown = 0;
++                fprintf(stderr, " stack:");
++                for (int i = 0; i < 256 && shown < 14; i++)
++                    if (sp[i] >= 0x11000 && sp[i] < 0x340000) {
++                        fprintf(stderr, " %08X", sp[i]);
++                        shown++;
++                    }
++            }
++            fprintf(stderr, "\n");
++        }
++    }
+     unsigned int selected_handle, list;
+ 
+     switch (method) {
+@@ -458,6 +517,13 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
+             GET_MASK(argument, NV1BA0_PIO_SET_VOICE_SSL_A_BASE);
+         d->vp.ssl[current_voice].count[ssl] =
+             (uint8_t)GET_MASK(argument, NV1BA0_PIO_SET_VOICE_SSL_A_COUNT);
++        s_ssl_set++;
++        if (ssl_log_on())
++            fprintf(stderr, "[SSL] %.1f v=%d set %c count=%u playing=%c seg=%d\n",
++                    ssl_log_ms(), current_voice, 'A' + ssl,
++                    d->vp.ssl[current_voice].count[ssl],
++                    'A' + d->vp.ssl[current_voice].ssl_index,
++                    d->vp.ssl[current_voice].ssl_seg);
+         break;
+     }
+     case NV1BA0_PIO_SET_VOICE_SSL_B: {
+@@ -468,6 +534,13 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
+             GET_MASK(argument, NV1BA0_PIO_SET_VOICE_SSL_A_BASE);
+         d->vp.ssl[current_voice].count[ssl] =
+             (uint8_t)GET_MASK(argument, NV1BA0_PIO_SET_VOICE_SSL_A_COUNT);
++        s_ssl_set++;
++        if (ssl_log_on())
++            fprintf(stderr, "[SSL] %.1f v=%d set %c count=%u playing=%c seg=%d\n",
++                    ssl_log_ms(), current_voice, 'A' + ssl,
++                    d->vp.ssl[current_voice].count[ssl],
++                    'A' + d->vp.ssl[current_voice].ssl_index,
++                    d->vp.ssl[current_voice].ssl_seg);
+         break;
+     }
+ 
+@@ -752,6 +825,9 @@ struct VpVoiceStat {
+     uint32_t addr, fmt;
+     uint16_t vol0, vol1;
+     uint8_t  bin0, bin1;
++    uint16_t vols[8];
++    uint8_t  bins[8];
++    int      list, mp_bin, paused_frames;
+     const char *cls;
+ };
+ static struct VpVoiceStat s_vstat[MCPX_HW_MAX_VOICES];
+@@ -858,6 +934,13 @@ static void vp_stat_report(void)
+                 s->rate, s->ea, s->vol0, s->vol1, s->bin0, s->bin1, s->addr,
+                 s->cls ? s->cls : "?", s->frames,
+                 sqrt(s->sq / s->frames) * 32768.0, (double)s->zc / s->frames);
++        fprintf(stderr, "[APU-VROUTE] t=%us v=%u L%d ea=%.2f%s paused=%d", s_vstat_secs, v,
++                s->list, s->ea, s->mp_bin ? " MP" : "", s->paused_frames);
++        s->paused_frames = 0;
++        for (int i = 0; i < 8; i++)
++            if (s->vols[i] != 0xFFF)
++                fprintf(stderr, " %d:b%u/%03X", i, s->bins[i], s->vols[i]);
++        fprintf(stderr, "\n");
+         s->frames = 0; s->zc = 0; s->sq = 0;
+     }
+ }
+@@ -1132,6 +1215,11 @@ static int voice_get_samples(MCPXAPUState *d, uint32_t v, float samples[][2],
+         count = d->vp.ssl[v].count[ssl_index];
+ 
+         if (count == 0) {
++            s_ssl_starved++;
++            if (ssl_log_on() && !s_ssl_starving[v]++)
++                fprintf(stderr, "[SSL] %.1f v=%u starve on %c\n", ssl_log_ms(), v,
++                        'A' + ssl_index);
++            s_ssl_starve_frames[v]++;
+             voice_set_mask(d, (uint16_t)v, NV_PAVS_VOICE_PAR_OFFSET,
+                            NV_PAVS_VOICE_PAR_OFFSET_CBO, 0);
+             d->vp.ssl[v].ssl_seg = 0;
+@@ -1146,6 +1234,13 @@ static int voice_get_samples(MCPXAPUState *d, uint32_t v, float samples[][2],
+             return -1;
+         }
+ 
++        if (s_ssl_starving[v]) {
++            if (ssl_log_on())
++                fprintf(stderr, "[SSL] %.1f v=%u starve end after %u frames\n",
++                        ssl_log_ms(), v, s_ssl_starve_frames[v]);
++            s_ssl_starving[v] = 0;
++            s_ssl_starve_frames[v] = 0;
++        }
+         hwaddr addr = d->regs[NV_PAPU_VPSSLADDR] + page * 8;
+         segment_offset = ldl_le_phys(address_space_memory, addr);
+         segment_length = ldl_le_phys(address_space_memory, addr + 4);
+@@ -1278,6 +1373,12 @@ static int voice_get_samples(MCPXAPUState *d, uint32_t v, float samples[][2],
+                 d->vp.ssl[v].ssl_seg = 0;
+                 set_notify_status(d, v, MCPX_HW_NOTIFIER_SSLA_DONE + ssl_index,
+                                   NV1BA0_NOTIFICATION_STATUS_DONE_SUCCESS);
++                s_ssl_done++;
++                if (ssl_log_on())
++                    fprintf(stderr, "[SSL] %.1f v=%u done %c (%d segs), next %c count=%u\n",
++                            ssl_log_ms(), v, 'A' + ssl_index,
++                            d->vp.ssl[v].count[ssl_index], 'A' + next_index,
++                            d->vp.ssl[v].count[next_index]);
+             }
+         } else {
+             if (loop) {
+@@ -1406,7 +1507,10 @@ static void voice_process(MCPXAPUState *d,
+     dbg->stereo = stereo;
+     dbg->paused = paused;
+ 
+-    if (paused) return;
++    if (paused) {
++        s_vstat[v].paused_frames++;
++        return;
++    }
+ 
+     /* Step filter envelope */
+     float ef_value = voice_step_envelope(
+@@ -1449,6 +1553,9 @@ static void voice_process(MCPXAPUState *d,
+             samples[i][0] = mixbins[mp_bin][i];
+             samples[i][1] = mixbins[mp_bin][i];
+         }
++        vp_stat_samples(v, (const float (*)[2])samples, NUM_SAMPLES_PER_FRAME,
++                        0, voice_get_mask(d, v, NV_PAVS_VOICE_CFG_FMT, 0xFFFFFFFF));
++        s_vstat[v].mp_bin = mp_bin + 1;
+         bool clear_mix = voice_get_mask(d, v, NV_PAVS_VOICE_CFG_FMT,
+                                         NV_PAVS_VOICE_CFG_FMT_CLEAR_MIX) != 0;
+         if (clear_mix) {
+@@ -1517,6 +1624,11 @@ static void voice_process(MCPXAPUState *d,
+         s_vstat[v].rate = rate;
+         s_vstat[v].vol0 = vol[0]; s_vstat[v].vol1 = vol[1];
+         s_vstat[v].bin0 = (uint8_t)bin[0]; s_vstat[v].bin1 = (uint8_t)bin[1];
++        s_vstat[v].list = voice_list;
++        for (int i = 0; i < 8; i++) {
++            s_vstat[v].bins[i] = (uint8_t)bin[i];
++            s_vstat[v].vols[i] = vol[i];
++        }
+     }
+ 
+     if (voice_should_mute(v)) return;
+@@ -1629,11 +1741,32 @@ static void vp_trace_positions(MCPXAPUState *d)
      }
  }
  
@@ -109,6 +432,20 @@ index 128d86f..93edac7 100644
  void mcpx_apu_vp_frame(MCPXAPUState *d,
                          float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME])
  {
++    {
++        static int on = -1;
++        static unsigned frames;
++        if (on < 0) {
++            const char *e = getenv("RECOMP_APU_SSL_STATS");
++            on = e && *e == '1';
++        }
++        if (on && ++frames >= 7500) {          /* 5 s of 32-sample frames */
++            fprintf(stderr, "[APU] streams/5s: lists set %u, played+notified %u, "
++                            "starved fetches %u\n", s_ssl_set, s_ssl_done, s_ssl_starved);
++            frames = 0;
++            s_ssl_set = s_ssl_done = s_ssl_starved = 0;
++        }
++    }
      memset(d->vp.sample_buf, 0, sizeof(d->vp.sample_buf));
  
 +    /* Idle voices still in a list: the first one in walk order, and the
@@ -119,7 +456,7 @@ index 128d86f..93edac7 100644
      for (int list = 0; list < 3; list++) {
          hwaddr top, current, next;
          top = voice_list_regs[list].top;
-@@ -1654,13 +1661,13 @@ void mcpx_apu_vp_frame(MCPXAPUState *d,
+@@ -1654,13 +1787,13 @@ void mcpx_apu_vp_frame(MCPXAPUState *d,
  
              if (!voice_get_mask(d, v, NV_PAVS_VOICE_PAR_STATE,
                                  NV_PAVS_VOICE_PAR_STATE_ACTIVE_VOICE)) {
@@ -140,7 +477,7 @@ index 128d86f..93edac7 100644
              } else {
                  /* Process voice directly (single-threaded) */
                  voice_process(d, mixbins, d->vp.sample_buf, v, list);
-@@ -1669,6 +1676,49 @@ void mcpx_apu_vp_frame(MCPXAPUState *d,
+@@ -1669,6 +1802,49 @@ void mcpx_apu_vp_frame(MCPXAPUState *d,
          }
      }
  
@@ -289,6 +626,146 @@ index eb33a61..2651871 100644
          return STATUS_OBJECT_PATH_NOT_FOUND;
      if (stat(host_path, &st) != 0)
          return STATUS_OBJECT_NAME_NOT_FOUND;
+diff --git a/src/kernel/kernel_hal.c b/src/kernel/kernel_hal.c
+index 3a09ca8..ea103db 100644
+--- a/src/kernel/kernel_hal.c
++++ b/src/kernel/kernel_hal.c
+@@ -93,6 +93,92 @@ int xbox_IrqlRaisedCount(void)
+     return (int)InterlockedCompareExchange(&g_irql_raised_count, 0, 0);
+ }
+ 
++/* The dispatch lock: DISPATCH_LEVEL as mutual exclusion against DPCs.
++ *
++ * On the Xbox's one CPU, a thread at DISPATCH_LEVEL or above cannot be
++ * interrupted by a DPC, and a DPC runs to completion before any thread does.
++ * The XDK relies on it: DirectSound's lock is a raise to DISPATCH_LEVEL (see
++ * irql_publish), and its register sequences -- select a voice with
++ * SET_CURRENT_VOICE, then write that voice's volumes -- are only atomic
++ * because its stream DPC cannot run in between. Here DPCs run on the timer
++ * thread while guest threads run on theirs, IRQL or not: the DPC selected the
++ * music stream's voice to queue its next buffer between a game thread's
++ * SET_CURRENT_VOICE and its volume writes for a sound effect, and the effect's
++ * volumes (and other state) landed on the music voice. Amped 2's music went
++ * mono, quiet or silent and stopped after a track; static and a crash
++ * followed.
++ *
++ * So a thread holds this lock from the moment its IRQL reaches
++ * DISPATCH_LEVEL until it drops below, and a DPC (entered at DISPATCH_LEVEL
++ * through xbox_IrqlEnterInterrupt) takes it too. ISRs do not: device IRQLs
++ * preempt DISPATCH_LEVEL code on hardware as well, and the device models
++ * already hold interrupts off while any thread is raised.
++ *
++ * A thread that raises and never lowers would stall DPCs for good, so the
++ * DPC side gives up waiting after RECOMP_DISPATCH_LOCK_MS (default 100) and
++ * runs anyway, saying so. RECOMP_DISPATCH_LOCK=0 turns the lock off. */
++void xbox_IrqlDumpHolders(void);
++static CRITICAL_SECTION s_dispatch_cs;
++static volatile LONG s_dispatch_init;           /* 0 no, 1 initialising, 2 yes */
++static int s_dispatch_on = -1, s_dispatch_wait_ms = 100;
++static XBOX_THREAD_LOCAL int t_dispatch_held;   /* this thread holds the lock */
++static XBOX_THREAD_LOCAL int t_in_isr;          /* inside a device-level ISR */
++static XBOX_THREAD_LOCAL int t_entering_dpc;    /* xbox_IrqlEnterInterrupt(2) */
++
++static int dispatch_lock_on(void)
++{
++    if (s_dispatch_on < 0) {
++        const char *e = getenv("RECOMP_DISPATCH_LOCK");
++        const char *w = getenv("RECOMP_DISPATCH_LOCK_MS");
++        if (w && *w)
++            s_dispatch_wait_ms = atoi(w);
++        s_dispatch_on = !(e && *e == '0');
++    }
++    if (s_dispatch_on && InterlockedCompareExchange(&s_dispatch_init, 0, 0) != 2) {
++        if (InterlockedCompareExchange(&s_dispatch_init, 1, 0) == 0) {
++            InitializeCriticalSection(&s_dispatch_cs);
++            InterlockedExchange(&s_dispatch_init, 2);
++        }
++        while (InterlockedCompareExchange(&s_dispatch_init, 0, 0) != 2)
++            Sleep(0);
++    }
++    return s_dispatch_on;
++}
++
++static void dispatch_lock_take(void)
++{
++    if (t_in_isr || !dispatch_lock_on())
++        return;
++    if (t_entering_dpc) {
++        /* A DPC waits for raised threads, but not forever. */
++        DWORD t0 = GetTickCount();
++        while (!TryEnterCriticalSection(&s_dispatch_cs)) {
++            if ((int)(GetTickCount() - t0) >= s_dispatch_wait_ms) {
++                static volatile LONG warned;
++                if (InterlockedIncrement(&warned) <= 5) {
++                    fprintf(stderr, "  [IRQL] a DPC waited %d ms for a thread at "
++                                    "raised IRQL; running it anyway\n",
++                            s_dispatch_wait_ms);
++                    xbox_IrqlDumpHolders();
++                }
++                return;
++            }
++            Sleep(0);
++        }
++    } else {
++        EnterCriticalSection(&s_dispatch_cs);
++    }
++    t_dispatch_held = 1;
++}
++
++static void dispatch_lock_drop(void)
++{
++    if (t_dispatch_held) {
++        t_dispatch_held = 0;
++        LeaveCriticalSection(&s_dispatch_cs);
++    }
++}
++
+ static int  s_trace = -1;
+ static volatile LONG s_traced = 0;
+ 
+@@ -177,6 +263,10 @@ static void irql_track(KIRQL old_level, KIRQL new_level, void *ra)
+     if (now == was)
+         return;
+ 
++    if (now)
++        dispatch_lock_take();
++    else
++        dispatch_lock_drop();
+     d = now ? InterlockedIncrement(&g_irql_raised_count)
+             : InterlockedDecrement(&g_irql_raised_count);
+     InterlockedIncrement(&s_transitions);
+@@ -213,21 +303,30 @@ static void irql_track(KIRQL old_level, KIRQL new_level, void *ra)
+ int xbox_IrqlEnterInterrupt(int level)
+ {
+     int saved = (int)g_current_irql;
++    if (level > DISPATCH_LEVEL)
++        t_in_isr++;
+     if (g_current_irql != (KIRQL)level) {
++        t_entering_dpc = (level == DISPATCH_LEVEL);
+         irql_track(g_current_irql, (KIRQL)level, IRQL_CALLER());
++        t_entering_dpc = 0;
+         g_current_irql = (KIRQL)level;
+         irql_publish();
+     }
+-    return saved;
++    return level > DISPATCH_LEVEL ? (saved | 0x100) : saved;
+ }
+ 
+ void xbox_IrqlLeaveInterrupt(int saved)
+ {
++    /* Enter returned the saved level, plus 0x100 when it entered an ISR. */
++    int was_isr = (saved & 0x100) != 0;
++    saved &= 0xFF;
+     if (g_current_irql != (KIRQL)saved) {
+         irql_track(g_current_irql, (KIRQL)saved, IRQL_CALLER());
+         g_current_irql = (KIRQL)saved;
+         irql_publish();
+     }
++    if (was_isr)
++        t_in_isr--;
+ }
+ 
+ /*
 diff --git a/src/kernel/kernel_path.c b/src/kernel/kernel_path.c
 index 37c3621..f4683ec 100644
 --- a/src/kernel/kernel_path.c

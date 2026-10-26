@@ -812,6 +812,39 @@ _(date – what was done, what was found, next step)_
   - Tested in a separate worktree off `main` (the main checkout has uncommitted LAN-lobby work whose generated code
     renames sub_000E1B50/sub_000760E0 to `_gen`; the test build carried two pass-through wrappers for that, not
     committed).
+- 2026-10-21 – **Dispatch lock + stereo downmix ported from Amped2-Recomp** (its commit 277f07e; branch
+  `fix/dispatch-lock-audio`). Amped 2's music dropouts came from DirectSound's stream DPC running between a game
+  thread's SET_CURRENT_VOICE and its volume/SSL writes (DirectSound's lock is a raise to DISPATCH_LEVEL; the runtime
+  ran DPCs on the timer thread regardless of IRQL). Runtime patch 0001 now has, as there: the dispatch lock in
+  `kernel_hal.c` (`RECOMP_DISPATCH_LOCK=0` off, `RECOMP_DISPATCH_LOCK_MS` DPC wait cap, default 100), the ITU-style
+  stereo downmix of mixbins 0..9 in `apu_dsp.c` (`RECOMP_APU_MIXDOWN=legacy` = old even/odd fold) and the env-gated
+  audio diagnostics (`[APU-VROUTE]`, `[APU-BINS]`, `RECOMP_APU_TRACE_NO_MMIO`, `RECOMP_APU_SSL_LOG`,
+  `RECOMP_APU_VOICE_LOG`, plus Amped 2's earlier `RECOMP_APU_SSL_STATS` that the SSL log builds on). Not ported:
+  Amped 2's SSL-tick backlog in `apu_core.c` (a behaviour change of its own, not part of 277f07e).
+  - Tests (Linux, Vulkan, `tests/release/drive.py` virtual pad: intro played, skipped with Start, title, menus,
+    Snow Jam race; `RECOMP_AUDIO_WAV`, `RECOMP_APU_TRACE=1 RECOMP_APU_TRACE_NO_MMIO=1`): 200 s runs with the patch
+    and with `RECOMP_DISPATCH_LOCK=0 RECOMP_APU_MIXDOWN=legacy`, 130 s runs with the patch and with the exact
+    pre-patch runtime (separate build). No `[IRQL] a DPC waited` warning in any run (SSX 3 does not hold
+    DISPATCH_LEVEL for long), no hang, no crash, game fps unchanged (55–60, one heavy spot ~44 in both),
+    host audio 0 underruns.
+  - Mixbins in SSX 3: 0 FL, 1 FR, 2 C (announcer/menu sounds, often the loudest bin), 4 BL, 5 BR; no LFE, no FX
+    sends seen. The old fold put the centre and BL on the left only: output R/L 0.5–0.9 per 10 s. New downmix:
+    R/L 0.92–1.22 (mostly 1.0–1.1), no clamped samples either way.
+  - Clicks (second-difference spikes > 8000 per 10 s of the WAV tap): pre-patch runtime 230–360 during the race
+    (from ~60 s), patched 0–47 (a few short bursts). The user listened to the patched Vulkan build: no crackle.
+    SSX 3 sets no stream lists (`RECOMP_APU_SSL_STATS`: 0), so the Amped 2 SSL starvation does not apply here;
+    which DPC/voice race caused the pre-patch clicks was not traced.
+  - Windows (MinGW cross build links; Proton, CPU renderer, game ~43 fps): **crackles** – ~50–140 spikes per 10 s
+    in the WAV tap, the same with the patch, with both switches off and with the pre-patch exe, so it is older than
+    this change and follows the slow software-rendered game (the Windows build has no Vulkan back end yet).
+    Open item.
+  - Re-test 2026-10-26 after rebasing onto main (Vulkan on Windows, race fix, settings): runtime patch 0001
+    re-made by a source-level 3-way merge (main's apu_vp.c idle-voice change + this branch's four files). Same route
+    into a Snow Jam race at 1x/60, WAV tap, this branch vs main. Linux: 66 vs 75 clicks per run, R/L 1.00–1.09 vs
+    0.76–0.96, fps the same. Proton (Vulkan, two runs each): 213 + 110 vs 129 + 583 clicks – large run-to-run
+    spread (the uncontrolled rider's crashes count too), not worse with the lock; R/L 0.93–1.16 vs 0.49–0.98. No
+    "DPC waited" warning, no crash, game fps unchanged on both. Supersedes the game-side USB DPC lock of
+    `claude/stoic-cartwright-26cbb2` (2026-10-19), whose branch was deleted: the runtime lock covers every DPC.
 - 2026-10-22 – **Game data installer** (`scripts/install_game.sh`, `scripts/install_game.ps1` +
   `scripts/release/install_game.bat`; packed next to the run scripts by `package_release.sh`). Copies the player's
   own disc into `game_files/` next to the binary (repo: `<repo>/game_files`) from a Redump `.iso`, a rebuilt

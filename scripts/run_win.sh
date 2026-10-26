@@ -5,7 +5,8 @@
 # Pattern: xboxrecomp/tests/proton_run.sh – via a batch file, because umu-run discards the program's stderr.
 # Env: WINEPREFIX (Default ~/.local/share/ssx3-recomp-proton), PROTONPATH (Default GE-Proton),
 #      RUN_TIMEOUT (seconds, default 60), RECOMP_* and SSX3_* are passed through (defaults as in scripts/run.sh;
-#      SSX3_RENDERER=vulkan by default, =cpu for the software rasteriser).
+#      everything else comes from the settings file in the prefix's %APPDATA%\ssx3-recomp\settings.ini, or
+#      SSX3_SETTINGS=Z:\path\to\settings.ini).
 source "$(dirname "$0")/_common.sh"
 EXE="$ROOT/build-win/ssx3_recomp.exe"
 [ -f "$EXE" ] || { echo "No Windows build. First run: scripts/build_win.sh" >&2; exit 1; }
@@ -14,15 +15,7 @@ export RECOMP_TITLE_KEVENTS="${RECOMP_TITLE_KEVENTS:-1}"
 export RECOMP_VBLANK="${RECOMP_VBLANK:-1}"
 export RECOMP_AC97_READY="${RECOMP_AC97_READY:-1}"
 export RECOMP_PB_EXEC="${RECOMP_PB_EXEC:-1}"          # execute the pushbuffer (CPU rasteriser) – otherwise no picture
-export SSX3_RENDERER="${SSX3_RENDERER:-vulkan}"
-if [ "$SSX3_RENDERER" = cpu ]; then
-  export RECOMP_FB_WINDOW="${RECOMP_FB_WINDOW:-1}"    # the CPU rasteriser's window
-else
-  unset RECOMP_FB_WINDOW                              # the Vulkan back end opens its own window
-fi
 export RECOMP_USB="${RECOMP_USB:-1}"                  # emulated USB controller (XPP/OHCI)
-export RECOMP_KEYBOARD="${RECOMP_KEYBOARD:-1}"        # keyboard = controller 1 (Enter=Start, Z=A, X=B, arrows=D-pad …)
-export SSX3_SKIP_LOGOS="${SSX3_SKIP_LOGOS:-1}"        # skip the EA BIG and THX logos (SSX3_SKIP_INTRO=1: the intro too)
 
 winpath() { local p="Z:$1"; echo "${p//\//\\}"; }
 out=$(mktemp "${TMPDIR:-/tmp}/ssx3_win.XXXXXX"); bat=$out.cmd

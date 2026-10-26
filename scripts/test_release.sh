@@ -5,11 +5,10 @@
 # Results in logs/release-test-<version>/: summary.txt, *.log, frame dumps and contact sheets
 # (linux_frames.png, windows_frames.png) to look at.
 #
-# Linux:   missing-game-files check; run.sh with the start-up menu forced on (SSX3_MENU=1, Enter x7: renderer,
-#          monitor (only with 2+), display mode, resolution, aspect ratio, frame rate, v-sync) in a pty,
-#          virtual pad: intro -> title -> menus -> race, Vulkan frame dumps.
-# Windows: missing-game-files check through pwsh; run.ps1's start-up menu (SSX3_RENDERER=vulkan, saves run.conf);
-#          the default flow (run.ps1, CPU renderer) under Wine with the virtual pad, CPU frame dumps.
+# Linux:   missing-game-files check; `run.sh --settings` in a pty (Enter, Enter: into the first category, then
+#          save & drop in -> settings.ini), virtual pad: intro -> title -> menus -> race, Vulkan frame dumps.
+# Windows: missing-game-files check through pwsh; `run.ps1 --settings` (Enter, Enter; saves settings.ini);
+#          the default flow (run.ps1, Vulkan through Wine) with the virtual pad, Vulkan frame dumps.
 #          Needs pwsh and wine (binfmt_misc runs the .exe through Wine); own Wine prefix in the results folder.
 # Needs: python3 with evdev + pillow, writable /dev/uinput. Settings go to the results folder (XDG_CONFIG_HOME,
 # APPDATA), never to your own ~/.config. Your windows are not touched (no xdotool).
@@ -61,12 +60,12 @@ if [ "${SKIP_LINUX:-0}" != 1 ]; then
   link_game_files "$P"
   mkdir -p "$OUT/linux_dumps" "$OUT/linux_cfg"
   set +e
-  XDG_CONFIG_HOME="$OUT/linux_cfg" SSX3_MENU=1 SSX3_VK_DUMP="$OUT/linux_dumps/f" SSX3_VK_DUMP_EVERY=300 \
-    python3 -I "$T/drive.py" --log "$OUT/linux.log" --seconds "$LINUX_SECS" --keys '\r' '\r' '\r' '\r' '\r' '\r' '\r' --pad linux \
-    -- bash -c "cd '$P' && exec ./run.sh"
+  XDG_CONFIG_HOME="$OUT/linux_cfg" SSX3_VK_DUMP="$OUT/linux_dumps/f" SSX3_VK_DUMP_EVERY=300 \
+    python3 -I "$T/drive.py" --log "$OUT/linux.log" --seconds "$LINUX_SECS" --keys '\r' '\r' --pad linux \
+    -- bash -c "cd '$P' && exec ./run.sh --settings"
   set -e
-  say "  start-up menu: $(plain "$OUT/linux.log" | grep -a -o 'run.sh: Vulkan.*' | head -1)"
-  say "  saved: $(tr '\n' ' ' < "$OUT/linux_cfg/ssx3-recomp/run.conf" 2>/dev/null || echo 'no run.conf (FAIL)')"
+  say "  settings: $(plain "$OUT/linux.log" | grep -a -o '\[settings\].*' | head -1)"
+  say "  saved: $(grep -v '^#' "$OUT/linux_cfg/ssx3-recomp/settings.ini" 2>/dev/null | tr '\n' ' ' || echo 'no settings.ini (FAIL)')"
   log_summary "$OUT/linux.log" linux
   ls "$OUT"/linux_dumps/*.bmp >/dev/null 2>&1 && python3 -I "$T/contact_sheet.py" "$OUT/linux_frames.png" "$OUT"/linux_dumps/*.bmp | tee -a "$SUMMARY"
 fi
@@ -81,18 +80,16 @@ if [ "${SKIP_WINDOWS:-0}" != 1 ]; then
   else say "  missing game files: $(grep -q 'default.xbe missing' "$OUT/win_nofiles.log" && echo 'stops with the message (ok)' || echo 'FAIL, see win_nofiles.log')"; fi
   say "  installer: $(pwsh -NoProfile -File "$P/install_game.ps1" -Check "$GAME_FILES" 2>&1 < /dev/null | grep -a -o 'check: .*' || echo 'FAIL, no result')"
   link_game_files "$P"
-  wineboot -i >/dev/null 2>&1 || true   # create the prefix now: run.ps1 calls the exe before its menu shows
+  wineboot -i >/dev/null 2>&1 || true   # create the prefix before the settings screen starts
   set +e
-  # run.ps1's start-up menu: only offered for the Vulkan renderer; questions: monitor (only with 2+), display
-  # mode, resolution, aspect ratio, frame rate, v-sync -> down + Enter, then Enter for the rest
-  SSX3_RENDERER=vulkan python3 -I "$T/drive.py" --log "$OUT/win_menu.log" --seconds 45 --key-delay 12 \
-    --keys '\x1b[B' '\r' '\r' '\r' '\r' '\r' '\r' -- pwsh -NoProfile -File "$P/run.ps1"
-  say "  start-up menu: $(plain "$OUT/win_menu.log" | grep -a -o 'run.ps1: Vulkan.*' | head -1)"
-  say "  saved: $(grep -v '^#' "$OUT/win_appdata/ssx3-recomp/run.conf" 2>/dev/null | tr -d '\r' | tr '\n' ' ' || echo 'no run.conf (FAIL)')"
-  # the default flow: run.ps1 without a menu (CPU renderer), pad into a race
-  rm -f "$OUT/win_appdata/ssx3-recomp/run.conf"
+  # the settings screen: Enter (into the first category), Enter (save & drop in), then stop
+  python3 -I "$T/drive.py" --log "$OUT/win_menu.log" --seconds 45 --key-delay 12 \
+    --keys '\r' '\r' -- pwsh -NoProfile -File "$P/run.ps1" --settings
+  say "  settings: $(plain "$OUT/win_menu.log" | grep -a -o '\[settings\].*' | head -1)"
+  say "  saved: $(grep -v '^#' "$OUT/win_appdata/ssx3-recomp/settings.ini" 2>/dev/null | tr -d '\r' | tr '\n' ' ' || echo 'no settings.ini (FAIL)')"
+  # the default flow: run.ps1 with the saved settings (Vulkan), pad into a race
   mkdir -p "$OUT/win_dumps"
-  RECOMP_FB_DUMP="Z:$(echo "$OUT/win_dumps/w" | tr / '\\')" RECOMP_FB_WINDOW_DUMP_EVERY=150 \
+  SSX3_VK_DUMP="Z:$(echo "$OUT/win_dumps/w" | tr / '\\')" SSX3_VK_DUMP_EVERY=300 \
     python3 -I "$T/drive.py" --log "$OUT/windows.log" --seconds "$WIN_SECS" --pad windows \
     -- pwsh -NoProfile -File "$P/run.ps1"
   set -e

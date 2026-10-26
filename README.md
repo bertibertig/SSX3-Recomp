@@ -228,33 +228,45 @@ through `run.sh` and `run.ps1` (under Wine), driven into a race by a virtual con
 summary in `logs/release-test-v0.1.0/`. The whole release (changelog, build, tests, tag, upload) is the `/release`
 skill in `.claude/skills/release/` for Claude Code.
 
-## Run options
+## Settings
 
-Started from a terminal, `run.sh` first asks for the renderer (Vulkan or software, when the build has both). The
-software renderer is fixed at 640x480, 4:3, 60 fps in a window, so nothing else is asked. With Vulkan it goes on
-with the monitor (with more than one), the display mode (windowed, borderless, fullscreen), the internal
-resolution (1x–5x), the aspect ratio (4:3, 16:9, 16:10, 21:9, auto), the frame rate (display refresh, 60 without
-interpolation, 120/144/165/240, uncapped) and v-sync. The window title names the renderer in use. The choice is saved in
-`~/.config/ssx3-recomp/run.conf` (Windows: `%APPDATA%\ssx3-recomp\run.conf`) and reused, also for starts
-without a terminal (e.g. a Steam shortcut). Variables set in the environment win and are not asked for.
+`./run.sh --settings` (Windows: `run.ps1 --settings`, or `ssx3_recomp --settings` directly) opens the settings
+screen in the terminal before the game starts. Categories on the left, their options on the right:
+
+| Category | Options |
+|---|---|
+| Resolution Scaling | internal resolution 1x–5x (640x480 × n) |
+| Aspect Ratio | 4:3, 16:9, 16:10, 21:9, auto (the monitor's shape) |
+| Framerate | 60 (the game's own frames) or interpolated: display refresh, 120/144/165/240, uncapped; v-sync |
+| Display | windowed / borderless / fullscreen, monitor, renderer (Vulkan or software) |
+| Language | automatic (the system's display language, if the disc has it) or English, Français, Deutsch, Español |
+| Game | skip the boot logos, skip the intro movie, keyboard as controller 1 |
+
+Arrow keys move and change values, **Enter** saves and starts the game ("drop in"), **S** saves, **Esc**/**Q**
+quits. The choices are saved in `~/.config/ssx3-recomp/settings.ini` (Windows: `%APPDATA%\ssx3-recomp\settings.ini`)
+and used on every later start, also without a terminal (e.g. a Steam shortcut); the old launcher's `run.conf` is
+taken over once. Without the file: Vulkan, the system's language, 1x, 16:9, display refresh, windowed.
+
+Environment variables override the file for one run:
 
 | Variable | Default | |
 |---|---|---|
+| `SSX3_SETTINGS` | see above | another settings file |
+| `SSX3_LANGUAGE` | the system's | `en`, `fr`, `de`, `es` (the PAL disc's languages) |
 | `SSX3_RENDERER` | `vulkan` | `cpu` = the software renderer (reference, slow; also the automatic fallback without a Vulkan driver); all variables below up to `SSX3_VSYNC` are Vulkan only |
 | `SSX3_RES_SCALE` | `1` | internal resolution `1`–`5` × 640x480; **F10** cycles it in game |
 | `SSX3_MONITOR` | `primary` | the desktop's main monitor; or a number / part of a name from `ssx3_recomp --list-displays` |
 | `SSX3_WINDOW` | `windowed` | `borderless` (desktop-sized, no frame) or `fullscreen` (exclusive); **Alt+Enter** / **F11** toggle in game |
-| `SSX3_ASPECT` | `4:3` | widescreen in races: `16:9`, `16:10`, `21:9`, any `W:H`, `auto` (desktop); menus stay 4:3 |
+| `SSX3_ASPECT` | `16:9` | widescreen in races: `16:9`, `16:10`, `21:9`, any `W:H`, `auto` (desktop); menus stay 4:3 |
 | `SSX3_FPS_LIMIT` | display refresh | interpolated frame cap in fps, `0` = uncapped |
 | `SSX3_INTERP` | `1` | `0` = no interpolation, show the game's own 60 fps |
 | `SSX3_VSYNC` | `0` | `1` = v-sync (FIFO); `0` = mailbox, lower latency |
 | `SSX3_SKIP_LOGOS` | `1` | skip the EA and THX logos |
 | `SSX3_SKIP_INTRO` | `0` | `1` = skip the intro movie too |
-| `SSX3_MENU` | – | start-up menu: `0` never, `1` always |
 | `RECOMP_KEYBOARD` | `1` | keyboard as controller 1 |
 | `RECOMP_USB_PADS` | `1` | emulated controllers (up to 4, for split screen) |
 
-The resolution, frame rate and v-sync settings belong to the Vulkan renderer (Linux).
+The resolution, aspect, frame rate, v-sync and window settings belong to the Vulkan renderer (Linux and Windows).
 
 ## Controllers
 

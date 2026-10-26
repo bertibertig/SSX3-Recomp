@@ -119,10 +119,11 @@ Order follows `CLAUDE.md` / `xboxrecomp/docs/GETTING_STARTED.md`. Details and fi
       plus a Claude skill – modelled on their Windows-only `tools\xemu.ps1` skill, our own code
 
 ## Features
-- [ ] **Language switcher.** Our base is the PAL/EU build, which ships English, French, German and Spanish
-      (`data/locale/*{amer,fren,grmn,span}.loc`; the boot currently loads `cmnamer.loc` = English). Find out how the game
-      picks the language (probably the Xbox dashboard language via `XGetLanguage` / `ExQueryNonVolatileSetting` – verify in the
-      disassembly), then expose it as a host option (e.g. `SSX3_LANGUAGE=en|fr|de|es`, later in a launcher/settings menu).
+- [x] **Language switcher** (2026-10-26): `XGetLanguage` (guest 0x17E5ED) wrapped in `recomp_manual.c`, language in
+      the settings (`--settings`, `language = auto|en|fr|de|es`, `SSX3_LANGUAGE`); auto = the system's display
+      language when the disc has it. Verified: German and French menus.
+- [ ] Settings screen on a real Windows console (conhost / Windows Terminal): Wine's terminal-backed console garbles
+      its cursor positioning, so only Linux is verified; keys and saving work under Wine.
 
 - [x] **Controllers (XInput / Xbox-style).** `src/input/ssx3_pad.c`: SDL2 GameController on POSIX, XInput on Windows,
       hotplug, one pad per Xbox port, LB/RB = White/Black, `SSX3_PAD_TRACE=1`, `scripts/test_pad.sh` (virtual pad).

@@ -882,3 +882,31 @@ _(date – what was done, what was found, next step)_
   - Tested under Proton: menus → Snow Jam race at 1x/60 (race 51–60 fps; Linux on the same route 45–61) and with
     `SSX3_ASPECT=16:9 SSX3_RES_SCALE=2 SSX3_FPS_LIMIT=120` (120 fps shown, game 55–58, 1707x960 widescreen frame
     as on Linux). Not tested: real Windows.
+- 2026-10-26 – **Settings screen (`--settings`) and language selection** (replaces the start-up menus of
+  `run.sh`/`_launch_menu.sh` and `run.ps1`).
+  - `src/settings/`: after Amped2-Recomp's module (same toolkit) and Splatoon-Recomp's categories. INI at
+    `$XDG_CONFIG_HOME/ssx3-recomp/settings.ini` / `%APPDATA%\ssx3-recomp\settings.ini` (`SSX3_SETTINGS` for
+    another); the old `run.conf` next to it is taken over once. `ssx3_settings_apply()` exports each setting as the
+    environment variable the program already reads (SSX3_RES_SCALE, SSX3_WINDOW, ...) unless set, so the
+    environment still overrides for one run and `vk_backend.c` is unchanged. Categories: Resolution Scaling,
+    Aspect Ratio, Framerate (+ v-sync), Display (window, monitor, renderer), Language, Game (logos, intro, keyboard).
+  - Look: SSX 3 as in the installer TUI – orange-to-yellow logo, the three-peak ridge (lit peak walks with the
+    category), night-blue page, ice-blue help bar, orange slanted selection bars, a boost-meter gauge for the
+    resolution, Xbox face buttons for the keys. 24-bit colour when `COLORTERM` says so (and on Windows), else 256.
+    Compact header below 36 rows; the arrow-key hints drop below 100 columns.
+  - `isatty()` must not be called from our code: the generated code exports a Ghidra-named guest CRT function
+    `isatty`, and the executable's symbol wins (segfault). The TUI checks the terminal with `tcgetattr`.
+  - Windows: the exe is GUI-subsystem, so the screen attaches to the parent console (else allocates one), opens
+    `CONIN$`/`CONOUT$` itself (no standard handles) and writes UTF-16 with `WriteConsoleW`; `run.ps1 --settings`
+    starts it with `Start-Process -NoNewWindow -Wait` so PowerShell does not read the same keys. Under Wine
+    (`wine cmd /c start /wait /b ...` in a pty) keys and saving work but Wine's tty console garbles cursor
+    positioning – a check in a real Windows console is still open.
+  - Language: the game asks `XGetLanguage` = `sub_0017E5ED` (calls the ExQueryNonVolatileSetting stub 0x1A2230
+    with index 7 = XC_LANGUAGE; values above 9 fall back on the region). The runtime's EEPROM always answers
+    English, so `recomp_manual.c` wraps the function (regenerated with `--exclude-manual`) and returns
+    en 1 / de 3 / fr 4 / es 5 from `SSX3_LANGUAGE`. The game then loads `data/locale/*{amer,grmn,fren,span}.loc`.
+    Auto: `GetUserDefaultUILanguage` (Windows), `LANGUAGE`/`LC_ALL`/`LC_MESSAGES`/`LANG` (POSIX); only languages
+    whose `cmn*.loc` exists are offered.
+  - Tested: TUI in tmux (110x42 and 80x24, all categories, save, unsaved-changes prompt, Save & drop in); Linux
+    `language = de` → Hauptmenü/Einzelspiel/Gipfelstürmer; Proton `SSX3_LANGUAGE=fr` → Choisir mode/Sommet 1 and
+    a race; Linux and Windows builds link without the LAN-lobby pass-throughs (code regenerated from this branch).

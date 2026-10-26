@@ -61,6 +61,7 @@
 
 /* xboxrecomp runtime headers */
 #include <xbox/xboxrecomp.h>
+#include "settings/settings.h"
 
 #if defined(SSX3_HAVE_VULKAN)
 #include "render/vk_backend.h"
@@ -727,6 +728,19 @@ static int list_renderers(void)
     return 0;
 }
 
+/* The player's settings (src/settings): the file, the settings screen when
+ * --settings asks for it, then the environment the rest of the program reads.
+ * Returns 0 when the player left the settings screen without starting. */
+static int settings_start(int open_screen)
+{
+    ssx3_settings_load();
+    if (open_screen && !ssx3_settings_tui())
+        return 0;
+    ssx3_settings_apply();
+    ssx3_settings_log();
+    return 1;
+}
+
 #ifdef _WIN32
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
                    LPSTR lpCmdLine, int nCmdShow)
@@ -745,6 +759,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     if (lpCmdLine && strstr(lpCmdLine, "--list-displays"))
         return 0;                          /* no monitor choice without the Vulkan window */
 #endif
+    if (!settings_start(lpCmdLine && strstr(lpCmdLine, "--settings") != NULL))
+        return 0;
 
     /* Unbuffered output for immediate visibility during debugging */
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -843,6 +859,14 @@ int main(int argc, char **argv)
     if (argc > 1 && strcmp(argv[1], "--list-displays") == 0)
         return 0;                          /* no monitor choice without the Vulkan window */
 #endif
+    {
+        int i, tui = 0;
+        for (i = 1; i < argc; i++)
+            if (strcmp(argv[i], "--settings") == 0)
+                tui = 1;
+        if (!settings_start(tui))
+            return 0;
+    }
 
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);

@@ -192,6 +192,32 @@ void sub_00212C18(void)
     g_esp += 4;
 }
 
+/* ── Language (src/settings) ────────────────────────────────── */
+
+/*
+ * XGetLanguage (XAPI, cdecl, no arguments -> eax = XC_LANGUAGE): queries
+ * ExQueryNonVolatileSetting(7) through the stub 0x1A2230 and falls back on the
+ * game region when the value is above 9. The runtime's EEPROM answers English
+ * (1) always, so the language setting answers here instead: en 1, de 3, fr 4,
+ * es 5 -- the PAL disc's text is data/locale/*{amer,grmn,fren,span}.loc.
+ * SSX3_LANGUAGE unset (or unknown) leaves the title's own query.
+ */
+#include "settings/settings.h"
+
+extern void sub_0017E5ED_gen(void);
+
+void sub_0017E5ED(void)
+{
+    int lang = ssx3_language_xbox();
+
+    if (!lang) {
+        sub_0017E5ED_gen();
+        return;
+    }
+    g_eax = (uint32_t)lang;
+    g_esp += 4;                            /* ret */
+}
+
 /* ── LAN multiplayer: puppet riders ─────────────────────────── */
 
 /*

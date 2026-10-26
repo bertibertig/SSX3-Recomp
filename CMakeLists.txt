@@ -89,6 +89,8 @@ set(GAME_SOURCES
     src/lan/freeroam.c
     src/lan/menu.c
     src/lan/lan_game.c
+    src/settings/settings.c
+    src/settings/settings_tui.c
     # Add game-specific sources here, e.g.:
     # src/asset_loader.c
     # src/custom_renderer.c

@@ -188,19 +188,33 @@ static void dpi_aware(void)
         SetProcessDPIAware();
 }
 
-/* `ssx3_recomp --list-displays`: one line per monitor for the start-up menus,
- * "<number>\t<name>\t<W>x<H>\t<Hz>\t<primary 0/1>". */
-int ssx3_vk_list_displays(void)
+int ssx3_vk_displays(Ssx3Display *out, int max)
 {
-    int i, primary;
+    int i, primary, n;
 
     dpi_aware();
     monitors_read();
     primary = display_primary();
-    for (i = 0; i < s_nmon; i++)
-        printf("%d\t%s\t%ldx%ld\t%d\t%d\n", i, s_mon[i].name,
-               (long)(s_mon[i].rect.right - s_mon[i].rect.left),
-               (long)(s_mon[i].rect.bottom - s_mon[i].rect.top), s_mon[i].hz, i == primary);
+    n = s_nmon < max ? s_nmon : max;
+    for (i = 0; i < n; i++) {
+        snprintf(out[i].name, sizeof out[i].name, "%s", s_mon[i].name);
+        out[i].w = (int)(s_mon[i].rect.right - s_mon[i].rect.left);
+        out[i].h = (int)(s_mon[i].rect.bottom - s_mon[i].rect.top);
+        out[i].hz = s_mon[i].hz;
+        out[i].primary = i == primary;
+    }
+    return n;
+}
+
+/* `ssx3_recomp --list-displays`: one line per monitor,
+ * "<number>\t<name>\t<W>x<H>\t<Hz>\t<primary 0/1>". */
+int ssx3_vk_list_displays(void)
+{
+    Ssx3Display d[VKB_MAX_MONITORS];
+    int n = ssx3_vk_displays(d, VKB_MAX_MONITORS), i;
+
+    for (i = 0; i < n; i++)
+        printf("%d\t%s\t%dx%d\t%d\t%d\n", i, d[i].name, d[i].w, d[i].h, d[i].hz, d[i].primary);
     fflush(stdout);
     return 0;
 }

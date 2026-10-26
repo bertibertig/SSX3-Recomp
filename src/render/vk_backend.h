@@ -24,6 +24,15 @@ int ssx3_vk_host_main(int (*guest_main)(void));
  * Cheap to call more than once. */
 int ssx3_vk_available(void);
 
+/* The monitors, in the order SSX3_MONITOR numbers them (SDL / EnumDisplay-
+ * Monitors). Returns how many were written to out (at most max). */
+typedef struct {
+    char name[96];
+    int  w, h, hz;
+    int  primary;
+} Ssx3Display;
+int ssx3_vk_displays(Ssx3Display *out, int max);
+
 /* `--list-displays`: print the monitors (SDL display number, name, desktop
  * mode, refresh, primary flag; tab-separated) for the start-up menus. */
 int ssx3_vk_list_displays(void);

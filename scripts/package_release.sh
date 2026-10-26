@@ -33,7 +33,7 @@ if [ "${SKIP_LINUX:-0}" != 1 ]; then
   PKG="$DIST/SSX3-Recomp-$VERSION-linux-x86_64"
   rm -rf "$PKG"; mkdir -p "$PKG"
   cp "$ROOT/build-release-linux/ssx3_recomp" "$PKG/"
-  cp "$ROOT/scripts/run.sh" "$ROOT/scripts/_launch_menu.sh" "$ROOT/scripts/install_game.sh" "$PKG/"
+  cp "$ROOT/scripts/run.sh" "$ROOT/scripts/install_game.sh" "$PKG/"
   common_files "$PKG"
   tar -C "$DIST" -czf "$PKG.tar.gz" "$(basename "$PKG")"
   echo "Linux package: $PKG.tar.gz"

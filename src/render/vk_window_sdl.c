@@ -204,27 +204,43 @@ static int display_pick(void)
     return display_primary();
 }
 
-/* `ssx3_recomp --list-displays`: one line per monitor for the start-up menus,
- * "<number>\t<name>\t<W>x<H>\t<Hz>\t<primary 0/1>". */
-int ssx3_vk_list_displays(void)
+int ssx3_vk_displays(Ssx3Display *out, int max)
 {
-    int n, i, primary;
+    int n, i, primary, inited = SDL_WasInit(SDL_INIT_VIDEO) != 0;
 
-    if (SDL_Init(SDL_INIT_VIDEO) != 0) {
+    if (!inited && SDL_InitSubSystem(SDL_INIT_VIDEO) != 0) {
         fprintf(stderr, "SDL video: %s\n", SDL_GetError());
-        return 1;
+        return 0;
     }
     n = SDL_GetNumVideoDisplays();
+    if (n > max)
+        n = max;
     primary = display_primary();
     for (i = 0; i < n; i++) {
         SDL_DisplayMode m;
         const char *name = SDL_GetDisplayName(i);
         if (SDL_GetDesktopDisplayMode(i, &m) != 0)
             memset(&m, 0, sizeof m);
-        printf("%d\t%s\t%dx%d\t%d\t%d\n", i, name ? name : "?", m.w, m.h, m.refresh_rate,
-               i == primary);
+        snprintf(out[i].name, sizeof out[i].name, "%s", name ? name : "?");
+        out[i].w = m.w;
+        out[i].h = m.h;
+        out[i].hz = m.refresh_rate;
+        out[i].primary = i == primary;
     }
-    SDL_Quit();
+    if (!inited)
+        SDL_QuitSubSystem(SDL_INIT_VIDEO);
+    return n < 0 ? 0 : n;
+}
+
+/* `ssx3_recomp --list-displays`: one line per monitor,
+ * "<number>\t<name>\t<W>x<H>\t<Hz>\t<primary 0/1>". */
+int ssx3_vk_list_displays(void)
+{
+    Ssx3Display d[16];
+    int n = ssx3_vk_displays(d, 16), i;
+
+    for (i = 0; i < n; i++)
+        printf("%d\t%s\t%dx%d\t%d\t%d\n", i, d[i].name, d[i].w, d[i].h, d[i].hz, d[i].primary);
     return 0;
 }
 

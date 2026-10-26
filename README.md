@@ -37,7 +37,8 @@ build 2003-09-19; English, French, German, Spanish). Other versions are not supp
 | Steady 60 fps everywhere (the pre-race screen drops to ~40) | ⬜ in progress |
 | Anti-aliasing, HD textures | ⬜ planned |
 | Steam Deck test, macOS | ⬜ planned |
-| Vulkan renderer on Windows (10/11 first, later 8/8.1/7) | ⬜ planned |
+| Vulkan renderer on Windows 10/11 | ✅ native Win32 window; tested under Proton (menus, intro, all window modes), not yet on real Windows |
+| Vulkan renderer on Windows 8/8.1/7 | ⬜ planned |
 
 Known issues: an occasional crash right after the intro movie starts (start again); some rare graphics
 effects are not implemented in the Vulkan renderer yet (cube maps beyond face 0, bump-env modes, palettised
@@ -239,7 +240,7 @@ without a terminal (e.g. a Steam shortcut). Variables set in the environment win
 
 | Variable | Default | |
 |---|---|---|
-| `SSX3_RENDERER` | `vulkan` (Windows: `cpu`) | `cpu` = the software renderer (reference, slow); all variables below up to `SSX3_VSYNC` are Vulkan only |
+| `SSX3_RENDERER` | `vulkan` | `cpu` = the software renderer (reference, slow; also the automatic fallback without a Vulkan driver); all variables below up to `SSX3_VSYNC` are Vulkan only |
 | `SSX3_RES_SCALE` | `1` | internal resolution `1`–`5` × 640x480; **F10** cycles it in game |
 | `SSX3_MONITOR` | `primary` | the desktop's main monitor; or a number / part of a name from `ssx3_recomp --list-displays` |
 | `SSX3_WINDOW` | `windowed` | `borderless` (desktop-sized, no frame) or `fullscreen` (exclusive); **Alt+Enter** / **F11** toggle in game |

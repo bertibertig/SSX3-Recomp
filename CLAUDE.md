@@ -41,7 +41,7 @@ The guides for this: `xboxrecomp/docs/GETTING_STARTED.md`, debugging: `xboxrecom
   (`SSX3_RENDERER=vulkan`, default). The toolkit's OpenGL path (`d3d8_gl.c`) is not used.
 - Windows: xboxrecomp itself is Windows-first (WinMain, VEH, D3D11, dbghelp, XAudio2), so the Windows build is the next
   platform. Today: MinGW cross build (`scripts/build_win.sh`), tested under Proton (`scripts/run_win.sh`); the Vulkan
-  back end still needs a Win32 surface (see `docs/TODO.md`), native MSVC is untested.
+  back end has its own Win32 window there (`src/render/vk_window_win32.c`, no SDL on Windows), native MSVC is untested.
   `reference/SSX3-recomp-koen` is a Windows/MSVC-first port of the same game – use it for the Windows side.
 - macOS: not started (Vulkan via MoltenVK; Apple Silicon would need the aarch64 MMIO decoder, see
   `reference/SSX3-recomp-koen/docs/LINUX.md`).

@@ -7,8 +7,9 @@
 # build\Release\ssx3_recomp.exe (MSVC, untested). Works in Windows PowerShell 5.1 and PowerShell 7.
 # Runtime switches (details: scripts/run.sh, docs/notes.md, xboxrecomp/docs):
 #   RECOMP_TITLE_KEVENTS / RECOMP_VBLANK / RECOMP_AC97_READY / RECOMP_PB_EXEC   on by default, as in run.sh
-#   SSX3_RENDERER=cpu       default on Windows: the Vulkan back end has no Win32 surface yet (docs/TODO.md, M4)
-#   SSX3_RENDERER=vulkan    GPU renderer, once a build includes it; then also chosen in the start-up menu below
+#   SSX3_RENDERER=vulkan    GPU renderer (native Win32 window, needs a Vulkan driver) - default when the exe has it;
+#                           also chosen in the start-up menu below
+#   SSX3_RENDERER=cpu       the software rasteriser, kept as the reference
 #   SSX3_INTERP=0 / SSX3_FPS_LIMIT=<n> / SSX3_VSYNC=1 / SSX3_RES_SCALE=<1..5> / SSX3_ASPECT=<16:9|16:10|21:9|auto>
 #                           / SSX3_WINDOW=<windowed|borderless|fullscreen> / SSX3_MONITOR=<primary|number|name>
 #                           Vulkan settings, as in run.sh
@@ -182,7 +183,7 @@ function Get-Renderers {  # from `ssx3_recomp --renderers`, preferred first; "cp
     $list = @()
     try { $lines = & $Exe --renderers 2>$null } catch { $lines = @() }
     foreach ($l in @($lines)) { if ("$l".Trim() -match '^(vulkan|cpu)$') { $list += $Matches[1] } }
-    if ($list.Count -eq 0) { $list = @('cpu') }   # no Vulkan on Windows yet
+    if ($list.Count -eq 0) { $list = @('cpu') }   # an exe without the Vulkan back end
     return ,$list
 }
 
@@ -299,7 +300,7 @@ function Invoke-LaunchMenu {
 }
 
 Invoke-LaunchMenu                       # renderer; Vulkan: monitor, resolution, frame rate ...
-Set-EnvDefault SSX3_RENDERER cpu            # see above: no Vulkan on Windows yet
+Set-EnvDefault SSX3_RENDERER (Get-Renderers)[0]   # the exe's preferred one: vulkan when built in
 if ((Get-EnvValue SSX3_RENDERER) -eq 'cpu') {
     Set-EnvDefault RECOMP_FB_WINDOW 1       # the CPU rasteriser's window
 } else {

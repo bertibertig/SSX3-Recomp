@@ -64,7 +64,7 @@ Order follows `CLAUDE.md` / `xboxrecomp/docs/GETTING_STARTED.md`. Details and fi
       critical sections being preemption points (fix: `RECOMP_CS_KEEP_CPU`) and unfair guest-CPU handover (`RECOMP_FAIR_YIELD`)
 - [x] **Above 60 fps:** frame interpolation in the Vulkan back end (presenter thread, game-clock timing):
       120 fps steady with `SSX3_FPS_LIMIT=120`, ~270 at a 270 Hz display (`docs/frame-interpolation.md`)
-- [ ] Interpolation follow-ups: blend animated UVs/colours, cut detection, Win32 path, latency option
+- [ ] Interpolation follow-ups: blend animated UVs/colours, cut detection, latency option
       (`SSX3_INTERP=0` today), verify on the Steam Deck (90 Hz OLED / 60 Hz LCD)
 - [ ] **True uncapped frame rate (game logic, not interpolation).** Today the simulation is a fixed 60 Hz step
       (1/60 is a constant in ~50 code sites), so everything above 60 is interpolated and costs ~1 game frame +
@@ -79,12 +79,12 @@ Order follows `CLAUDE.md` / `xboxrecomp/docs/GETTING_STARTED.md`. Details and fi
 - [ ] Vulkan M3 leftovers: cube maps (face 0 only), bump-env/dot-product stage modes, palettised textures
 - [x] Vulkan internal resolution 1x–5x (`SSX3_RES_SCALE`, F10) + two frames in flight
 - [ ] Vulkan M4: verify render-to-texture, AA, per-triangle culling
-- [ ] **Port the Vulkan renderer to Windows.** Today CMake builds `src/render/` only for non-WIN32 and Windows falls
-      back to the CPU rasteriser (~10–20 fps). Needed: a Win32 surface (`VK_KHR_win32_surface`; window either from
-      SDL2 on Windows too or the runtime's own Win32 window), volk already loads `vulkan-1.dll` at run time, input/
-      F10/resize through the Win32 message loop, frame interpolation's Win32 path, `run.ps1` default
-      `SSX3_RENDERER=vulkan` + the menu. Target order:
-  - [ ] **Windows 10 and 11** (x86-64) – the focus; test on real hardware, not only Proton/Wine.
+- [x] **Port the Vulkan renderer to Windows** (2026-10-26): native Win32 window + `VK_KHR_win32_surface`
+      (`src/render/vk_window_win32.c`), keys/F10/F11/Alt+Enter through the message loop, monitors via
+      EnumDisplayMonitors, interpolation presenter on Windows, `run.ps1` / `run_win.sh` default `vulkan`, CPU fallback
+      without a Vulkan driver. Tested under Proton only (notes.md 2026-10-26). Target order:
+  - [ ] **Windows 10 and 11** (x86-64) – works under Proton; still to test on real hardware (window placement,
+        high-DPI, EDID monitor names, alt-tab out of full screen, NVIDIA/AMD/Intel drivers).
   - [ ] **Windows 8 / 8.1** – later. Vulkan drivers exist; check the imports: UCRT (`api-ms-win-crt-*`, needs
         KB2999226 on 8.x), `XAudio2_8` and `xinput1_4` are fine from 8 on.
   - [ ] **Windows 7** – later. `XAudio2_8`/`xinput1_4` are Windows 8+ → load XAudio2_7 (DirectX redist) or use
@@ -97,6 +97,7 @@ Order follows `CLAUDE.md` / `xboxrecomp/docs/GETTING_STARTED.md`. Details and fi
       failed (error 487)` and RAM mirrors 26/27 (0x78000000/0x7C000000) fail to map; menus work, then entering a race
       writes to Xbox VA 0xF0610000 → access violation (guest stack 0x001F0386 ← 0x000E2688). Check on real Windows;
       find what Wine has reserved there (koen's port is Windows-first – see how it maps the aperture).
+      Still there on 2026-10-26 with both renderers (same fault, 0xF0610000 / 0xF0710000); blocks the Windows race test.
 - [ ] Interpolation at high internal resolution: the presenter re-renders at the display's refresh and can take
       the GPU from the game (5x, 270 Hz: game ~25 fps; `SSX3_FPS_LIMIT=120` keeps 60) – budget the presenter
 - [ ] Downscaling 4x/5x to a small window is one linear blit (aliasing); a box/mip downsample would give real SSAA

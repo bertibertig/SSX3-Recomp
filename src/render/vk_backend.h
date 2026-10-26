@@ -13,11 +13,16 @@
  * poll thread at the first clear/draw/flip. Returns 0 on success. */
 int ssx3_vk_register(void);
 
-/* POSIX entry point when the Vulkan renderer is selected, instead of
- * xbox_HostWindowMain: opens the window on the calling (main) thread, runs
- * guest_main on its own thread and pumps window events from the start, so the
- * window stays responsive through the load. Returns guest_main's result. */
+/* Host entry point when the Vulkan renderer is selected (POSIX: instead of
+ * xbox_HostWindowMain; Windows: from WinMain): opens the window on the
+ * calling (main) thread, runs guest_main on its own thread and pumps window
+ * events from the start, so the window stays responsive through the load.
+ * Returns guest_main's result. */
 int ssx3_vk_host_main(int (*guest_main)(void));
+
+/* Non-zero when a Vulkan loader (libvulkan / vulkan-1.dll) is installed.
+ * Cheap to call more than once. */
+int ssx3_vk_available(void);
 
 /* `--list-displays`: print the monitors (SDL display number, name, desktop
  * mode, refresh, primary flag; tab-separated) for the start-up menus. */

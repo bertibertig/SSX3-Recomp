@@ -59,5 +59,6 @@ races after the game-clock timing. `[VKI] blended draws/5s` shows the pairing ra
 - Videos are fixed-rate; their texture is updated in place, so a video frame can appear a few ms early. Harmless.
 - The game's own rate is still bound by the NV2A thread (CPU vertex programs): pre-race screen ~40 fps. Interpolation
   hides uneven arrival, but not missing motion. GPU vertex programs remain the lever for a steady 60.
-- Windows: the presenter uses pthreads and the Vulkan path, so it follows the Win32-surface work (docs/TODO.md).
+- Windows: same presenter; its frame-cap sleep is a high-resolution waitable timer (`vk_platform.h`), since
+  `Sleep` rounds to the 15.6 ms timer tick. Tested under Proton (120 fps cap and 270 Hz).
 - Debug: `SSX3_VKI_DUMP=<prefix>` writes frames at blend 0, 1/2 and 1 (stalls the presenter while writing).

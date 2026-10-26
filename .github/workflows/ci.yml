@@ -71,6 +71,7 @@ jobs:
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-cmake
             mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-shaderc
 
       - name: Apply runtime patches
         run: for p in patches/xboxrecomp/*.patch; do git -C xboxrecomp apply --verbose "../$p"; done

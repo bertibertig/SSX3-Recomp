@@ -47,7 +47,11 @@ available as the reference (`SSX3_RENDERER=cpu`) for comparison dumps; the Vulka
 3. ✅ Interface extension + combiner uber-shader + multitexturing. Race 55–60 fps (with the vertex cache and
    pre-decoded vertex programs in the runtime patch).
 4. ✅ Internal resolution 1x–5x (`SSX3_RES_SCALE`, F10 at run time) and two frames in flight (2026-10-19).
-   Open: render-to-texture checks, AA, per-triangle culling, Windows (Win32 surface instead of SDL).
+   Open: render-to-texture checks, AA, per-triangle culling.
+6. ✅ Windows 10/11 (2026-10-26): native Win32 window and `VK_KHR_win32_surface` (`vk_window_win32.c`), the SDL
+   window moved to `vk_window_sdl.c`; both are included by `vk_backend.c` and provide the same `win_*` hooks.
+   Threads, clock and sleeps go through `vk_platform.h` (SRW locks / CreateThread / QPC on Windows, no
+   winpthread DLL). Without a Vulkan loader the exe falls back to the CPU renderer.
 5. ✅ Widescreen in game (`SSX3_ASPECT`, 2026-10-19): camera hook in `recomp_manual.c`, screen-sized surfaces
    `R.wide` times wider, 2D vertices narrowed to the 4:3 middle (`squeeze`); details in docs/notes.md.
 

@@ -965,3 +965,32 @@ _(date – what was done, what was found, next step)_
     (vulkan, auto, 1x, 16:9, display, windowed), pad on port 1, intro → title → menus → Snow Jam race (game 26–51 fps
     under plain Wine with frame dumps), still running at 174 s – all Windows checks pass. The full first run is kept
     in `logs/release-test-v0.3.0-full/`.
+- 2026-10-26 – **NVIDIA <10 fps on an Optimus laptop: combiner registers spilled to VRAM** (recomp-profiler target
+  `brk-mx-t460p`: MX Linux 25 / Debian 13, i7-6700HQ 4C/8T, 16 GB, Intel HD 530 + GeForce 940MX 2 GB DDR3 via
+  Bumblebee/primus-vk, driver 550.163.01, X11/XFCE 1920x1080, kernel 6.12). Without `primusrun` Vulkan only sees the
+  Intel iGPU (and llvmpipe); the NVIDIA ICD is reachable through `primusrun` only.
+  - Method: v0.3.0 (+ `SSX3_PAD_SCRIPT`, below) with `SSX3_SKIP_INTRO=1 SSX3_INTERP=0`, saved settings (fullscreen,
+    1x, 16:9, vsync), the same 130 s pad script (Start through the title, A through the menus → Snow Jam race, then
+    ride), MangoHud log (game frames, since interpolation is off), `nvidia-smi dmon -s ucvt`. "Race" = mean of the
+    5 s bins from 25 s on; whole-run numbers are MangoHud's summary. Measured, not inferred.
+  - Baseline: Intel avg 33.8 / 1% low 13.7 / race 28–30 fps (two runs). NVIDIA (`primusrun`) avg 19.4 / 1% low 6.9–7.7
+    / race 15.7 fps, i.e. the reported <10 fps, at **SM 100 % and memory controller 100 %** already in the menu while
+    PCIe stayed below 300 MB/s – real work in VRAM, not transfers. `SSX3_VK_NO_RC=1` (combiners off): NVIDIA avg 38.9 /
+    race 34.7, GPU 30 %, memory 15 % → the uber-shader's combiner path was the cost.
+  - Cause: `nv2a.frag` kept the 16 combiner registers in `vec4 R[16]` indexed at run time (`R[b & 15u]`). NVIDIA's
+    compiler places such an array in local memory (VRAM); on a 64-bit DDR3 940MX that ate all memory bandwidth.
+    Mesa/Intel keeps it in registers. One variable per register reached through a switch (the register number is
+    uniform per draw) fixed NVIDIA (race 34.5) but **halved Intel** (race 28 → 15).
+  - Fix: both ways in the shader behind a specialization constant (`k_reg_switch`, the other branch is compiled
+    out); `vk_backend.c` sets it for vendor 0x10DE (NVIDIA), everything else keeps the array (Intel, AMD/Steam Deck
+    unchanged). `SSX3_VK_RC_REGS=array|switch` overrides, `[VK] combiner registers: …` logs the choice.
+    Result: NVIDIA avg **40.6** / 1% low 15.3 / race **36.6** fps (GPU ~80 %, memory 10–17 %); Intel avg 32.7 /
+    race 27.7 (unchanged). Frame dumps in the race look as before (lighting, snow, HUD).
+  - Next bottleneck (perf, NVIDIA, race): two threads at ~100 %: the guest main thread spends 36 of its 45 % in the
+    D3D kickoff spin `sub_00234A10` (waiting for the "GPU"), the NV2A executor thread runs CPU vertex programs
+    (`nv2a_vsh_run` 17 %, `read_src`, `fetch_attr`, `raster_xf_triangle`). Same picture as koenhendriks/SSX3-recomp
+    `docs/ROADMAP.md` before its GPU vertex programs (60 fps afterwards): that is the next lever for weak CPUs.
+    The NV2A trace (`[NV2A] DMA_PUT` ~300 lines/s with fflush, armed by `RECOMP_PB_EXEC=1`) is minor but free to cut.
+  - `SSX3_PAD_SCRIPT=<file>` (new, `src/input/ssx3_pad.c`): a timed button script on port 1 for unattended runs –
+    no uinput/root (the target's `/dev/uinput` is root-only and has no python-evdev), no window focus, works on
+    Windows too. Lines `<seconds since the first pad poll> [buttons] [lx=…] [ly=…]`, each held until the next.

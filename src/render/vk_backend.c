@@ -243,6 +243,7 @@ static struct {
     const char       *dump_prefix;
     uint32_t          dump_every;
     uint32_t          max_dim;             /* maxImageDimension2D */
+    uint32_t          vendor;              /* VkPhysicalDeviceProperties.vendorID */
 } V;
 
 /* Internal resolution. `want` is set from the environment and by the window
@@ -562,6 +563,7 @@ static int pick_gpu(void)
         if (V.ubo_align < 16)
             V.ubo_align = 16;
         V.max_dim = p.limits.maxImageDimension2D;
+        V.vendor = p.vendorID;
     }
     vkGetPhysicalDeviceMemoryProperties(V.gpu, &V.memprops);
     return 1;
@@ -860,6 +862,9 @@ static int create_pipeline(void)
     VkPipelineLayoutCreateInfo plci;
     VkShaderModule vs, fs;
     VkPipelineShaderStageCreateInfo stages[2];
+    VkSpecializationMapEntry spec_entry;
+    VkSpecializationInfo spec;
+    VkBool32 reg_switch;
     VkVertexInputBindingDescription vbind[2];
     VkVertexInputAttributeDescription vattr[9];
     VkPipelineVertexInputStateCreateInfo vi;
@@ -927,6 +932,22 @@ static int create_pipeline(void)
     stages[1] = stages[0];
     stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
     stages[1].module = fs;
+    /* How nv2a.frag holds the combiner registers (k_reg_switch, see there):
+     * switches on NVIDIA, whose compiler spills the run-time indexed array to
+     * VRAM; the array everywhere else. SSX3_VK_RC_REGS=array|switch overrides. */
+    {
+        const char *e = getenv("SSX3_VK_RC_REGS");
+        reg_switch = e && *e ? strcmp(e, "switch") == 0 : V.vendor == 0x10DE;
+        spec_entry.constantID = 0;
+        spec_entry.offset = 0;
+        spec_entry.size = sizeof reg_switch;
+        spec.mapEntryCount = 1;
+        spec.pMapEntries = &spec_entry;
+        spec.dataSize = sizeof reg_switch;
+        spec.pData = &reg_switch;
+        stages[1].pSpecializationInfo = &spec;
+        fprintf(stderr, "  [VK] combiner registers: %s\n", reg_switch ? "switch" : "array");
+    }
 
     /* Binding 0: Nv2aVertex. Binding 1: Nv2aVertexExt, its stride dynamic so
      * a batch without the extension can bind one zeroed element (stride 0). */

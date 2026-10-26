@@ -838,6 +838,13 @@ _(date – what was done, what was found, next step)_
     in the WAV tap, the same with the patch, with both switches off and with the pre-patch exe, so it is older than
     this change and follows the slow software-rendered game (the Windows build has no Vulkan back end yet).
     Open item.
+  - Re-test 2026-10-26 after rebasing onto main (Vulkan on Windows, race fix, settings): runtime patch 0001
+    re-made by a source-level 3-way merge (main's apu_vp.c idle-voice change + this branch's four files). Same route
+    into a Snow Jam race at 1x/60, WAV tap, this branch vs main. Linux: 66 vs 75 clicks per run, R/L 1.00–1.09 vs
+    0.76–0.96, fps the same. Proton (Vulkan, two runs each): 213 + 110 vs 129 + 583 clicks – large run-to-run
+    spread (the uncontrolled rider's crashes count too), not worse with the lock; R/L 0.93–1.16 vs 0.49–0.98. No
+    "DPC waited" warning, no crash, game fps unchanged on both. Supersedes the game-side USB DPC lock of
+    `claude/stoic-cartwright-26cbb2` (2026-10-19), whose branch was deleted: the runtime lock covers every DPC.
 - 2026-10-22 – **Game data installer** (`scripts/install_game.sh`, `scripts/install_game.ps1` +
   `scripts/release/install_game.bat`; packed next to the run scripts by `package_release.sh`). Copies the player's
   own disc into `game_files/` next to the binary (repo: `<repo>/game_files`) from a Redump `.iso`, a rebuilt

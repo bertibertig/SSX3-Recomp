@@ -59,9 +59,9 @@ menu forced on and `run.ps1` (menu + the default CPU-renderer flow under Wine) w
 `windows_frames.png`.
 
 Pass criteria:
-- Linux: menu summary line + saved `run.conf`; pad on port 1; frames show intro → title → menus → **a race**;
+- Linux: `[settings]` line + saved `settings.ini` (`run.sh --settings`); pad on port 1; frames show intro → title → menus → **a race**;
   game fps near 60 in the race; `[drive] exit 0` (still running at the time limit).
-- Windows (Wine): missing-files message; `run.ps1` menu saves `run.conf`; pad on port 1; frames reach the menus.
+- Windows (Wine): missing-files message; `run.ps1 --settings` saves `settings.ini`; pad on port 1; frames reach the menus.
   Compare with the last release's known Windows state (v0.1.0: crashes when a race loads, exit 139) – a new or
   earlier crash is a regression, a race that now works is a bug fix for the notes.
 

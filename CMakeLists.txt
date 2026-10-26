@@ -89,6 +89,8 @@ set(GAME_SOURCES
     src/lan/freeroam.c
     src/lan/menu.c
     src/lan/lan_game.c
+    src/settings/settings.c
+    src/settings/settings_tui.c
     # Add game-specific sources here, e.g.:
     # src/asset_loader.c
     # src/custom_renderer.c
@@ -159,11 +161,12 @@ endif()
 #
 # Vulkan-Headers and volk are pinned submodules under third_party/, so no
 # Vulkan SDK is needed: volk loads libvulkan / vulkan-1.dll at run time.
-# POSIX only for now -- the window comes from SDL2, which the Windows
-# runtime does not use (a Win32 surface is milestone 4). Selected at run
-# time with SSX3_RENDERER=vulkan.
+# The window: SDL2 on POSIX (vk_window_sdl.c), native Win32 on Windows
+# (vk_window_win32.c, VK_KHR_win32_surface) -- both included by
+# vk_backend.c, not listed as sources. Selected at run time with
+# SSX3_RENDERER=vulkan.
 option(SSX3_VULKAN "Build the Vulkan render back end" ON)
-if(SSX3_VULKAN AND NOT WIN32)
+if(SSX3_VULKAN)
     set(SSX3_VK_HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/Vulkan-Headers/include)
     set(SSX3_VOLK_DIR   ${CMAKE_CURRENT_SOURCE_DIR}/third_party/volk)
     if(NOT EXISTS ${SSX3_VK_HEADERS}/vulkan/vulkan_core.h OR NOT EXISTS ${SSX3_VOLK_DIR}/volk.c)
@@ -173,6 +176,10 @@ if(SSX3_VULKAN AND NOT WIN32)
     add_library(ssx3_volk STATIC ${SSX3_VOLK_DIR}/volk.c)
     target_include_directories(ssx3_volk PUBLIC ${SSX3_VOLK_DIR} ${SSX3_VK_HEADERS})
     target_compile_definitions(ssx3_volk PUBLIC VK_NO_PROTOTYPES)
+    if(WIN32)
+        # volk then also loads vkCreateWin32SurfaceKHR.
+        target_compile_definitions(ssx3_volk PUBLIC VK_USE_PLATFORM_WIN32_KHR)
+    endif()
     target_link_libraries(ssx3_volk PRIVATE ${CMAKE_DL_LIBS})
 
     # Shaders: GLSL -> SPIR-V as C initialiser lists, included by vk_backend.c.
@@ -193,13 +200,16 @@ if(SSX3_VULKAN AND NOT WIN32)
     add_custom_target(ssx3_shaders DEPENDS ${SSX3_SHADER_INCS})
     add_dependencies(${PROJECT_NAME} ssx3_shaders)
 
-    find_package(SDL2 REQUIRED)
     target_sources(${PROJECT_NAME} PRIVATE src/render/vk_backend.c)
     target_include_directories(${PROJECT_NAME} PRIVATE ${SSX3_SHADER_OUT})
     target_include_directories(${PROJECT_NAME} PRIVATE
         ${XBOXRECOMP_DIR}/src/kernel     # nv2a_backend.h
-        ${XBOXRECOMP_DIR}/src/input)     # keyboard_sdl.h
-    target_link_libraries(${PROJECT_NAME} PRIVATE ssx3_volk SDL2::SDL2)
+        ${XBOXRECOMP_DIR}/src/input)     # keyboard_sdl.h / keyboard.h
+    target_link_libraries(${PROJECT_NAME} PRIVATE ssx3_volk)
+    if(NOT WIN32)
+        find_package(SDL2 REQUIRED)
+        target_link_libraries(${PROJECT_NAME} PRIVATE SDL2::SDL2)
+    endif()
     target_compile_definitions(${PROJECT_NAME} PRIVATE SSX3_HAVE_VULKAN=1)
 endif()
 

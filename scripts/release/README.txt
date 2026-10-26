@@ -60,22 +60,21 @@ Linux (x86-64, glibc 2.39 or newer: Ubuntu 24.04+, Fedora 40+, Arch, SteamOS 3.6
     Arch:          sudo pacman -S sdl2 openssl libepoxy vulkan-icd-loader  (+ your GPU's Vulkan driver)
     Fedora:        sudo dnf install SDL2 openssl-libs libepoxy mesa-vulkan-drivers
 
-  Started from a terminal, run.sh first shows a menu for the renderer, the
-  monitor, the display mode (windowed, borderless, fullscreen), the internal
-  resolution (1x-5x), the aspect ratio (4:3, 16:9, 16:10, 21:9, auto), the frame
-  rate and v-sync. The choice is saved in
-  ~/.config/ssx3-recomp/run.conf and reused, also without a terminal (e.g. as a
-  Steam shortcut). SSX3_MENU=1 ./run.sh shows the menu again.
+  Settings: ./run.sh --settings opens the settings screen first: resolution
+  (1x-5x), aspect ratio (4:3, 16:9, 16:10, 21:9, auto), frame rate, v-sync,
+  window mode, monitor, renderer, language (automatic = your system's, or
+  English, Francais, Deutsch, Espanol) and start-up options. Enter saves and
+  starts. Saved in ~/.config/ssx3-recomp/settings.ini and used on every start,
+  also without a terminal (e.g. as a Steam shortcut).
 
 Windows (10 or 11, x86-64): double-click run.bat (or run
-  powershell -ExecutionPolicy Bypass -File run.ps1 in a console).
-  Windows is experimental and not playable yet:
-  - So far it has only been tested on Linux with Wine and Proton, not on a
-    real Windows PC. Reports from Windows 10/11 are welcome.
-  - Under Wine and Proton, intro, title and menus work, then it crashes when a
-    race loads.
-  - It uses the software (CPU) renderer (about 10-20 fps); the fast Vulkan
-    renderer is Linux-only so far.
+  powershell -ExecutionPolicy Bypass -File run.ps1 in a console;
+  add --settings for the settings screen, saved in
+  %APPDATA%\ssx3-recomp\settings.ini). Needs a Vulkan driver (any current
+  NVIDIA, AMD or Intel driver); without one it falls back to the slow software
+  renderer.
+  - So far tested on Linux with Proton (menus and races), not yet on a real
+    Windows PC. Reports from Windows 10/11 are welcome.
 
 
 3. Controls
@@ -97,8 +96,10 @@ Keyboard (player 1):
 4. Options (environment variables)
 ----------------------------------
 
-All options except the logo/intro ones belong to the Vulkan renderer (Linux).
+These override the settings file for one run. All options except language and
+logo/intro belong to the Vulkan renderer.
 
+  SSX3_LANGUAGE=en|fr|de|es   the game's language (default: the system's)
   SSX3_MONITOR=primary|<number>|<name>  monitor (default: the desktop's main one;
                         ./ssx3_recomp --list-displays lists them)
   SSX3_WINDOW=windowed|borderless|fullscreen   display mode
@@ -110,7 +111,6 @@ All options except the logo/intro ones belong to the Vulkan renderer (Linux).
   SSX3_SKIP_LOGOS=0     show the EA and THX logos (skipped by default)
   SSX3_SKIP_INTRO=1     skip the intro movie too
   SSX3_RENDERER=cpu     software renderer (reference, slow)
-  SSX3_MENU=0 / 1       start-up menu never / always
 
 
 5. Known issues

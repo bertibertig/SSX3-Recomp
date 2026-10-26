@@ -61,6 +61,7 @@
 
 /* xboxrecomp runtime headers */
 #include <xbox/xboxrecomp.h>
+#include "settings/settings.h"
 
 #if defined(SSX3_HAVE_VULKAN)
 #include "render/vk_backend.h"
@@ -186,11 +187,20 @@ static void print_guest_context(void *rip)
     char buf[sizeof(SYMBOL_INFO) + 256];
     SYMBOL_INFO *sym = (SYMBOL_INFO *)buf;
     DWORD64 disp = 0;
+    HMODULE mod = NULL;
 
     memset(buf, 0, sizeof(buf));
     sym->SizeOfStruct = sizeof(SYMBOL_INFO);
     sym->MaxNameLen = 255;
-    if (SymFromAddr(GetCurrentProcess(), (DWORD64)(uintptr_t)rip, &disp, sym))
+    /* Only our own image has guest function names. A fault inside a system
+     * DLL (a guest memset through a host CRT routine) would make dbghelp load
+     * that DLL's symbols from inside the exception handler; under Proton, on
+     * the Vulkan host's guest thread, the report stopped right here. */
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
+                           | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           (LPCSTR)rip, &mod)
+            && mod == GetModuleHandleA(NULL)
+            && SymFromAddr(GetCurrentProcess(), (DWORD64)(uintptr_t)rip, &disp, sym))
         fprintf(stderr, "  in %s+0x%llX\n",
                 sym->Name, (unsigned long long)disp);
 #else
@@ -439,6 +449,32 @@ static void install_posix_fault_handler(void)
 }
 #endif /* _WIN32 */
 
+#if defined(SSX3_HAVE_VULKAN)
+/* SSX3_RENDERER=vulkan, and a Vulkan loader to run it. Without one (no GPU
+ * driver installed) the run falls back to the CPU rasteriser and its window
+ * instead of showing a black one; the environment is switched over so every
+ * later check (and the runtime's RECOMP_FB_WINDOW) agrees. */
+static int want_vulkan(void)
+{
+    const char *renderer = getenv("SSX3_RENDERER");
+
+    if (!renderer || strcmp(renderer, "vulkan") != 0)
+        return 0;
+    if (ssx3_vk_available())
+        return 1;
+    fprintf(stderr, "[BOOT] SSX3_RENDERER=vulkan but no Vulkan driver is installed: "
+                    "using the CPU renderer\n");
+#ifdef _WIN32
+    _putenv("SSX3_RENDERER=cpu");
+    _putenv("RECOMP_FB_WINDOW=1");
+#else
+    setenv("SSX3_RENDERER", "cpu", 1);
+    setenv("RECOMP_FB_WINDOW", "1", 1);
+#endif
+    return 0;
+}
+#endif
+
 /* ── Boot sequence (shared by every host) ──────────────────── */
 
 /* The XBE image, kept for the whole run (freed after the guest returns). */
@@ -593,11 +629,8 @@ static int boot_and_run(void)
      * (src/render/vk_backend.c) instead of its CPU rasteriser; the back end
      * opens its own window. Default (unset / "cpu"): the CPU rasteriser. */
 #if defined(SSX3_HAVE_VULKAN)
-    {
-        const char *renderer = getenv("SSX3_RENDERER");
-        if (renderer && strcmp(renderer, "vulkan") == 0)
-            ssx3_vk_register();
-    }
+    if (want_vulkan())
+        ssx3_vk_register();
 #endif
 
     /* Step 5c: USB controllers (pads).
@@ -688,10 +721,24 @@ static int boot_and_run(void)
 static int list_renderers(void)
 {
 #if defined(SSX3_HAVE_VULKAN)
-    printf("vulkan\n");
+    if (ssx3_vk_available())
+        printf("vulkan\n");
 #endif
     printf("cpu\n");
     return 0;
+}
+
+/* The player's settings (src/settings): the file, the settings screen when
+ * --settings asks for it, then the environment the rest of the program reads.
+ * Returns 0 when the player left the settings screen without starting. */
+static int settings_start(int open_screen)
+{
+    ssx3_settings_load();
+    if (open_screen && !ssx3_settings_tui())
+        return 0;
+    ssx3_settings_apply();
+    ssx3_settings_log();
+    return 1;
 }
 
 #ifdef _WIN32
@@ -705,8 +752,15 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     /* Start-up menu queries (run.ps1); main() passes the whole command line. */
     if (lpCmdLine && strstr(lpCmdLine, "--renderers"))
         return list_renderers();
+#if defined(SSX3_HAVE_VULKAN)
+    if (lpCmdLine && strstr(lpCmdLine, "--list-displays"))
+        return ssx3_vk_list_displays();   /* for the start-up menus */
+#else
     if (lpCmdLine && strstr(lpCmdLine, "--list-displays"))
         return 0;                          /* no monitor choice without the Vulkan window */
+#endif
+    if (!settings_start(lpCmdLine && strstr(lpCmdLine, "--settings") != NULL))
+        return 0;
 
     /* Unbuffered output for immediate visibility during debugging */
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -722,8 +776,24 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     SymInitialize(GetCurrentProcess(), NULL, TRUE);
     AddVectoredExceptionHandler(1, veh_handler);
 
+    /* Hold the whole 4 GB guest window as placeholders (VirtualAlloc2,
+     * Windows 10 1803+; the runtime falls back on older systems). Without it
+     * Wine/Proton had already placed something at host base + 0xF0000000, the
+     * tiled aperture failed to map (error 487) and entering a race faulted
+     * writing the frame buffer through it (guest 0x001F0386, VA 0xF0610000).
+     * The runtime only checks that the variable exists. */
+    if (!getenv("RECOMP_WIN_PLACEHOLDER"))
+        _putenv("RECOMP_WIN_PLACEHOLDER=1");
+
     if (boot_memory() != 0)
         return 1;
+#if defined(SSX3_HAVE_VULKAN)
+    /* The Vulkan renderer owns the window (vk_window_win32.c): opened here
+     * on the main thread, which then only pumps its messages; the guest runs
+     * on its own thread. */
+    if (want_vulkan())
+        return ssx3_vk_host_main(boot_and_run);
+#endif
     return boot_and_run();
 }
 #endif
@@ -789,6 +859,14 @@ int main(int argc, char **argv)
     if (argc > 1 && strcmp(argv[1], "--list-displays") == 0)
         return 0;                          /* no monitor choice without the Vulkan window */
 #endif
+    {
+        int i, tui = 0;
+        for (i = 1; i < argc; i++)
+            if (strcmp(argv[i], "--settings") == 0)
+                tui = 1;
+        if (!settings_start(tui))
+            return 0;
+    }
 
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
@@ -799,13 +877,10 @@ int main(int argc, char **argv)
     if (boot_memory() != 0)
         return 1;
 #if defined(SSX3_HAVE_VULKAN)
-    {
-        /* The Vulkan renderer owns the window: opened here on the main thread,
-         * pumped from the start (the guest runs on its own thread). */
-        const char *renderer = getenv("SSX3_RENDERER");
-        if (renderer && strcmp(renderer, "vulkan") == 0)
-            return ssx3_vk_host_main(boot_and_run);
-    }
+    /* The Vulkan renderer owns the window: opened here on the main thread,
+     * pumped from the start (the guest runs on its own thread). */
+    if (want_vulkan())
+        return ssx3_vk_host_main(boot_and_run);
 #endif
     return xbox_HostWindowMain(boot_and_run);
 }

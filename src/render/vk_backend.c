@@ -43,7 +43,7 @@
  *                           (exclusive, at the desktop's resolution);
  *                           Alt+Enter / F11 toggle windowed <-> full screen
  *   SSX3_MONITOR=<m>        primary (default: the desktop's main monitor),
- *                           an SDL display number, or part of the monitor's
+ *                           a display number, or part of the monitor's
  *                           name; `ssx3_recomp --list-displays` lists them
  *
  * Internal resolution: every guest surface is a GPU image of its guest size
@@ -59,14 +59,12 @@
  * on the screen edges (full-screen passes). Outside the game R.wide is 1 and
  * the 4:3 frame is pillarboxed in the window like any other.
  */
+#if defined(_WIN32) && !defined(VK_USE_PLATFORM_WIN32_KHR)
+#define VK_USE_PLATFORM_WIN32_KHR   /* vkCreateWin32SurfaceKHR (CMake sets it for volk too) */
+#endif
+#include "vk_platform.h"
 #include "volk.h"
-#include <SDL.h>
-#include <SDL_vulkan.h>
 
-#include <pthread.h>
-#include <dlfcn.h>
-#include <strings.h>
-#include <sys/resource.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -84,7 +82,6 @@ static const uint32_t k_vert_spv[] =
 static const uint32_t k_frag_spv[] =
 #include "nv2a.frag.inc"
 ;
-#include "keyboard_sdl.h"     /* xboxrecomp/src/input */
 #include "vk_backend.h"
 
 #define VKB_MAX_SURFACES    16
@@ -170,7 +167,7 @@ typedef struct {
 static struct {
     int               failed;              /* init failed: stay inert */
     int               ready;
-    SDL_Window       *window;
+    VkbWindow         window;
     VkInstance        instance;
     VkSurfaceKHR      wsi;
     VkPhysicalDevice  gpu;
@@ -268,9 +265,20 @@ static struct {
 
 extern volatile float g_ssx3_wide;     /* recomp_manual.c: requested factor */
 extern int ssx3_in_game(void);         /* recomp_manual.c */
-static SDL_Window *window_create(const char *title);
 static void wide_init(void);
-static void window_key(const SDL_Event *ev);
+
+/* The host window: vk_window_sdl.c (POSIX) or vk_window_win32.c (Windows),
+ * included near the end of this file. All of them run on the thread that
+ * owns the window unless noted. */
+static int      win_instance_extensions(const char **exts, uint32_t *n);
+static int      win_create_surface(void);          /* sets V.wsi */
+static void     win_drawable_size(int *w, int *h);
+static int      win_display_index(void);           /* for the log */
+static uint32_t win_ticks_ms(void);                /* any thread */
+static void     win_set_title(const char *title);
+static int      win_open_lazy(void);               /* no ssx3_vk_host_main: open on
+                                                    * the NV2A thread */
+static void     pump_events(void);
 
 /* ---- frame interpolation: declarations ------------------------------------
  *
@@ -337,8 +345,8 @@ typedef struct {
 
 static struct {
     int             on;
-    pthread_mutex_t lock;
-    pthread_cond_t  cond;
+    vkb_mutex lock;
+    vkb_cond  cond;
     VkiPacket       pk[VKI_PACKETS];
     VkiPacket      *rec;             /* being filled (NV2A thread) */
     int             rec_none;        /* no free slot this frame */
@@ -386,21 +394,21 @@ static void unpack_argb(uint32_t c, float o[4]);
 /* The one queue is shared by the NV2A thread and, with frame interpolation,
  * the presenter thread: vkQueueSubmit/Present and vkDeviceWaitIdle need
  * external synchronisation. */
-static pthread_mutex_t s_qlock = PTHREAD_MUTEX_INITIALIZER;
+static vkb_mutex s_qlock = VKB_MUTEX_INIT;
 
 static void device_idle(void)
 {
-    pthread_mutex_lock(&s_qlock);
+    vkb_lock(&s_qlock);
     vkDeviceWaitIdle(V.device);
-    pthread_mutex_unlock(&s_qlock);
+    vkb_unlock(&s_qlock);
 }
 
 static VkResult queue_submit(const VkSubmitInfo *si, VkFence fence)
 {
     VkResult r;
-    pthread_mutex_lock(&s_qlock);
+    vkb_lock(&s_qlock);
     r = vkQueueSubmit(V.queue, 1, si, fence);
-    pthread_mutex_unlock(&s_qlock);
+    vkb_unlock(&s_qlock);
     return r;
 }
 
@@ -468,14 +476,12 @@ static int create_instance(void)
     VkApplicationInfo app;
     VkInstanceCreateInfo ci;
     const char *exts[16];
-    unsigned n = 16;
+    uint32_t n = 16;
     const char *layers[1];
     uint32_t nlayers = 0;
 
-    if (!SDL_Vulkan_GetInstanceExtensions(V.window, &n, exts)) {
-        fprintf(stderr, "  [VK] SDL_Vulkan_GetInstanceExtensions: %s\n", SDL_GetError());
+    if (!win_instance_extensions(exts, &n))
         return 0;
-    }
     if (getenv("SSX3_VK_VALIDATE")) {
         uint32_t count = 0, i;
         VkLayerProperties props[64];
@@ -702,7 +708,7 @@ static int create_swapchain(void)
             if (modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR)
                 mode = VK_PRESENT_MODE_IMMEDIATE_KHR;
 
-    SDL_Vulkan_GetDrawableSize(V.window, &w, &h);
+    win_drawable_size(&w, &h);
     if (caps.currentExtent.width != UINT32_MAX) {
         V.swap_extent = caps.currentExtent;
     } else {
@@ -741,7 +747,7 @@ static int create_swapchain(void)
             V.swap_extent.width, V.swap_extent.height, V.swap_count,
             mode == VK_PRESENT_MODE_MAILBOX_KHR ? "mailbox"
             : mode == VK_PRESENT_MODE_IMMEDIATE_KHR ? "immediate" : "fifo",
-            SDL_GetWindowDisplayIndex(V.window));
+            win_display_index());
     return 1;
 }
 
@@ -1027,24 +1033,12 @@ static int init_vulkan(void)
         fprintf(stderr, "  [VK] no Vulkan loader (libvulkan / vulkan-1.dll)\n");
         return 0;
     }
-    if (!V.window) {
-        /* No ssx3_vk_host_main: open the window here, on the NV2A thread,
-         * which then also pumps its events (from flip). */
-        if (SDL_InitSubSystem(SDL_INIT_VIDEO) != 0) {
-            fprintf(stderr, "  [VK] SDL video: %s\n", SDL_GetError());
-            return 0;
-        }
-        V.window = window_create("SSX 3 (Recomp, Vulkan)");
-        if (!V.window)
-            return 0;
-        xbox_InputSdlInit();
-    }
-    if (!create_instance())
+    /* No ssx3_vk_host_main: open the window here, on the NV2A thread,
+     * which then also pumps its events (from flip). */
+    if (!V.window && !win_open_lazy())
         return 0;
-    if (!SDL_Vulkan_CreateSurface(V.window, V.instance, &V.wsi)) {
-        fprintf(stderr, "  [VK] SDL_Vulkan_CreateSurface: %s\n", SDL_GetError());
+    if (!create_instance() || !win_create_surface())
         return 0;
-    }
     if (!pick_gpu() || !create_device() || !create_swapchain() || !create_pipeline())
         return 0;
     for (i = 0; i < VKB_FRAMES; i++)
@@ -1919,9 +1913,7 @@ extern volatile uint32_t g_ssx3_present_steps;
 
 static double now_s(void)
 {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+    return vkb_now();
 }
 
 /* Grow *p to hold `need` elements; 0 when out of memory. */
@@ -1971,7 +1963,7 @@ static VkiPacket *rec_packet(void)
 
     if (I.rec || I.rec_none)
         return I.rec;
-    pthread_mutex_lock(&I.lock);
+    vkb_lock(&I.lock);
     /* Retire presenter submissions that finished (a fence's serial only moves
      * after its submission, so a signalled fence covers the serial read). */
     for (i = 0; i < VKI_INFLIGHT; i++)
@@ -1986,7 +1978,7 @@ static VkiPacket *rec_packet(void)
             break;
         }
     }
-    pthread_mutex_unlock(&I.lock);
+    vkb_unlock(&I.lock);
     if (!I.rec) {
         I.rec_none = 1;
         I.stat_drop++;
@@ -2095,9 +2087,9 @@ static void rec_clear(VkbSurface *s, uint32_t flags, uint32_t argb, uint32_t zst
 
 static void rec_release(VkiPacket *p)
 {
-    pthread_mutex_lock(&I.lock);
+    vkb_lock(&I.lock);
     p->state = VKI_FREE;
-    pthread_mutex_unlock(&I.lock);
+    vkb_unlock(&I.lock);
 }
 
 /* At the flip, on the NV2A thread with V.cmd open and no rendering scope:
@@ -2209,7 +2201,7 @@ static void rec_publish(VkiPacket *p)
     double now = now_s(), interval, target, lo, hi;
     uint32_t dsteps = p->steps - I.last_steps;
 
-    pthread_mutex_lock(&I.lock);
+    vkb_lock(&I.lock);
     interval = now - I.last_arrival;
 
     if (I.last_arrival > 0 && interval < 0.1) {
@@ -2249,8 +2241,8 @@ static void rec_publish(VkiPacket *p)
     I.last_show = p->t_show;
     I.last_dur = p->dur;
     p->state = VKI_READY;
-    pthread_cond_signal(&I.cond);
-    pthread_mutex_unlock(&I.lock);
+    vkb_cond_signal(&I.cond);
+    vkb_unlock(&I.lock);
 }
 
 /* Texture coordinates of a draw as one hash: static geometry keeps them
@@ -2729,10 +2721,10 @@ static int vki_present(float t)
     double sw, sh, aspect, fw, fh;
 
     vkWaitForFences(V.device, 1, &I.fence[slot], VK_TRUE, UINT64_MAX);
-    pthread_mutex_lock(&I.lock);
+    vkb_lock(&I.lock);
     if (I.slot_serial[slot] > I.completed)
         I.completed = I.slot_serial[slot];
-    pthread_mutex_unlock(&I.lock);
+    vkb_unlock(&I.lock);
 
     if (V.swap_dirty || !V.swapchain) {
         destroy_swapchain();
@@ -2815,16 +2807,16 @@ static int vki_present(float t)
     pi.swapchainCount = 1;
     pi.pSwapchains = &V.swapchain;
     pi.pImageIndices = &idx;
-    pthread_mutex_lock(&s_qlock);
+    vkb_lock(&s_qlock);
     r = vkQueueSubmit(V.queue, 1, &si, I.fence[slot]);
     if (r == VK_SUCCESS)
         r = vkQueuePresentKHR(V.queue, &pi);
-    pthread_mutex_unlock(&s_qlock);
+    vkb_unlock(&s_qlock);
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR)
         V.swap_dirty = 1;
-    pthread_mutex_lock(&I.lock);
+    vkb_lock(&I.lock);
     I.slot_serial[slot] = ++I.submitted;
-    pthread_mutex_unlock(&I.lock);
+    vkb_unlock(&I.lock);
     I.presents++;
     return 1;
 }
@@ -2900,27 +2892,20 @@ static void vki_dump(int slot, uint32_t flip, float t)
 static void vki_drain(void)
 {
     vkWaitForFences(V.device, VKI_INFLIGHT, I.fence, VK_TRUE, UINT64_MAX);
-    pthread_mutex_lock(&I.lock);
+    vkb_lock(&I.lock);
     I.completed = I.submitted;
-    pthread_mutex_unlock(&I.lock);
+    vkb_unlock(&I.lock);
 }
 
 static void timed_wait(double until)
 {
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    {
-        double d = until - now_s();
-        long ns;
-        if (d <= 0)
-            return;
-        if (d > 0.1)
-            d = 0.1;
-        ns = ts.tv_nsec + (long)(d * 1e9);
-        ts.tv_sec += ns / 1000000000L;
-        ts.tv_nsec = ns % 1000000000L;
-    }
-    pthread_cond_timedwait(&I.cond, &I.lock, &ts);
+    double d = until - now_s();
+
+    if (d <= 0)
+        return;
+    if (d > 0.1)
+        d = 0.1;
+    vkb_cond_wait_s(&I.cond, &I.lock, d);
 }
 
 static void *presenter_main(void *unused)
@@ -2928,7 +2913,7 @@ static void *presenter_main(void *unused)
     int dump_on = getenv("SSX3_VKI_DUMP") != NULL;
 
     (void)unused;
-    pthread_mutex_lock(&I.lock);
+    vkb_lock(&I.lock);
     for (;;) {
         VkiPacket *next = NULL;
         int i, nready = 0, adopted = 0;
@@ -2957,14 +2942,14 @@ static void *presenter_main(void *unused)
             adopted = 1;
         }
         if (!I.cur) {
-            pthread_cond_wait(&I.cond, &I.lock);
+            vkb_cond_wait(&I.cond, &I.lock);
             continue;
         }
         if (adopted) {
-            pthread_mutex_unlock(&I.lock);
+            vkb_unlock(&I.lock);
             match_packets(I.prev, I.cur);
             I.stat_frames++;
-            pthread_mutex_lock(&I.lock);
+            vkb_lock(&I.lock);
         }
         t = I.prev ? (now - I.cur->t_show) / I.cur->dur : 1.0;
         if (t >= 1.0) {
@@ -2976,16 +2961,16 @@ static void *presenter_main(void *unused)
                     I.holding = 1;
                     I.stat_hold++;
                 }
-                pthread_mutex_unlock(&I.lock);
+                vkb_unlock(&I.lock);
                 vki_drain();
-                pthread_mutex_lock(&I.lock);
+                vkb_lock(&I.lock);
                 timed_wait(next ? next->t_show : now + 0.1);
                 continue;
             }
         }
         if (t < 0)
             t = 0;
-        pthread_mutex_unlock(&I.lock);
+        vkb_unlock(&I.lock);
 
         {
             /* Explicit cap, else the display's refresh (FIFO paces itself). */
@@ -2994,12 +2979,7 @@ static void *presenter_main(void *unused)
             if (dt <= 0)
                 goto no_cap;
             d = I.next_deadline - now_s();
-            if (d > 0) {
-                struct timespec ts;
-                ts.tv_sec = (time_t)d;
-                ts.tv_nsec = (long)((d - (double)ts.tv_sec) * 1e9);
-                nanosleep(&ts, NULL);
-            }
+            vkb_sleep_s(d);
             I.next_deadline += dt;
             if (I.next_deadline < now_s())
                 I.next_deadline = now_s();
@@ -3017,10 +2997,9 @@ no_cap:
             if (t >= 1.0)
                 I.shown_final = 1;
         } else {
-            struct timespec ts = { 0, 20000000 };
-            nanosleep(&ts, NULL);
+            vkb_sleep_s(0.02);
         }
-        pthread_mutex_lock(&I.lock);
+        vkb_lock(&I.lock);
     }
     return NULL;
 }
@@ -3034,13 +3013,12 @@ static void interp_start(void)
     VkCommandBufferAllocateInfo ai;
     VkFenceCreateInfo fci;
     VkSemaphoreCreateInfo sci;
-    pthread_t th;
     int i;
 
     if ((e && *e == '0') || !V.host_main)
         return;
-    pthread_mutex_init(&I.lock, NULL);
-    pthread_cond_init(&I.cond, NULL);
+    vkb_mutex_init(&I.lock);
+    vkb_cond_init(&I.cond);
     I.period = I.step = 1.0 / 60;
     memset(&pci, 0, sizeof pci);
     pci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
@@ -3071,11 +3049,10 @@ static void interp_start(void)
     I.limit_env = e ? atof(e) : -1.0;
     I.next_deadline = now_s();
     I.on = 1;
-    if (pthread_create(&th, NULL, presenter_main, NULL) != 0) {
+    if (!vkb_thread_start(presenter_main, NULL, 0)) {
         I.on = 0;
         goto fail;
     }
-    pthread_detach(th);
     if (I.limit_env > 0)
         fprintf(stderr, "  [VKI] frame interpolation on, frame cap %.0f fps\n", I.limit_env);
     else if (I.limit_env == 0)
@@ -3418,28 +3395,6 @@ static void vkb_draw(const Nv2aSurface *g, const Nv2aBatch *b)
     }
 }
 
-static void scale_key(const SDL_Event *ev);
-
-static void pump_events(void)
-{
-    SDL_Event ev;
-
-    while (SDL_PollEvent(&ev)) {
-        if (ev.type == SDL_QUIT) {
-            fprintf(stderr, "  [VK] window closed\n");
-            fflush(stderr);
-            _Exit(0);
-        }
-        if (ev.type == SDL_WINDOWEVENT
-                && (ev.window.event == SDL_WINDOWEVENT_SIZE_CHANGED
-                    || ev.window.event == SDL_WINDOWEVENT_RESIZED))
-            V.swap_dirty = 1;
-        scale_key(&ev);
-        window_key(&ev);
-        xbox_InputSdlEvent(&ev);
-    }
-}
-
 /* The surface scaled to fit the window with its display aspect kept; the
  * rest of the window stays black. */
 static void fit_rect(const VkbSurface *s, VkOffset3D out[2])
@@ -3458,7 +3413,7 @@ static void fit_rect(const VkbSurface *s, VkOffset3D out[2])
  * clock() would be CPU time on POSIX. */
 static void update_title(void)
 {
-    uint32_t now = SDL_GetTicks();
+    uint32_t now = win_ticks_ms();
     char tb[192];
 
     if (!V.title_ms) {
@@ -3479,7 +3434,7 @@ static void update_title(void)
         snprintf(tb, sizeof tb, "SSX 3 (Recomp, Vulkan) | FPS: %.1f | draws: %u",
                  (double)(V.flips - V.title_flips) * 1000.0 / (double)(now - V.title_ms),
                  V.last_frame_draws);
-    SDL_SetWindowTitle(V.window, tb);
+    win_set_title(tb);
     {
         /* The same figure in the log every 5 s, for runs nobody watches. */
         static uint32_t logged;
@@ -3548,7 +3503,7 @@ static void wide_update(void)
 }
 
 /* SSX3_ASPECT: the requested frame shape, as g_ssx3_wide = shape / (4/3).
- * "auto" is resolved by wide_auto once SDL video is up. */
+ * "auto" is resolved by wide_from_desktop once the window code knows the desktop. */
 static void wide_init(void)
 {
     static int done;
@@ -3580,22 +3535,20 @@ static void wide_init(void)
     fprintf(stderr, "  [VK] widescreen: %.3f:1 in game (x%.3f)\n", a, a * 0.75);
 }
 
-/* SSX3_ASPECT=auto: the desktop's shape (needs SDL video). */
-static void wide_auto(int display)
+/* SSX3_ASPECT=auto: the shape of the desktop the window opens on (w x h;
+ * 0 when the window code could not tell). */
+static void wide_from_desktop(int w, int h)
 {
-    SDL_DisplayMode m;
-
     if (!R.wide_auto)
         return;
     R.wide_auto = 0;
-    if (SDL_GetDesktopDisplayMode(display, &m) != 0 || m.w <= 0 || m.h <= 0) {
-        fprintf(stderr, "  [VK] SSX3_ASPECT=auto: no desktop mode (%s), using 4:3\n",
-                SDL_GetError());
+    if (w <= 0 || h <= 0) {
+        fprintf(stderr, "  [VK] SSX3_ASPECT=auto: no desktop mode, using 4:3\n");
         return;
     }
-    if ((double)m.w / m.h > 4.0 / 3.0 + 0.001)
-        g_ssx3_wide = (float)((double)m.w / m.h * 0.75);
-    fprintf(stderr, "  [VK] widescreen auto: desktop %dx%d -> x%.3f\n", m.w, m.h,
+    if ((double)w / h > 4.0 / 3.0 + 0.001)
+        g_ssx3_wide = (float)((double)w / h * 0.75);
+    fprintf(stderr, "  [VK] widescreen auto: desktop %dx%d -> x%.3f\n", w, h,
             (double)g_ssx3_wide);
 }
 
@@ -3612,141 +3565,10 @@ static void window_size(int *w, int *h)
     }
 }
 
-/* ---- monitor choice ------------------------------------------------------
- *
- * SDL 2 has no notion of a primary monitor on Wayland: display 0 is whichever
- * output the compositor announced first (on a KDE desktop here: a side
- * monitor). The desktops (KDE, GNOME) do tell Xwayland which output is
- * primary, so its RandR monitor list is asked -- libX11/libXrandr loaded at run
- * time, no build dependency -- and the SDL display at the same position is
- * taken. Under SDL's X11 driver that is the same answer; without X (no
- * DISPLAY, no libraries) display 0 stays the fallback. */
-
-/* XRRMonitorInfo (X11/extensions/Xrandr.h, RandR 1.5). */
-typedef struct {
-    unsigned long name;
-    int primary, automatic, noutput;
-    int x, y, width, height, mwidth, mheight;
-    unsigned long *outputs;
-} XrrMonitor;
-
-/* Position of the X server's primary monitor; 0 if there is none to ask. */
-static int x11_primary(int *x, int *y)
-{
-    void *x11 = NULL, *xrr = NULL, *dpy = NULL;
-    void *(*open_display)(const char *);
-    int (*close_display)(void *);
-    unsigned long (*root_window)(void *);
-    XrrMonitor *(*get_monitors)(void *, unsigned long, int, int *);
-    void (*free_monitors)(XrrMonitor *);
-    XrrMonitor *mon;
-    int n = 0, i, found = 0;
-
-    if (!getenv("DISPLAY")
-            || !(x11 = dlopen("libX11.so.6", RTLD_NOW | RTLD_LOCAL))
-            || !(xrr = dlopen("libXrandr.so.2", RTLD_NOW | RTLD_LOCAL)))
-        goto out;
-    open_display = (void *(*)(const char *))dlsym(x11, "XOpenDisplay");
-    close_display = (int (*)(void *))dlsym(x11, "XCloseDisplay");
-    root_window = (unsigned long (*)(void *))dlsym(x11, "XDefaultRootWindow");
-    get_monitors = (XrrMonitor *(*)(void *, unsigned long, int, int *))dlsym(xrr, "XRRGetMonitors");
-    free_monitors = (void (*)(XrrMonitor *))dlsym(xrr, "XRRFreeMonitors");
-    if (!open_display || !close_display || !root_window || !get_monitors || !free_monitors
-            || !(dpy = open_display(NULL)))
-        goto out;
-    if ((mon = get_monitors(dpy, root_window(dpy), 1, &n))) {
-        for (i = 0; i < n; i++)
-            if (mon[i].primary) {
-                *x = mon[i].x;
-                *y = mon[i].y;
-                found = 1;
-                break;
-            }
-        free_monitors(mon);
-    }
-    close_display(dpy);
-out:
-    if (xrr) dlclose(xrr);
-    if (x11) dlclose(x11);
-    return found;
-}
-
-/* The SDL display of the desktop's primary monitor (0 if unknown). */
-static int display_primary(void)
-{
-    int n = SDL_GetNumVideoDisplays(), i, x, y;
-    SDL_Rect r;
-
-    if (n > 1 && x11_primary(&x, &y))
-        for (i = 0; i < n; i++)
-            if (SDL_GetDisplayBounds(i, &r) == 0 && r.x == x && r.y == y)
-                return i;
-    return 0;
-}
-
-/* SSX3_MONITOR: primary (default), a display number or part of a name. */
-static int display_pick(void)
-{
-    const char *e = getenv("SSX3_MONITOR");
-    int n = SDL_GetNumVideoDisplays(), i;
-    char *end;
-    long v;
-
-    if (n <= 1)
-        return 0;
-    if (e && *e && strcasecmp(e, "primary")) {
-        v = strtol(e, &end, 10);
-        if (!*end) {
-            if (v >= 0 && v < n)
-                return (int)v;
-        } else {
-            for (i = 0; i < n; i++) {
-                const char *name = SDL_GetDisplayName(i);
-                size_t k, len = strlen(e);
-                for (k = 0; name && name[k]; k++)
-                    if (!strncasecmp(name + k, e, len))
-                        return i;
-            }
-        }
-        fprintf(stderr, "  [VK] SSX3_MONITOR=%s: no such monitor, using the primary one\n", e);
-    }
-    return display_primary();
-}
-
-/* `ssx3_recomp --list-displays`: one line per monitor for the start-up menus,
- * "<number>\t<name>\t<W>x<H>\t<Hz>\t<primary 0/1>". */
-int ssx3_vk_list_displays(void)
-{
-    int n, i, primary;
-
-    if (SDL_Init(SDL_INIT_VIDEO) != 0) {
-        fprintf(stderr, "SDL video: %s\n", SDL_GetError());
-        return 1;
-    }
-    n = SDL_GetNumVideoDisplays();
-    primary = display_primary();
-    for (i = 0; i < n; i++) {
-        SDL_DisplayMode m;
-        const char *name = SDL_GetDisplayName(i);
-        if (SDL_GetDesktopDisplayMode(i, &m) != 0)
-            memset(&m, 0, sizeof m);
-        printf("%d\t%s\t%dx%d\t%d\t%d\n", i, name ? name : "?", m.w, m.h, m.refresh_rate,
-               i == primary);
-    }
-    SDL_Quit();
-    return 0;
-}
-
 /* SSX3_WINDOW: how the window is shown. */
 enum { WIN_WINDOWED, WIN_BORDERLESS, WIN_FULLSCREEN };
 static int s_win_mode = WIN_WINDOWED;
 static int s_win_full = WIN_BORDERLESS;     /* what Alt+Enter / F11 switches to */
-
-static Uint32 window_flags(int mode)
-{
-    return mode == WIN_FULLSCREEN ? SDL_WINDOW_FULLSCREEN
-         : mode == WIN_BORDERLESS ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0;
-}
 
 static const char *window_mode_name(int mode)
 {
@@ -3754,16 +3576,10 @@ static const char *window_mode_name(int mode)
          : mode == WIN_BORDERLESS ? "borderless" : "windowed";
 }
 
-/* The game window (needs SDL video), in the mode SSX3_WINDOW asks for.
- * Exclusive fullscreen uses the desktop's own mode, so the display does not
- * switch resolution: the internal resolution is SSX3_RES_SCALE either way and
- * the frame is scaled to the screen. The cursor is hidden in full screen. */
-static SDL_Window *window_create(const char *title)
+/* Read SSX3_WINDOW into s_win_mode / s_win_full (window_create). */
+static void window_mode_init(void)
 {
     const char *e = getenv("SSX3_WINDOW");
-    SDL_DisplayMode dm;
-    SDL_Window *w;
-    int ww, wh, d;
 
     if (e && *e) {
         if (!strcmp(e, "borderless"))
@@ -3776,55 +3592,10 @@ static SDL_Window *window_create(const char *title)
     }
     if (s_win_mode != WIN_WINDOWED)
         s_win_full = s_win_mode;
-    d = display_pick();
-    wide_init();
-    wide_auto(d);
-    window_size(&ww, &wh);
-    if (s_win_mode == WIN_FULLSCREEN && SDL_GetDesktopDisplayMode(d, &dm) == 0) {
-        ww = dm.w;
-        wh = dm.h;
-    }
-    w = SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED_DISPLAY(d),
-                         SDL_WINDOWPOS_CENTERED_DISPLAY(d), ww, wh,
-                         SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_SHOWN
-                         | window_flags(s_win_mode));
-    if (!w) {
-        fprintf(stderr, "  [VK] SDL_CreateWindow: %s\n", SDL_GetError());
-        return NULL;
-    }
-    if (s_win_mode == WIN_FULLSCREEN && SDL_GetDesktopDisplayMode(d, &dm) == 0)
-        SDL_SetWindowDisplayMode(w, &dm);
-    SDL_ShowCursor(s_win_mode == WIN_WINDOWED ? SDL_ENABLE : SDL_DISABLE);
-    fprintf(stderr, "  [VK] window: %s on display %d (%s)\n", window_mode_name(s_win_mode),
-            d, SDL_GetDisplayName(d) ? SDL_GetDisplayName(d) : "?");
-    return w;
-}
-
-/* Alt+Enter / F11: windowed <-> the full-screen mode SSX3_WINDOW chose
- * (borderless when it started windowed). On the thread that pumps the
- * window's events, which created it. The swapchain follows the resize event. */
-static void window_key(const SDL_Event *ev)
-{
-    int to;
-
-    if (ev->type != SDL_KEYDOWN || ev->key.repeat || !V.window)
-        return;
-    if (!(ev->key.keysym.scancode == SDL_SCANCODE_F11
-          || (ev->key.keysym.scancode == SDL_SCANCODE_RETURN && (ev->key.keysym.mod & KMOD_ALT))))
-        return;
-    to = s_win_mode == WIN_WINDOWED ? s_win_full : WIN_WINDOWED;
-    if (SDL_SetWindowFullscreen(V.window, window_flags(to)) != 0) {
-        fprintf(stderr, "  [VK] %s: %s\n", window_mode_name(to), SDL_GetError());
-        return;
-    }
-    s_win_mode = to;
-    SDL_ShowCursor(to == WIN_WINDOWED ? SDL_ENABLE : SDL_DISABLE);
-    V.swap_dirty = 1;
-    fprintf(stderr, "  [VK] window: %s\n", window_mode_name(to));
 }
 
 /* SSX3_RES_SCALE at start-up; F10 cycles 1x .. VKB_MAX_SCALE x (any thread
- * that pumps window events). */
+ * that pumps window events, through scale_cycle). */
 static void scale_init(void)
 {
     const char *e = getenv("SSX3_RES_SCALE");
@@ -3840,11 +3611,9 @@ static void scale_init(void)
     R.scale = R.want;
 }
 
-static void scale_key(const SDL_Event *ev)
+static void scale_cycle(void)
 {
-    if (ev->type == SDL_KEYDOWN && !ev->key.repeat
-            && ev->key.keysym.scancode == SDL_SCANCODE_F10)
-        R.want = R.want % VKB_MAX_SCALE + 1;
+    R.want = R.want % VKB_MAX_SCALE + 1;
 }
 
 static void vkb_flip(void)
@@ -3870,7 +3639,7 @@ static void vkb_flip(void)
         /* Boot time to the first flip and the first frame with draws. */
         fprintf(stderr, "  [VK] %s at %.1f s (flip %u)\n",
                 V.flips == 1 ? "first flip" : "first frame with draws",
-                (double)SDL_GetTicks() / 1000.0, V.flips);
+                (double)win_ticks_ms() / 1000.0, V.flips);
         if (V.frame_draws)
             V.first_draw_logged = 1;
     }
@@ -3962,9 +3731,9 @@ static void vkb_flip(void)
     pi.swapchainCount = 1;
     pi.pSwapchains = &V.swapchain;
     pi.pImageIndices = &idx;
-    pthread_mutex_lock(&s_qlock);
+    vkb_lock(&s_qlock);
     r = vkQueuePresentKHR(V.queue, &pi);
-    pthread_mutex_unlock(&s_qlock);
+    vkb_unlock(&s_qlock);
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR)
         V.swap_dirty = 1;
 
@@ -3974,125 +3743,24 @@ static void vkb_flip(void)
 
 static const Nv2aBackend s_vk_backend = { vkb_clear, vkb_draw, vkb_flip };
 
-/* ---- the window on the process main thread ------------------------------ */
+/* ---- the window ----------------------------------------------------------
+ *
+ * Window creation, events, monitors and ssx3_vk_host_main, per host. Included
+ * rather than compiled on their own, so they share this file's state (V, R, I)
+ * without an internal header; CMake does not list them as sources. */
+#ifdef _WIN32
+#include "vk_window_win32.c"
+#else
+#include "vk_window_sdl.c"
+#endif
 
-extern void xbox_InputSetMainPump(int on);    /* src/input/xinput_device.c */
-
-/* The highest refresh rate of the connected displays: the presenter's
- * default frame cap (more frames than a display shows only take GPU time
- * from the game). The fastest display, not the window's: under Wayland SDL
- * cannot tell which display a window is on. */
-static void read_display_hz(void)
+int ssx3_vk_available(void)
 {
-    SDL_DisplayMode m;
-    int d, n = SDL_GetNumVideoDisplays(), hz = 0;
+    static int have = -1;
 
-    for (d = 0; d < n; d++)
-        if (SDL_GetCurrentDisplayMode(d, &m) == 0 && m.refresh_rate > hz)
-            hz = m.refresh_rate;
-    if (hz > 0 && hz != V.display_hz) {
-        V.display_hz = hz;
-        fprintf(stderr, "  [VK] fastest display refresh %d Hz\n", hz);
-    }
-}
-
-static int (*s_guest_main)(void);
-static int s_guest_rc;
-static Uint32 s_guest_done_event = (Uint32)-1;
-
-static void *guest_thread(void *unused)
-{
-    SDL_Event ev;
-
-    (void)unused;
-    s_guest_rc = s_guest_main();
-    memset(&ev, 0, sizeof ev);
-    ev.type = s_guest_done_event;
-    SDL_PushEvent(&ev);
-    return NULL;
-}
-
-/* The guest's thread, with xbox_HostWindowMain's stack rule: at least the
- * main thread's and generously more, since lifted code recurses on it. */
-static int start_guest_thread(void)
-{
-    pthread_attr_t attr;
-    pthread_t th;
-    struct rlimit rl;
-    size_t stack = 64u << 20;
-    int rc;
-
-    if (getrlimit(RLIMIT_STACK, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY
-            && rl.rlim_cur > stack)
-        stack = (size_t)rl.rlim_cur;
-    pthread_attr_init(&attr);
-    pthread_attr_setstacksize(&attr, stack);
-    rc = pthread_create(&th, &attr, guest_thread, NULL);
-    pthread_attr_destroy(&attr);
-    if (rc != 0)
-        return 0;
-    pthread_detach(th);
-    return 1;
-}
-
-int ssx3_vk_host_main(int (*guest_main)(void))
-{
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_GAMECONTROLLER) != 0) {
-        fprintf(stderr, "  [VK] SDL init: %s; running without a window thread\n",
-                SDL_GetError());
-        return guest_main();
-    }
-    V.window = window_create("SSX 3 (Recomp, Vulkan) | loading");
-    s_guest_done_event = SDL_RegisterEvents(1);
-    if (!V.window || s_guest_done_event == (Uint32)-1) {
-        fprintf(stderr, "  [VK] window: %s; running without a window thread\n",
-                SDL_GetError());
-        if (V.window) {
-            SDL_DestroyWindow(V.window);
-            V.window = NULL;
-        }
-        return guest_main();
-    }
-    xbox_InputSetMainPump(1);
-    xbox_InputSdlInit();
-    read_display_hz();
-    V.host_main = 1;
-    s_guest_main = guest_main;
-    if (!start_guest_thread()) {
-        fprintf(stderr, "  [VK] cannot start the guest thread\n");
-        V.host_main = 0;
-        xbox_InputSetMainPump(0);
-        return guest_main();
-    }
-    fprintf(stderr, "  [VK] window open; guest runs on its own thread\n");
-
-    /* Pump from the start, through the whole load, so the desktop never sees
-     * an unresponsive window; refresh the FPS title while frames come. */
-    for (;;) {
-        SDL_Event ev;
-        if (SDL_WaitEventTimeout(&ev, 16)) {
-            do {
-                if (ev.type == s_guest_done_event)
-                    return s_guest_rc;
-                if (ev.type == SDL_QUIT) {
-                    fprintf(stderr, "  [VK] window closed\n");
-                    fflush(stderr);
-                    _Exit(0);
-                }
-                if (ev.type == SDL_WINDOWEVENT
-                        && (ev.window.event == SDL_WINDOWEVENT_SIZE_CHANGED
-                            || ev.window.event == SDL_WINDOWEVENT_RESIZED))
-                    V.swap_dirty = 1;
-                if (ev.type == SDL_DISPLAYEVENT)
-                    read_display_hz();
-                scale_key(&ev);
-                window_key(&ev);
-                xbox_InputSdlEvent(&ev);
-            } while (SDL_PollEvent(&ev));
-        }
-        if (V.flips)
-            update_title();
-    }
+    if (have < 0)
+        have = volkInitialize() == VK_SUCCESS;
+    return have;
 }
 
 int ssx3_vk_register(void)

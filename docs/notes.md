@@ -834,3 +834,79 @@ _(date – what was done, what was found, next step)_
     0x18300000): xiso, Redump iso and folder install byte-identical (`diff -r`) with both scripts (bash; pwsh 7 on
     Linux), TUI screens driven in tmux, run.sh/run.ps1 → installer → launch chain. Not tested on real Windows
     (Windows PowerShell 5.1, conhost VT mode, file dialogs) or on a Steam Deck.
+- 2026-10-26 – **Vulkan renderer on Windows 10/11** (native Win32 window, no SDL on Windows).
+  - Layout: `vk_backend.c` stays platform-neutral; the window code is per host and `#include`d at the end of it
+    (shares `V`/`R`/`I` without an internal header): `vk_window_sdl.c` (the former SDL section, moved unchanged
+    apart from the hooks) and `vk_window_win32.c` (new). Hooks: `win_instance_extensions`, `win_create_surface`,
+    `win_drawable_size`, `win_display_index`, `win_ticks_ms`, `win_set_title`, `win_open_lazy`, `pump_events`,
+    plus `ssx3_vk_host_main` / `ssx3_vk_list_displays`. Shared helpers moved into the core: `window_mode_init`
+    (SSX3_WINDOW), `wide_from_desktop` (SSX3_ASPECT=auto), `scale_cycle` (F10).
+  - `vk_platform.h`: mutex/cond/thread/clock/sleep. POSIX = pthreads; Windows = SRW lock + condition variable +
+    CreateThread + QueryPerformanceCounter (mapping as in koen's `src/vk/vkr_thread.h`, GPL-2.0+), so the exe
+    imports no winpthread DLL and stays MSVC-friendly. The presenter's frame cap sleeps on a high-resolution
+    waitable timer (`Sleep` would round to 15.6 ms).
+  - Win32 window: per-monitor-v2 DPI awareness, `VK_KHR_win32_surface` (volk built with `VK_USE_PLATFORM_WIN32_KHR`),
+    keys into the runtime's table (`xbox_InputKeySet`, VK codes as `fb_present.c`), F10 scale (it is a system key:
+    handled before Windows opens the window menu), F11 / Alt+Enter toggle, `SC_KEYMENU` swallowed (Alt alone would
+    stall the pump in the menu loop), cursor hidden in full screen, guest-done posted to the window (thread
+    messages are lost during a move/resize modal loop). Monitors: EnumDisplayMonitors order, EDID names via
+    QueryDisplayConfig (Wine: "Default"). `fullscreen` = topmost borderless window at desktop resolution (Windows
+    10/11 hand such a window the display directly); no VK_EXT_full_screen_exclusive.
+  - `main.c`: WinMain runs `ssx3_vk_host_main` like POSIX `main`; `--list-displays` works on Windows;
+    `want_vulkan()` falls back to `SSX3_RENDERER=cpu` + `RECOMP_FB_WINDOW=1` when no Vulkan loader is installed, and
+    `--renderers` lists `vulkan` only then. `run.ps1` and `run_win.sh` default to Vulkan (`run_win.sh` now passes
+    `SSX3_*` through too; before, only `RECOMP_*` reached the exe).
+  - Window size under Proton: Wine reported this desktop's work area as y 450–1025 (KDE panels of the other
+    monitors), so the window is shrunk only to the whole monitor and centred in the work area only when it fits.
+    KWin still resizes it to 1280x626 afterwards; the swapchain follows. Real Windows untested.
+  - Crash report fix (`print_guest_context`): dbghelp's `SymFromAddr` is only asked about addresses in our own
+    image. With the guest on the Vulkan host's second thread, a fault inside a Wine DLL (guest memset through the
+    host CRT) stopped the report after "Xbox VA of fault" and the run looked hung (draws on, no flips).
+  - Tested (GE-Proton 11-11, RTX 2080 Ti, MinGW build; virtual uinput pad seen as XInput pad by Wine): default
+    flow intro → pad skip → title → character select → peak select → My Rules, 60 fps at 1x; interpolation 270 fps
+    (display) and 120 (`SSX3_FPS_LIMIT=120`); `SSX3_WINDOW=borderless` 1920x1080 with `SSX3_ASPECT=auto` and 2x;
+    `SSX3_WINDOW=fullscreen SSX3_MONITOR=1` 1920x1200; `--list-displays` (3 monitors, primary flagged);
+    `WINEDLLOVERRIDES=vulkan-1=d` → CPU fallback window. Linux regression: default flow to a Snow Jam race, title and
+    race frames as before. **Not reached on Windows:** the race – it still crashes on the known tiled-aperture
+    mapping failure (`0xF0000000` error 487), with the CPU renderer too (TODO). Not tested: real Windows 10/11,
+    keyboard keys/F10/F11 in the Win32 window (tests do not take focus), `run.ps1` (no PowerShell in Wine), MSVC.
+  - The generated code in this checkout comes from `feature/lan-lobby` (renames sub_000E1B50/sub_000760E0 to
+    `_gen`); test builds used two untracked pass-through wrappers again, removed afterwards.
+- 2026-10-26 – **Windows race-load crash fixed** (tiled aperture). The runtime already had the fix as an opt-in:
+  `RECOMP_WIN_PLACEHOLDER=1` reserves the whole 4 GB guest window as one placeholder (VirtualAlloc2 +
+  MapViewOfFile3, Windows 10 1803+, Wine has both) and carves every window out of it, so nothing else lands at host
+  base + 0xF0000000. Without it Wine had something there (error 487), the aperture was missing and the race start
+  faulted writing the frame buffer through it (guest 0x001F0386, VA 0xF0610000/0xF0710000). `WinMain` now sets it
+  unless the environment has it. Log: "guest window reservation: placeholder …, 4096 MB held", "Tiled aperture
+  alias verified", mirrors 26/27 map too.
+  - Tested under Proton: menus → Snow Jam race at 1x/60 (race 51–60 fps; Linux on the same route 45–61) and with
+    `SSX3_ASPECT=16:9 SSX3_RES_SCALE=2 SSX3_FPS_LIMIT=120` (120 fps shown, game 55–58, 1707x960 widescreen frame
+    as on Linux). Not tested: real Windows.
+- 2026-10-26 – **Settings screen (`--settings`) and language selection** (replaces the start-up menus of
+  `run.sh`/`_launch_menu.sh` and `run.ps1`).
+  - `src/settings/`: after Amped2-Recomp's module (same toolkit) and Splatoon-Recomp's categories. INI at
+    `$XDG_CONFIG_HOME/ssx3-recomp/settings.ini` / `%APPDATA%\ssx3-recomp\settings.ini` (`SSX3_SETTINGS` for
+    another); the old `run.conf` next to it is taken over once. `ssx3_settings_apply()` exports each setting as the
+    environment variable the program already reads (SSX3_RES_SCALE, SSX3_WINDOW, ...) unless set, so the
+    environment still overrides for one run and `vk_backend.c` is unchanged. Categories: Resolution Scaling,
+    Aspect Ratio, Framerate (+ v-sync), Display (window, monitor, renderer), Language, Game (logos, intro, keyboard).
+  - Look: SSX 3 as in the installer TUI – orange-to-yellow logo, the three-peak ridge (lit peak walks with the
+    category), night-blue page, ice-blue help bar, orange slanted selection bars, a boost-meter gauge for the
+    resolution, Xbox face buttons for the keys. 24-bit colour when `COLORTERM` says so (and on Windows), else 256.
+    Compact header below 36 rows; the arrow-key hints drop below 100 columns.
+  - `isatty()` must not be called from our code: the generated code exports a Ghidra-named guest CRT function
+    `isatty`, and the executable's symbol wins (segfault). The TUI checks the terminal with `tcgetattr`.
+  - Windows: the exe is GUI-subsystem, so the screen attaches to the parent console (else allocates one), opens
+    `CONIN$`/`CONOUT$` itself (no standard handles) and writes UTF-16 with `WriteConsoleW`; `run.ps1 --settings`
+    starts it with `Start-Process -NoNewWindow -Wait` so PowerShell does not read the same keys. Under Wine
+    (`wine cmd /c start /wait /b ...` in a pty) keys and saving work but Wine's tty console garbles cursor
+    positioning – a check in a real Windows console is still open.
+  - Language: the game asks `XGetLanguage` = `sub_0017E5ED` (calls the ExQueryNonVolatileSetting stub 0x1A2230
+    with index 7 = XC_LANGUAGE; values above 9 fall back on the region). The runtime's EEPROM always answers
+    English, so `recomp_manual.c` wraps the function (regenerated with `--exclude-manual`) and returns
+    en 1 / de 3 / fr 4 / es 5 from `SSX3_LANGUAGE`. The game then loads `data/locale/*{amer,grmn,fren,span}.loc`.
+    Auto: `GetUserDefaultUILanguage` (Windows), `LANGUAGE`/`LC_ALL`/`LC_MESSAGES`/`LANG` (POSIX); only languages
+    whose `cmn*.loc` exists are offered.
+  - Tested: TUI in tmux (110x42 and 80x24, all categories, save, unsaved-changes prompt, Save & drop in); Linux
+    `language = de` → Hauptmenü/Einzelspiel/Gipfelstürmer; Proton `SSX3_LANGUAGE=fr` → Choisir mode/Sommet 1 and
+    a race; Linux and Windows builds link without the LAN-lobby pass-throughs (code regenerated from this branch).

@@ -53,15 +53,16 @@ scripts/test_release.sh <version> > logs/test-release-<version>.log 2>&1   # bac
 cat logs/release-test-<version>/summary.txt
 ```
 
-It unpacks the packages like a player, checks the missing-game-files message, drives `run.sh` with the start-up
-menu forced on and `run.ps1` (menu + the default CPU-renderer flow under Wine) with a virtual pad
+It unpacks the packages like a player, checks the missing-game-files message, drives `run.sh --settings` and,
+under Wine, the exe's settings screen and the default `run.ps1` flow (Vulkan) with a virtual pad
 (no focus stealing), and writes frame dumps. Look at `logs/release-test-<version>/linux_frames.png` and
 `windows_frames.png`.
 
 Pass criteria:
 - Linux: `[settings]` line + saved `settings.ini` (`run.sh --settings`); pad on port 1; frames show intro → title → menus → **a race**;
   game fps near 60 in the race; `[drive] exit 0` (still running at the time limit).
-- Windows (Wine): missing-files message; `run.ps1 --settings` saves `settings.ini`; pad on port 1; frames reach the menus.
+- Windows (Wine): missing-files message; `ssx3_recomp.exe --settings` (through `wine cmd /c start /wait /b`, so it
+  has a console) saves `settings.ini` in the prefix (`run.ps1 --settings` cannot be driven under Wine); pad on port 1; frames reach the menus.
   Compare with the last release's known Windows state (v0.1.0: crashes when a race loads, exit 139) – a new or
   earlier crash is a regression, a race that now works is a bug fix for the notes.
 

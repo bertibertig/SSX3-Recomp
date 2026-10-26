@@ -7,11 +7,12 @@
 #
 # Linux:   missing-game-files check; `run.sh --settings` in a pty (Enter, Enter: into the first category, then
 #          save & drop in -> settings.ini), virtual pad: intro -> title -> menus -> race, Vulkan frame dumps.
-# Windows: missing-game-files check through pwsh; `run.ps1 --settings` (Enter, Enter; saves settings.ini);
-#          the default flow (run.ps1, Vulkan through Wine) with the virtual pad, Vulkan frame dumps.
+# Windows: missing-game-files check through pwsh; the settings screen through `wine cmd /c start /wait /b
+#          ssx3_recomp.exe --settings` (Enter, Enter; saves settings.ini in the prefix); the default flow (run.ps1, Vulkan through Wine) with the virtual pad, Vulkan frame dumps.
 #          Needs pwsh and wine (binfmt_misc runs the .exe through Wine); own Wine prefix in the results folder.
+#          Not `run.ps1 --settings`: from Linux pwsh the exe gets no Wine console, so the screen never shows.
 # Needs: python3 with evdev + pillow, writable /dev/uinput. Settings go to the results folder (XDG_CONFIG_HOME,
-# APPDATA), never to your own ~/.config. Your windows are not touched (no xdotool).
+# the Wine prefix), never to your own ~/.config. Your windows are not touched (no xdotool).
 source "$(dirname "$0")/_common.sh"
 VERSION="${1:?Usage: scripts/test_release.sh <version, e.g. v0.2.0>}"
 DIST="$ROOT/dist"
@@ -75,18 +76,21 @@ if [ "${SKIP_WINDOWS:-0}" != 1 ]; then
   command -v wine >/dev/null || { echo "wine needed for the Windows test" >&2; exit 1; }
   say "== Windows (Wine): $(basename "$DIST/SSX3-Recomp-$VERSION-windows-x86_64.zip")"
   P="$(unpack "$DIST/SSX3-Recomp-$VERSION-windows-x86_64.zip")"
-  export WINEPREFIX="$OUT/wineprefix" WINEDEBUG=-all APPDATA="$OUT/win_appdata"
+  export WINEPREFIX="$OUT/wineprefix" WINEDEBUG=-all
   if SSX3_INSTALL=0 pwsh -NoProfile -File "$P/run.ps1" > "$OUT/win_nofiles.log" 2>&1 < /dev/null; then say "  FAIL: run.ps1 started without game files"
   else say "  missing game files: $(grep -q 'default.xbe missing' "$OUT/win_nofiles.log" && echo 'stops with the message (ok)' || echo 'FAIL, see win_nofiles.log')"; fi
   say "  installer: $(pwsh -NoProfile -File "$P/install_game.ps1" -Check "$GAME_FILES" 2>&1 < /dev/null | grep -a -o 'check: .*' || echo 'FAIL, no result')"
   link_game_files "$P"
   wineboot -i >/dev/null 2>&1 || true   # create the prefix before the settings screen starts
   set +e
-  # the settings screen: Enter (into the first category), Enter (save & drop in), then stop
+  # the settings screen: Enter (into the first category), Enter (save & drop in), then stop. Started through
+  # wine cmd so the GUI-subsystem exe has a Wine console on this pty (as run.ps1 gives it one on Windows).
+  WIN_INI="$WINEPREFIX/drive_c/users/$USER/AppData/Roaming/ssx3-recomp/settings.ini"
   python3 -I "$T/drive.py" --log "$OUT/win_menu.log" --seconds 45 --key-delay 12 \
-    --keys '\r' '\r' -- pwsh -NoProfile -File "$P/run.ps1" --settings
-  say "  settings: $(plain "$OUT/win_menu.log" | grep -a -o '\[settings\].*' | head -1)"
-  say "  saved: $(grep -v '^#' "$OUT/win_appdata/ssx3-recomp/settings.ini" 2>/dev/null | tr -d '\r' | tr '\n' ' ' || echo 'no settings.ini (FAIL)')"
+    --keys '\r' '\r' -- bash -c "cd '$P' && exec wine cmd /c start /wait /b ssx3_recomp.exe --settings"
+  wineserver -k 2>/dev/null || true
+  say "  settings: $(plain "$OUT/win_menu.log" | grep -a -o '\[settings\][^ ]*' | head -1)"
+  say "  saved: $( [ -f "$WIN_INI" ] && grep -v '^#' "$WIN_INI" | tr -d '\r' | tr '\n' ' ' || echo 'no settings.ini (FAIL)')"
   # the default flow: run.ps1 with the saved settings (Vulkan), pad into a race
   mkdir -p "$OUT/win_dumps"
   SSX3_VK_DUMP="Z:$(echo "$OUT/win_dumps/w" | tr / '\\')" SSX3_VK_DUMP_EVERY=300 \

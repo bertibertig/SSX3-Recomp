@@ -959,3 +959,9 @@ _(date – what was done, what was found, next step)_
     ssx3_recomp.exe --settings` + Enter, Enter → `[settings]` line, `settings.ini` in the prefix's
     `AppData/Roaming/ssx3-recomp/`. `run.ps1 --settings` (Start-Process -NoNewWindow) stays untested until real
     Windows; the harness should use the `wine cmd` route.
+  - Harness fixed the same day: the Windows settings check now starts `wine cmd /c start /wait /b ssx3_recomp.exe
+    --settings` in the package folder and reads `settings.ini` from the prefix's `AppData/Roaming/ssx3-recomp/`.
+    Re-run of the Windows part (`SKIP_LINUX=1`) on the v0.3.0 zip: `[settings]` line, `settings.ini` saved
+    (vulkan, auto, 1x, 16:9, display, windowed), pad on port 1, intro → title → menus → Snow Jam race (game 26–51 fps
+    under plain Wine with frame dumps), still running at 174 s – all Windows checks pass. The full first run is kept
+    in `logs/release-test-v0.3.0-full/`.

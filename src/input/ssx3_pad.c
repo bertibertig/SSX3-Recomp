@@ -244,6 +244,145 @@ static void keyboard_merge(XBOX_INPUT_STATE *pState)
     pState->dwPacketNumber = kb.dwPacketNumber;
 }
 
+/* ---- SSX3_PAD_SCRIPT: a timed button script on port 0 -------------------- */
+
+/* For unattended test and benchmark runs (recomp-profiler targets, CI): no
+ * uinput, no root, no window focus needed, and the same on Windows. The file
+ * holds one step per line, each held from its time until the next step:
+ *     <seconds since the first pad poll> [button ...] [lx=<n>] [ly=<n>] ...
+ * buttons: a b x y black white lt rt start back up down left right ls rs;
+ * axes: lx ly rx ry (-32767..32767, Y up positive). '#' starts a comment.
+ * Example: "20 start" / "20.2" (press Start at 20 s, release at 20.2 s).
+ * The steps are merged on top of a real pad and the keyboard. */
+
+#if defined(_WIN32)
+#include <windows.h>
+static double script_now(void) { return (double)GetTickCount64() / 1000.0; }
+#else
+#include <time.h>
+static double script_now(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+}
+#endif
+
+typedef struct ScriptStep {
+    double t;
+    XBOX_GAMEPAD pad;
+} ScriptStep;
+
+static ScriptStep *s_script;
+static int s_script_n = -1;     /* -1: not loaded yet */
+static double s_script_t0;
+
+static void script_load(void)
+{
+    static const struct { const char *name; WORD bit; int analog; } names[] = {
+        { "up", XBOX_GAMEPAD_DPAD_UP, -1 },       { "down", XBOX_GAMEPAD_DPAD_DOWN, -1 },
+        { "left", XBOX_GAMEPAD_DPAD_LEFT, -1 },   { "right", XBOX_GAMEPAD_DPAD_RIGHT, -1 },
+        { "start", XBOX_GAMEPAD_START, -1 },      { "back", XBOX_GAMEPAD_BACK, -1 },
+        { "ls", XBOX_GAMEPAD_LEFT_THUMB, -1 },    { "rs", XBOX_GAMEPAD_RIGHT_THUMB, -1 },
+        { "a", 0, XBOX_BUTTON_A },                { "b", 0, XBOX_BUTTON_B },
+        { "x", 0, XBOX_BUTTON_X },                { "y", 0, XBOX_BUTTON_Y },
+        { "black", 0, XBOX_BUTTON_BLACK },        { "white", 0, XBOX_BUTTON_WHITE },
+        { "lt", 0, XBOX_BUTTON_LTRIGGER },        { "rt", 0, XBOX_BUTTON_RTRIGGER },
+    };
+    const char *path = getenv("SSX3_PAD_SCRIPT");
+    char line[512];
+    FILE *f;
+    int cap = 0;
+
+    s_script_n = 0;
+    if (!path || !*path)
+        return;
+    f = fopen(path, "r");
+    if (!f) {
+        fprintf(stderr, "  PAD: SSX3_PAD_SCRIPT %s: cannot open\n", path);
+        return;
+    }
+    while (fgets(line, sizeof line, f)) {
+        ScriptStep st;
+        char *tok, *hash = strchr(line, '#');
+        size_t i;
+
+        if (hash)
+            *hash = 0;
+        tok = strtok(line, " \t\r\n");
+        if (!tok)
+            continue;
+        memset(&st, 0, sizeof st);
+        st.t = atof(tok);
+        while ((tok = strtok(NULL, " \t\r\n")) != NULL) {
+            SHORT *axis = !strncmp(tok, "lx=", 3) ? &st.pad.sThumbLX
+                        : !strncmp(tok, "ly=", 3) ? &st.pad.sThumbLY
+                        : !strncmp(tok, "rx=", 3) ? &st.pad.sThumbRX
+                        : !strncmp(tok, "ry=", 3) ? &st.pad.sThumbRY : NULL;
+            if (axis) {
+                *axis = (SHORT)atoi(tok + 3);
+                continue;
+            }
+            for (i = 0; i < sizeof names / sizeof names[0]; i++)
+                if (!strcmp(tok, names[i].name))
+                    break;
+            if (i == sizeof names / sizeof names[0])
+                fprintf(stderr, "  PAD: SSX3_PAD_SCRIPT: unknown button '%s'\n", tok);
+            else if (names[i].analog >= 0)
+                st.pad.bAnalogButtons[names[i].analog] = 255;
+            else
+                st.pad.wButtons |= names[i].bit;
+        }
+        if (s_script_n == cap) {
+            ScriptStep *n = realloc(s_script, (size_t)(cap = cap ? cap * 2 : 64) * sizeof *n);
+            if (!n)
+                break;
+            s_script = n;
+        }
+        s_script[s_script_n++] = st;
+    }
+    fclose(f);
+    s_script_t0 = script_now();
+    fprintf(stderr, "  PAD: SSX3_PAD_SCRIPT %s: %d step(s)\n", path, s_script_n);
+}
+
+/* Merge the current step into pState; returns 0 without a script. */
+static int script_merge(XBOX_INPUT_STATE *pState)
+{
+    static int last = -1;
+    double t;
+    int i, cur = -1;
+    const XBOX_GAMEPAD *g;
+
+    if (s_script_n < 0)
+        script_load();
+    if (s_script_n <= 0)
+        return 0;
+    t = script_now() - s_script_t0;
+    for (i = 0; i < s_script_n && s_script[i].t <= t; i++)
+        cur = i;
+    if (cur != last) {
+        last = cur;
+        if (cur >= 0)
+            fprintf(stderr, "  PAD: script step %d at %.1f s\n", cur + 1, t);
+    }
+    /* A fresh packet number on every step, so the input layer sees each
+     * press and release as a new state. */
+    pState->dwPacketNumber += (DWORD)(cur + 1) * 0x10000u;
+    if (cur < 0)
+        return 1;
+    g = &s_script[cur].pad;
+    pState->Gamepad.wButtons |= g->wButtons;
+    for (i = 0; i < 8; i++)
+        if (g->bAnalogButtons[i] > pState->Gamepad.bAnalogButtons[i])
+            pState->Gamepad.bAnalogButtons[i] = g->bAnalogButtons[i];
+    if (g->sThumbLX) pState->Gamepad.sThumbLX = g->sThumbLX;
+    if (g->sThumbLY) pState->Gamepad.sThumbLY = g->sThumbLY;
+    if (g->sThumbRX) pState->Gamepad.sThumbRX = g->sThumbRX;
+    if (g->sThumbRY) pState->Gamepad.sThumbRY = g->sThumbRY;
+    return 1;
+}
+
 /* ======================================================================== */
 #if defined(_WIN32)
 /* ====================  XInput backend  ================================== */
@@ -310,6 +449,8 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
             kb = xbox_InputKeyboardPoll(pState);
             if (mkb_merge(dwPort, pState))
                 g_controller_connected[dwPort] = TRUE;
+            if (script_merge(pState))
+                kb = 1;
             if (kb || mkb_enabled()) {
                 trace_state(dwPort, pState);
                 return ERROR_SUCCESS;
@@ -325,6 +466,7 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
         keyboard_merge(pState);
         /* The mouse owns the aim stick while it moves, WASD the movement. */
         mkb_merge(dwPort, pState);
+        script_merge(pState);
     }
     trace_state(dwPort, pState);
     return ERROR_SUCCESS;
@@ -578,7 +720,12 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
     SDL_UnlockJoysticks();
 
     if (!have) {
-        if (dwPort == 0 && xbox_InputKeyboardPoll(pState)) {
+        if (dwPort != 0)
+            return ERROR_DEVICE_NOT_CONNECTED;
+        have = xbox_InputKeyboardPoll(pState);
+        if (!have)
+            memset(pState, 0, sizeof *pState);
+        if (script_merge(pState) || have) {
             trace_state(dwPort, pState);
             return ERROR_SUCCESS;
         }
@@ -586,8 +733,10 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
     }
 
     map_host_pad(&h, pState, ++g_packet[dwPort]);
-    if (dwPort == 0)
+    if (dwPort == 0) {
         keyboard_merge(pState);
+        script_merge(pState);
+    }
     trace_state(dwPort, pState);
     return ERROR_SUCCESS;
 }

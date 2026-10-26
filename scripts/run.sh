@@ -27,6 +27,8 @@
 #                           from `ssx3_recomp --list-displays`
 #   RECOMP_PB_SCAN=1 / RECOMP_PB_EXEC=1   analyse / execute the NV2A pushbuffer
 #   SSX3_PAD_TRACE=1        log every controller button change (pads: README "Controllers")
+#   SSX3_PAD_SCRIPT=<file>  timed button script on port 1 for unattended test runs (src/input/ssx3_pad.c)
+#   SSX3_VK_RC_REGS=<array|switch>  how the combiner shader holds its registers (default: switch on NVIDIA)
 #   RECOMP_USB_PADS=2       more emulated pads on the USB bus (split screen), default 1
 #   SSX3_INSTALL=0          without game_files/default.xbe: just stop instead of starting install_game.sh
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

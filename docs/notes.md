@@ -943,3 +943,19 @@ _(date – what was done, what was found, next step)_
   - Tested: TUI in tmux (110x42 and 80x24, all categories, save, unsaved-changes prompt, Save & drop in); Linux
     `language = de` → Hauptmenü/Einzelspiel/Gipfelstürmer; Proton `SSX3_LANGUAGE=fr` → Choisir mode/Sommet 1 and
     a race; Linux and Windows builds link without the LAN-lobby pass-throughs (code regenerated from this branch).
+- 2026-10-26 – **Release v0.3.0** (`/release`): Vulkan renderer on Windows, Windows race-load fix, settings screen,
+  language selection, game data installer, Linux save fix, stereo downmix; notes in `docs/release-notes/v0.3.0.md`,
+  README status/platform tables updated. Packages: Linux 9.4 MB (Docker, GLIBC ≤ 2.38, NEEDED only libc/libm/SDL2),
+  Windows 8.0 MB (MinGW, XINPUT1_4, XAudio2_8, UCRT, no MinGW DLLs); no game data. `package_release.sh` now ships
+  `licenses/enet-MIT.txt` (ENet is linked statically into the game since the LAN net core).
+  - Results (`test_release.sh v0.3.0`): Linux – missing-files message, installer check (exact build), `run.sh
+    --settings` saved `settings.ini` (language auto = de), pad on port 1, intro → title → BRK2 load → Boarder wählen →
+    Snow Jam race, game 47–57 fps with frame dumps, still running at 88 s. Wine – missing-files message, installer
+    check, pad on port 1, intro → title → menus → **Snow Jam race** (game 27–43 fps with frame dumps under plain Wine),
+    still running at 181 s: the v0.2.0 race-load crash (exit 139) is gone.
+  - Failed check, test harness: `run.ps1 --settings` under Linux pwsh starts the exe through binfmt Wine without a
+    console, so the screen never appears and nothing is saved (the harness also looks for it in the Linux `APPDATA`,
+    which Wine does not use). The exe itself saves under Wine with a console: `wine cmd /c start /wait /b
+    ssx3_recomp.exe --settings` + Enter, Enter → `[settings]` line, `settings.ini` in the prefix's
+    `AppData/Roaming/ssx3-recomp/`. `run.ps1 --settings` (Start-Process -NoNewWindow) stays untested until real
+    Windows; the harness should use the `wine cmd` route.

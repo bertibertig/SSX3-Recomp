@@ -23,21 +23,24 @@ build 2003-09-19; English, French, German, Spanish). Other versions are not supp
 | Audio (emulated Xbox APU) | ✅ |
 | Title screen, menus, character select | ✅ |
 | Races start and play, graphics match the reference renderer | ✅ |
-| Vulkan renderer: 60 fps in menus, 55–60 fps in races | ✅ Linux |
-| Frame interpolation above 60 fps (120, 144, … display refresh) | ✅ Linux |
-| Internal resolution 1x–5x (up to 3200x2400) | ✅ Linux |
-| Widescreen in races: 16:9, 16:10, 21:9, any ratio or the desktop's (menus stay 4:3) | ✅ Linux |
-| Windowed, borderless windowed and exclusive fullscreen; Alt+Enter / F11 toggles | ✅ Linux |
-| Opens on the main monitor; any other monitor selectable | ✅ Linux |
+| Vulkan renderer: 60 fps in menus, 55–60 fps in races | ✅ Linux, Windows |
+| Frame interpolation above 60 fps (120, 144, … display refresh) | ✅ Linux, Windows |
+| Internal resolution 1x–5x (up to 3200x2400) | ✅ Linux, Windows |
+| Widescreen in races: 16:9, 16:10, 21:9, any ratio or the desktop's (menus stay 4:3) | ✅ Linux, Windows |
+| Windowed, borderless windowed and exclusive fullscreen; Alt+Enter / F11 toggles | ✅ Linux, Windows |
+| Opens on the main monitor; any other monitor selectable | ✅ Linux, Windows |
 | Controllers (XInput/SDL pads, hotplug, rumble), keyboard as player 1 | ✅ |
-| Start-up menu for renderer, monitor, display mode, resolution, aspect ratio, frame rate, v-sync | ✅ |
-| Windows build | ⚠️ experimental: menus work, software renderer only (slow); crashes when a race loads – only tested on Linux with Wine and Proton |
+| Settings screen (`--settings`) for resolution, aspect ratio, frame rate, v-sync, window, monitor, renderer, language | ✅ |
+| Languages: English, French, German, Spanish (automatic or chosen) | ✅ |
+| Game data installer for disc images (`.iso`, `.xiso`) and extracted folders | ✅ |
+| Saving and loading | ✅ overwriting a save; a new save slot is not tested yet |
+| Windows build | ✅ races with the Vulkan renderer – only tested on Linux with Wine and Proton, not on real Windows |
 | Full run through the game (all peaks, Conquer the Mountain, saving) | ⬜ not verified |
 | Split screen (two pads, `RECOMP_USB_PADS=2`) | ✅ Linux: menus, race, results; ~27 fps (the game itself caps split screen at 30) |
 | Steady 60 fps everywhere (the pre-race screen drops to ~40) | ⬜ in progress |
 | Anti-aliasing, HD textures | ⬜ planned |
 | Steam Deck test, macOS | ⬜ planned |
-| Vulkan renderer on Windows 10/11 | ✅ native Win32 window; tested under Proton (menus, intro, all window modes), not yet on real Windows |
+| Vulkan renderer on Windows 10/11 | ✅ native Win32 window; tested under Proton (menus, races, all window modes), not yet on real Windows |
 | Vulkan renderer on Windows 8/8.1/7 | ⬜ planned |
 
 Known issues: an occasional crash right after the intro movie starts (start again); some rare graphics
@@ -50,7 +53,7 @@ textures). Full list: [docs/TODO.md](docs/TODO.md).
 |---|---|
 | **Linux** x86-64 | Main platform. Vulkan renderer, SDL2 window and controllers. |
 | **Steam Deck** | The main target; should work like any Linux PC, not tested on a Deck yet. |
-| **Windows** 10/11 x86-64 | Experimental, not playable yet: intro and menus run with the software (CPU) renderer, then it crashes when a race loads. So far only tested on Linux with Wine and Proton, not on real Windows. |
+| **Windows** 10/11 x86-64 | Playable under Wine/Proton with the Vulkan renderer (native Win32 window), software renderer as fallback. Not tested on a real Windows PC yet. |
 | **macOS** | Not started. |
 
 ## Playing a release
